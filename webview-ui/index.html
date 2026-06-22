@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      No CSP meta tag here — the extension host injects a strict per-load nonce CSP
+      in WingmanViewProvider._buildHtml() when serving this app inside VS Code.
+      This file is the Vite dev-server entry only.
+    -->
+    <title>Sqowe Wingman</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

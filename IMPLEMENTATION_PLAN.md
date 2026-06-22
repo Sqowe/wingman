@@ -6,7 +6,8 @@ SDK ("pi"). It renders pi's agent event stream natively, surfaces pi's user slas
 commands in the chat input, promotes pi's built-in commands to native VS Code UI, and
 wires pi's `edit` tool into VS Code's real diff editor.
 
-> Status: planning. Date: 2026-06-21.
+> Status: **Phase 0 (scaffold) complete** (2026-06-22). Phase 1 (transport) is next.
+> Plan authored 2026-06-21.
 > Brand: a sibling to the **Sqowe Pilot** desktop app — *Pilot* flies solo on the
 > desktop; *Wingman* rides alongside you in the editor.
 
@@ -129,7 +130,7 @@ stack and is a compelling demo.
 
 | Phase | Goal | Key VS Code / pi APIs | Done when |
 | --- | --- | --- | --- |
-| **0 — Scaffold** | Extension activates, empty sidebar view, dual build pipeline, pi located | `contributes.viewsContainers/views`, `registerWebviewViewProvider`, `asWebviewUri`, CSP | Activity-bar icon opens an empty panel; `pi --version` resolves (or a clear install prompt is shown when pi is missing) |
+| **0 — Scaffold** ✅ | Extension activates, empty sidebar view, dual build pipeline, pi located | `contributes.viewsContainers/views`, `registerWebviewViewProvider`, `asWebviewUri`, CSP | **Done (2026-06-22).** Activity-bar icon opens an empty panel; `pi --version` resolves (or a clear install prompt is shown when pi is missing) |
 | **1 — Transport** | Spawn `pi --mode rpc`, JSONL client, event→webview bridge | `child_process`, custom LF reader (no `readline`), `webview.postMessage` | Events from a manual `prompt` appear in a dev console in the webview |
 | **2 — Core chat** | Composer sends prompt; stream assistant text + thinking; abort | `prompt` / `abort`; `message_update` text/thinking deltas | Full text round-trip with a stop button |
 | **3 — Tool cards** | Render `tool_execution_*`; bash output; copy buttons (clean source) | tool events; `vscode.env.clipboard` | Tool runs show live output cards with working copy |

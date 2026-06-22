@@ -1,0 +1,69 @@
+/*
+ * All colors, fonts, and spacing use VS Code theme CSS variables (--vscode-*)
+ * so the UI automatically matches the user's editor theme.
+ * No hardcoded hex values.
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--vscode-sideBar-background, transparent);
+  color: var(--vscode-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  font-weight: var(--vscode-font-weight);
+}
+
+.app {
+  padding: 12px 16px;
+}
+
+/* ── Status banner ────────────────────────────────────────────────────────── */
+
+.status-banner {
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.status-banner--idle {
+  color: var(--vscode-descriptionForeground);
+}
+
+.status-banner--error {
+  background: var(--vscode-inputValidation-errorBackground);
+  border: 1px solid var(--vscode-inputValidation-errorBorder);
+}
+
+.status-banner--warning {
+  background: var(--vscode-inputValidation-warningBackground);
+  border: 1px solid var(--vscode-inputValidation-warningBorder);
+}
+
+.status-banner--ok {
+  background: var(--vscode-inputValidation-infoBackground);
+  border: 1px solid var(--vscode-inputValidation-infoBorder);
+}
+
+/* ── Placeholder ──────────────────────────────────────────────────────────── */
+
+.placeholder-hint {
+  margin-top: 24px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* ── Inline code snippets (e.g. install command) ──────────────────────────── */
+
+code {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+}

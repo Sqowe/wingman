@@ -1,0 +1,99 @@
+{
+  "name": "wingman",
+  "displayName": "Sqowe Wingman",
+  "description": "A VS Code client for the pi coding agent",
+  "version": "0.0.1",
+  "publisher": "sqowe",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sqowe/sqowe-wingman.git"
+  },
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.82.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "coding agent",
+    "pi",
+    "sqowe"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sqowe-wingman",
+          "title": "Sqowe Wingman",
+          "icon": "media/wingman.svg"
+        }
+      ]
+    },
+    "views": {
+      "sqowe-wingman": [
+        {
+          "type": "webview",
+          "id": "sqoweWingman.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "sqoweWingman.newSession",
+        "category": "Sqowe Wingman",
+        "title": "New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "sqoweWingman.focusChat",
+        "category": "Sqowe Wingman",
+        "title": "Focus Chat"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "sqoweWingman.newSession",
+          "when": "view == sqoweWingman.chat",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Sqowe Wingman",
+      "properties": {
+        "sqoweWingman.piExecutablePath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `pi` executable (a leading `~` is expanded to your home directory). Leave empty to auto-detect from `PATH` and common install locations (npm global, Homebrew, Volta).",
+          "scope": "window"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "install:all": "npm install && npm --prefix webview-ui install",
+    "build:host": "node esbuild.mjs",
+    "build:webview": "npm --prefix webview-ui run build",
+    "build": "npm run build:host && npm run build:webview",
+    "watch:host": "node esbuild.mjs --watch",
+    "watch:webview": "npm --prefix webview-ui run dev",
+    "typecheck": "tsc --noEmit",
+    "vscode:prepublish": "npm run build",
+    "vsce:package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "18.19.130",
+    "@types/vscode": "1.82.0",
+    "@vscode/vsce": "2.27.0",
+    "esbuild": "0.21.5",
+    "typescript": "5.5.3"
+  }
+}

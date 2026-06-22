@@ -1,0 +1,49 @@
+# Source files — bundled by esbuild/Vite; not needed in the VSIX.
+src/
+webview-ui/
+
+# Config / tooling
+tsconfig.json
+esbuild.mjs
+.eslintrc*
+.prettierrc*
+
+# Dev artifacts
+out/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Vite emits an index.html entry we don't use — the provider builds its own HTML.
+dist/webview/index.html
+
+# Docs & planning
+ARCHITECTURE.md
+CLAUDE.md
+AI_*.md
+IMPLEMENTATION_PLAN.md
+docs/
+tmp/
+
+# Node modules (root and nested)
+node_modules/
+**/node_modules/
+
+# Tests
+**/*.test.ts
+**/*.spec.ts
+.vscode-test/
+
+# VCS
+.git/
+.gitignore
+
+# Agent / editor tooling — not part of the extension
+.claude/
+.kiro/
+.agents/
+.vscode/
+
+# OS noise
+.DS_Store
+Thumbs.db
