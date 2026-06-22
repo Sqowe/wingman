@@ -6,7 +6,8 @@ SDK ("pi"). It renders pi's agent event stream natively, surfaces pi's user slas
 commands in the chat input, promotes pi's built-in commands to native VS Code UI, and
 wires pi's `edit` tool into VS Code's real diff editor.
 
-> Status: **Phase 1 (transport) complete** (2026-06-22). Phase 2 (core chat) is next.
+> Status: **Phases 2–3 (core chat + tool cards) complete** (2026-06-22). Phase 4
+> (native diff) is next.
 > Plan authored 2026-06-21.
 > Brand: a sibling to the **Sqowe Pilot** desktop app — *Pilot* flies solo on the
 > desktop; *Wingman* rides alongside you in the editor.
@@ -132,8 +133,8 @@ stack and is a compelling demo.
 | --- | --- | --- | --- |
 | **0 — Scaffold** ✅ | Extension activates, empty sidebar view, dual build pipeline, pi located | `contributes.viewsContainers/views`, `registerWebviewViewProvider`, `asWebviewUri`, CSP | **Done (2026-06-22).** Activity-bar icon opens an empty panel; `pi --version` resolves (or a clear install prompt is shown when pi is missing) |
 | **1 — Transport** ✅ | Spawn `pi --mode rpc`, JSONL client, event→webview bridge | `child_process`, custom LF reader (no `readline`), `webview.postMessage` | **Done (2026-06-22).** Manual prompts stream live events into a webview dev console; transport, locator, and host↔webview bridge covered by 25 unit tests. Landed early from Phase 2 scope: prompt-streaming gate + unexpected-transport-close signalling. Locator hardened (login-shell / nvm resolution, highest-version pick) |
-| **2 — Core chat** | Composer sends prompt; stream assistant text + thinking; abort | `prompt` / `abort`; `message_update` text/thinking deltas | Full text round-trip with a stop button |
-| **3 — Tool cards** | Render `tool_execution_*`; bash output; copy buttons (clean source) | tool events; `vscode.env.clipboard` | Tool runs show live output cards with working copy |
+| **2 — Core chat** ✅ | Composer sends prompt; stream assistant text + thinking; abort | `prompt` / `abort`; `message_update` text/thinking deltas | **Done (2026-06-22).** Composer sends (Enter to send, Shift+Enter newline) with a Stop button that aborts mid-turn; assistant text + thinking stream live, coalesced per animation frame, with `message_end` authoritative over streamed deltas; markdown render with link-safety (`openExternal` scheme validation); busy / rate-limit / in-flight / size prompt gating |
+| **3 — Tool cards** ✅ | Render `tool_execution_*`; bash output; copy buttons (clean source) | tool events; `vscode.env.clipboard` | **Done (2026-06-22).** `tool_execution_*` render as collapsible cards (auto-collapse on completion); live output streams via `partialResult` (replace-not-append); copy buttons yield clean source via `vscode.env.clipboard` (size-capped + rate-limited); `result.details` (incl. `patch`) preserved for Phase 4. Store reducer covered by 21 webview unit tests |
 | **4 — Native diff** ⭐ | `edit` patches → real diff editor + apply as pending changes | `details.patch`, `vscode.diff`, `TextDocumentContentProvider`, `WorkspaceEdit`, `workspace.applyEdit` | Clicking an edit opens VS Code's diff editor; accept writes the file |
 | **5 — Commands** | User `/` menu + built-ins as native UI | `get_commands`; `contributes.commands/keybindings/menus`; `set_model` / `cycle_model` / `compact` / `new_session` / `fork` / `export_html` / `set_thinking_level` / `get_session_stats` | `/` autocomplete works; model quick-pick, compact, new/fork in palette; token stats in status bar |
 | **6 — UI protocol** | Map pi extension dialogs to native prompts | `extension_ui_request` → `showQuickPick` / `showInputBox` / `showWarningMessage`; `notify` → notifications | Permission / confirm prompts render natively |

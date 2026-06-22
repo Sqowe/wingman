@@ -11,11 +11,17 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import type { AgentController } from '../agent/controller';
 import type { HostMessage, PiStatus, WebviewMessage } from '../shared/messages';
+import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES } from '../shared/limits';
 import type { RpcEvent } from '../agent/transport';
-import { MAX_PROMPT_BYTES } from '../shared/limits';
 
 /** Maximum ms between accepted prompts (simple rate-limit). */
 const PROMPT_RATE_LIMIT_MS = 500;
+
+/** Maximum clipboard writes accepted per window (simple rate-limit, defense-in-depth). */
+const COPY_RATE_LIMIT_MS = 200;
+
+/** Maximum openExternal calls per window (prevents browser-window spam). */
+const OPEN_EXTERNAL_RATE_LIMIT_MS = 500;
 
 export class WingmanViewProvider implements vscode.WebviewViewProvider {
   /** Must match the `id` in package.json contributes.views. */
@@ -36,6 +42,10 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   private static readonly _MAX_PENDING_EVENT_BYTES = 512_000; // 512 KB total
   /** Timestamp of the last accepted sendPrompt — for basic rate-limiting. */
   private _lastPromptAt = 0;
+  /** Timestamp of the last accepted clipboard write — for basic rate-limiting. */
+  private _lastCopyAt = 0;
+  /** Timestamp of the last accepted openExternal call — prevents browser-window spam. */
+  private _lastOpenExternalAt = 0;
   /** True while a prompt is in-flight — prevents concurrent sends. */
   private _promptInFlight = false;
 
@@ -62,7 +72,13 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = this._buildHtml(webviewView.webview);
 
     this._viewDisposables.push(
-      webviewView.webview.onDidReceiveMessage((message: WebviewMessage) => {
+      webviewView.webview.onDidReceiveMessage((raw: unknown) => {
+        const message = this._validateMessage(raw);
+        if (!message) return; // drop unknown / malformed messages
+
+        // Gate all non-ready messages until the webview has signalled it's up.
+        if (!this._webviewReady && message.type !== 'ready') return;
+
         switch (message.type) {
           case 'ready':
             this._webviewReady = true;
@@ -90,6 +106,18 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
           case 'sendPrompt':
             void this._handleSendPrompt(message.text);
             break;
+
+          case 'copyToClipboard':
+            void this._handleCopyToClipboard(message.text);
+            break;
+
+          case 'abortTurn':
+            void this._controller?.sendAbort();
+            break;
+
+          case 'openExternal':
+            void this._handleOpenExternal(message.url);
+            break;
         }
       }),
     );
@@ -108,6 +136,100 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
 
   public setController(controller: AgentController): void {
     this._controller = controller;
+  }
+
+  // ─── Runtime message validation ───────────────────────────────────────────
+
+  /**
+   * Validate that an incoming postMessage payload is a known WebviewMessage.
+   * Returns the typed message or null if validation fails.
+   * Unknown/malformed messages are logged at debug level to aid schema-drift diagnosis.
+   */
+  private _validateMessage(raw: unknown): WebviewMessage | null {
+    if (typeof raw !== 'object' || raw === null) {
+      this._controller?.outputChannel?.appendLine(
+        `[WingmanViewProvider] dropped non-object message: ${typeof raw}`,
+      );
+      return null;
+    }
+    const msg = raw as Record<string, unknown>;
+    if (typeof msg['type'] !== 'string') {
+      this._controller?.outputChannel?.appendLine(
+        '[WingmanViewProvider] dropped message with non-string type',
+      );
+      return null;
+    }
+
+    switch (msg['type']) {
+      case 'ready':
+        return { type: 'ready' };
+
+      case 'sendPrompt':
+        if (typeof msg['text'] !== 'string') {
+          this._controller?.outputChannel?.appendLine(
+            '[WingmanViewProvider] dropped sendPrompt: missing/invalid text field',
+          );
+          return null;
+        }
+        return { type: 'sendPrompt', text: msg['text'] };
+
+      case 'copyToClipboard': {
+        if (typeof msg['text'] !== 'string') {
+          this._controller?.outputChannel?.appendLine(
+            '[WingmanViewProvider] dropped copyToClipboard: missing/invalid text field',
+          );
+          return null;
+        }
+        // Hard byte-length cap — reject oversized payloads early.
+        if (Buffer.byteLength(msg['text'], 'utf8') > MAX_CLIPBOARD_BYTES) {
+          this._controller?.outputChannel?.appendLine(
+            `[WingmanViewProvider] dropped copyToClipboard: payload exceeds ${MAX_CLIPBOARD_BYTES} bytes`,
+          );
+          return null;
+        }
+        return { type: 'copyToClipboard', text: msg['text'] };
+      }
+
+      case 'abortTurn':
+        return { type: 'abortTurn' };
+
+      case 'openExternal': {
+        if (typeof msg['url'] !== 'string') {
+          this._controller?.outputChannel?.appendLine(
+            '[WingmanViewProvider] dropped openExternal: missing/invalid url field',
+          );
+          return null;
+        }
+        // Cap URL length to avoid extreme payloads.
+        if (msg['url'].length > 2048) {
+          this._controller?.outputChannel?.appendLine(
+            '[WingmanViewProvider] dropped openExternal: url exceeds 2048 chars',
+          );
+          return null;
+        }
+        // Allow only safe schemes.
+        let parsed: URL;
+        try { parsed = new URL(msg['url']); } catch {
+          this._controller?.outputChannel?.appendLine(
+            `[WingmanViewProvider] dropped openExternal: invalid URL (type=${msg['type']})`,
+          );
+          return null;
+        }
+        if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) {
+          this._controller?.outputChannel?.appendLine(
+            `[WingmanViewProvider] dropped openExternal: disallowed scheme ${parsed.protocol}`,
+          );
+          return null;
+        }
+        return { type: 'openExternal', url: parsed.href };
+      }
+
+      default:
+        this._controller?.outputChannel?.appendLine(
+          `[WingmanViewProvider] dropped unknown message type: ${msg['type']}`,
+        );
+        return null;
+    }
   }
 
   public setPiStatus(status: PiStatus): void {
@@ -164,6 +286,45 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   }
 
   // ─── Internals ────────────────────────────────────────────────────────────
+
+  private async _handleCopyToClipboard(text: string): Promise<void> {
+    // Basic rate-limit: ignore bursts to reduce abuse potential.
+    const now = Date.now();
+    if (now - this._lastCopyAt < COPY_RATE_LIMIT_MS) {
+      this._controller?.outputChannel?.appendLine(
+        '[WingmanViewProvider] clipboard write rate-limited — ignoring burst',
+      );
+      return;
+    }
+    this._lastCopyAt = now;
+    try {
+      await vscode.env.clipboard.writeText(text);
+    } catch (err) {
+      this._controller?.outputChannel?.appendLine(
+        `[WingmanViewProvider] clipboard write failed: ${String(err)}`,
+      );
+    }
+  }
+
+  private async _handleOpenExternal(url: string): Promise<void> {
+    // Basic rate-limit: prevents a compromised webview from spamming browser windows.
+    const now = Date.now();
+    if (now - this._lastOpenExternalAt < OPEN_EXTERNAL_RATE_LIMIT_MS) {
+      this._controller?.outputChannel?.appendLine(
+        '[WingmanViewProvider] openExternal rate-limited — ignoring burst',
+      );
+      return;
+    }
+    this._lastOpenExternalAt = now;
+    try {
+      const uri = vscode.Uri.parse(url, true);
+      await vscode.env.openExternal(uri);
+    } catch (err) {
+      this._controller?.outputChannel?.appendLine(
+        `[WingmanViewProvider] openExternal failed: ${String(err)}`,
+      );
+    }
+  }
 
   private _postMessage(message: HostMessage): void {
     this._view?.webview.postMessage(message);

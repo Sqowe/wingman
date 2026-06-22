@@ -1,25 +1,21 @@
 /**
- * Phase 1 — Transport dev console.
+ * App — root component for Phases 2 + 3.
  *
- * Renders pi events as pretty-printed JSON in a scrollable console,
- * and adds a minimal prompt input so manual prompts can be fired.
- * This entire panel will be replaced by the real chat UI in Phase 2.
+ * Replaces the Phase 1 dev console with:
+ *  - A virtualized MessageList driven by the Zustand store.
+ *  - A Composer with abort support.
+ *  - rAF-coalesced dispatch of streaming deltas (never re-renders per delta).
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 import type { HostMessage, PiStatus } from '@shared/messages';
 import { vscode } from './vscodeApi';
+import { useChatStore } from './store';
+import { MessageList } from './components/MessageList';
+import { Composer } from './components/Composer';
+import type { RpcEvent } from '../../src/agent/transport';
 import './App.css';
 
-const MAX_EVENTS = 50;
-/** Max total bytes retained in the dev console (UTF-8 byte count). */
-const MAX_EVENT_CONSOLE_BYTES = 2_097_152; // 2 MB
-/** Max bytes for a single entry before truncation. */
-const MAX_ENTRY_BYTES = 65_536; // 64 KB
-
-/** UTF-8 byte length of a string — uses TextEncoder for accuracy in the webview. */
-const encoder = new TextEncoder();
-const byteLength = (s: string): number => encoder.encode(s).byteLength;
-
+// Prompt-rejected labels (same as Phase 1).
 const PROMPT_REJECTED_LABELS: Record<string, string> = {
   'rate-limited': 'Sending too fast — please wait a moment.',
   'in-flight':    'A prompt is already in progress.',
@@ -31,22 +27,41 @@ const PROMPT_REJECTED_LABELS: Record<string, string> = {
 export default function App() {
   const [piStatus, setPiStatus] = useState<PiStatus | null>(null);
   const [agentDown, setAgentDown] = useState<string | null>(null);
-  const [events, setEvents] = useState<string[]>([]);
   const [promptError, setPromptError] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState('');
-  const [sending, setSending] = useState(false);
-  const sendTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const consoleEndRef = useRef<HTMLDivElement>(null);
 
-  // Clear both timers on unmount.
+  // Zustand store bindings.
+  const items = useChatStore((s) => s.items);
+  const isStreaming = useChatStore((s) => s.isStreaming);
+  const addUserMessage = useChatStore((s) => s.addUserMessage);
+  const dispatchEvents = useChatStore((s) => s.dispatchEvents);
+
+  // rAF coalescer: buffer incoming agentEvent messages and flush per frame.
+  const pendingEvents = useRef<RpcEvent[]>([]);
+  const rafId = useRef<number | undefined>(undefined);
+
+  const flushEvents = useCallback(() => {
+    rafId.current = undefined;
+    const batch = pendingEvents.current;
+    if (batch.length === 0) return;
+    pendingEvents.current = [];
+    dispatchEvents(batch);
+  }, [dispatchEvents]);
+
+  const scheduleFlush = useCallback(() => {
+    if (rafId.current === undefined) {
+      rafId.current = requestAnimationFrame(flushEvents);
+    }
+  }, [flushEvents]);
+
   useEffect(() => {
     return () => {
-      if (sendTimerRef.current !== undefined) clearTimeout(sendTimerRef.current);
+      if (rafId.current !== undefined) cancelAnimationFrame(rafId.current);
       if (errorTimerRef.current !== undefined) clearTimeout(errorTimerRef.current);
     };
   }, []);
 
+  // Host message listener.
   useEffect(() => {
     vscode.postMessage({ type: 'ready' });
 
@@ -61,41 +76,14 @@ export default function App() {
           setAgentDown(msg.running ? null : (msg.reason ?? 'The agent stopped.'));
           break;
 
-        case 'agentEvent': {
-          let entry = JSON.stringify(msg.event, null, 2);
-          // Truncate oversized individual entries (byte-accurate).
-          if (byteLength(entry) > MAX_ENTRY_BYTES) {
-            // Trim until under the per-entry limit.
-            while (byteLength(entry) > MAX_ENTRY_BYTES && entry.length > 0) {
-              entry = entry.slice(0, Math.floor(entry.length * 0.9));
-            }
-            entry += '\n… [truncated]';
-          }
-          setEvents((prev) => {
-            const next = [...prev, entry];
-            // Drop oldest until within count and byte limits.
-            let totalBytes = next.reduce((sum, e) => sum + byteLength(e), 0);
-            while (
-              next.length > MAX_EVENTS ||
-              totalBytes > MAX_EVENT_CONSOLE_BYTES
-            ) {
-              const dropped = next.shift();
-              if (dropped) totalBytes -= byteLength(dropped);
-            }
-            return next;
-          });
+        case 'agentEvent':
+          pendingEvents.current.push(msg.event as RpcEvent);
+          scheduleFlush();
           break;
-        }
 
         case 'promptRejected': {
           const label = PROMPT_REJECTED_LABELS[msg.reason] ?? 'Prompt rejected.';
           setPromptError(label);
-          setSending(false);
-          if (sendTimerRef.current !== undefined) {
-            clearTimeout(sendTimerRef.current);
-            sendTimerRef.current = undefined;
-          }
-          // Auto-clear the error after 3 s.
           if (errorTimerRef.current !== undefined) clearTimeout(errorTimerRef.current);
           errorTimerRef.current = setTimeout(() => {
             errorTimerRef.current = undefined;
@@ -108,91 +96,57 @@ export default function App() {
 
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, []);
+  }, [scheduleFlush]);
 
-  // Auto-scroll the dev console to the bottom on new events (instant, not
-  // smooth, to avoid continuous layout/paint work during streaming).
-  useEffect(() => {
-    consoleEndRef.current?.scrollIntoView({ behavior: 'auto' });
-  }, [events]);
-
-  const handleSend = () => {
-    const text = prompt.trim();
-    if (!text || sending) return;
-    setPromptError(null);
-    setSending(true);
+  const handleSend = useCallback((text: string) => {
+    addUserMessage(text);
     vscode.postMessage({ type: 'sendPrompt', text });
-    setPrompt('');
-    // Re-enable after a short debounce. The host will send promptRejected if
-    // the message is rejected, which also re-enables the button.
-    sendTimerRef.current = setTimeout(() => {
-      sendTimerRef.current = undefined;
-      setSending(false);
-    }, 500);
-  };
+  }, [addUserMessage]);
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
+  // Measure the available height for the virtualized list.
+  const containerRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const [listHeight, setListHeight] = useState(400);
+  const [listWidth, setListWidth] = useState(300);
+
+  useEffect(() => {
+    const measure = () => {
+      if (!containerRef.current || !composerRef.current) return;
+      const total = containerRef.current.getBoundingClientRect().height;
+      const composerH = composerRef.current.getBoundingClientRect().height;
+      const bannerEls = containerRef.current.querySelectorAll<HTMLElement>('.status-banner');
+      let bannerH = 0;
+      bannerEls.forEach((el) => { bannerH += el.getBoundingClientRect().height; });
+      const w = containerRef.current.getBoundingClientRect().width;
+      setListHeight(Math.max(100, total - composerH - bannerH - 16));
+      setListWidth(Math.max(100, w));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (containerRef.current) ro.observe(containerRef.current);
+    if (composerRef.current) ro.observe(composerRef.current);
+    return () => ro.disconnect();
+  }, [piStatus, agentDown]);
 
   return (
-    <div className="app">
+    <div className="app" ref={containerRef}>
       <PiStatusBanner status={piStatus} />
 
       {agentDown && piStatus?.kind !== 'not-found' && (
         <div className="status-banner status-banner--warning" role="alert">
           <strong>pi stopped.</strong> {agentDown}
-          <br />
-          Send a prompt to restart it.
         </div>
       )}
 
-      {/* ── Dev console ── */}
-      <div className="dev-console" aria-label="Agent event stream" role="log" aria-live="polite">
-        {events.length === 0 ? (
-          <p className="dev-console__empty">
-            No events yet — send a prompt to start.
-          </p>
-        ) : (
-          events.map((entry, i) => (
-            <pre key={i} className="dev-console__entry">
-              {entry}
-            </pre>
-          ))
-        )}
-        <div ref={consoleEndRef} />
-      </div>
+      <MessageList items={items} height={listHeight} width={listWidth} />
 
-      {/* ── Prompt error feedback ── */}
-      {promptError && (
-        <p className="composer__error" role="alert">
-          {promptError}
-        </p>
-      )}
-
-      {/* ── Prompt composer (Phase 1 minimal version) ── */}
-      <div className="composer">
-        <textarea
-          className="composer__input"
-          placeholder="Send a prompt to pi… (Enter to send, Shift+Enter for newline)"
-          value={prompt}
-          rows={3}
-          disabled={piStatus?.kind === 'not-found'}
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={handleKeyDown}
-          aria-label="Prompt input"
+      <div ref={composerRef}>
+        <Composer
+          isStreaming={isStreaming}
+          piStatus={piStatus}
+          promptError={promptError}
+          onSend={handleSend}
         />
-        <button
-          className="composer__send"
-          onClick={handleSend}
-          disabled={!prompt.trim() || sending || piStatus?.kind === 'not-found'}
-          aria-label="Send prompt"
-        >
-          Send
-        </button>
       </div>
     </div>
   );
@@ -202,7 +156,6 @@ function PiStatusBanner({ status }: { status: PiStatus | null }) {
   if (status === null) {
     return <div className="status-banner status-banner--idle">Locating pi…</div>;
   }
-
   if (status.kind === 'not-found') {
     return (
       <div className="status-banner status-banner--error">
@@ -212,7 +165,6 @@ function PiStatusBanner({ status }: { status: PiStatus | null }) {
       </div>
     );
   }
-
   if (status.kind === 'version-warning') {
     return (
       <div className="status-banner status-banner--warning">
@@ -222,7 +174,6 @@ function PiStatusBanner({ status }: { status: PiStatus | null }) {
       </div>
     );
   }
-
   return (
     <div className="status-banner status-banner--ok">
       <strong>pi {status.version}</strong> ready

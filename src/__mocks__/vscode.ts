@@ -31,6 +31,10 @@ export const workspace = {
 
 export const env = {
   openExternal: (_uri: unknown) => Promise.resolve(true),
+  clipboard: {
+    writeText: (_text: string) => Promise.resolve(),
+    readText: () => Promise.resolve(''),
+  },
 };
 
 export const Uri = {

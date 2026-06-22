@@ -1,0 +1,311 @@
+/**
+ * Unit tests for the Zustand chat store reducer (dispatchEvents + actions).
+ *
+ * This is the heart of Phase 2/3 rendering: it folds pi's raw RPC event
+ * stream into typed chat items. Event field names are asserted against pi's
+ * documented contract (rpc.md / json.md, pi 0.79.x):
+ *   - message_update carries `assistantMessageEvent` (text/thinking deltas)
+ *   - tool_execution_* correlate by `toolCallId`; `partialResult`/`result`
+ *     content is an accumulated array of { type:'text', text } blocks
+ *   - tool `result.details` (incl. `patch`) is preserved for the Phase 4 diff
+ */
+import { describe, it, expect, beforeEach } from 'vitest';
+import { useChatStore } from './index';
+import type {
+  AssistantItem,
+  ChatItem,
+  SystemItem,
+  ToolRunItem,
+  UserItem,
+} from './index';
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+type Ev = { type: string; [key: string]: unknown };
+
+/** Dispatch one or more raw events through the reducer in a single batch. */
+function dispatch(...events: Ev[]): void {
+  // Cast: the store types events as RpcEvent ({ type: string; [k]: unknown }).
+  useChatStore.getState().dispatchEvents(events as never);
+}
+
+function items(): ChatItem[] {
+  return useChatStore.getState().items;
+}
+
+function onlyTool(): ToolRunItem {
+  const tools = items().filter((i): i is ToolRunItem => i.itemKind === 'tool');
+  expect(tools).toHaveLength(1);
+  return tools[0];
+}
+
+function onlyAssistant(): AssistantItem {
+  const a = items().filter((i): i is AssistantItem => i.itemKind === 'assistant');
+  expect(a).toHaveLength(1);
+  return a[0];
+}
+
+const textContent = (text: string) => [{ type: 'text', text }];
+
+// Reset the singleton store before each test.
+beforeEach(() => {
+  useChatStore.setState({ items: [], isStreaming: false, _currentAssistantId: null });
+});
+
+// ─── Actions ──────────────────────────────────────────────────────────────────
+
+describe('actions', () => {
+  it('addUserMessage appends a user item with the given text', () => {
+    useChatStore.getState().addUserMessage('hello there');
+    const [item] = items();
+    expect(item.itemKind).toBe('user');
+    expect((item as UserItem).text).toBe('hello there');
+  });
+
+  it('toggleThinking flips a thinking block collapsed flag', () => {
+    dispatch(
+      { type: 'message_start', message: { role: 'assistant' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'thinking_start' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'hmm' } },
+    );
+    const a = onlyAssistant();
+    expect(a.blocks[0]).toMatchObject({ kind: 'thinking', collapsed: true });
+
+    useChatStore.getState().toggleThinking(a.id, 0);
+    const after = onlyAssistant().blocks[0];
+    expect(after).toMatchObject({ kind: 'thinking', collapsed: false });
+  });
+});
+
+// ─── Agent / streaming lifecycle ────────────────────────────────────────────────
+
+describe('agent lifecycle', () => {
+  it('agent_start / agent_end toggle isStreaming', () => {
+    dispatch({ type: 'agent_start' });
+    expect(useChatStore.getState().isStreaming).toBe(true);
+    dispatch({ type: 'agent_end' });
+    expect(useChatStore.getState().isStreaming).toBe(false);
+  });
+});
+
+// ─── Assistant message streaming ────────────────────────────────────────────────
+
+describe('assistant message streaming', () => {
+  it('assembles streamed text deltas, then text_end is authoritative', () => {
+    dispatch(
+      { type: 'message_start', message: { role: 'assistant', timestamp: 111 } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_start' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Hel' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'lo' } },
+    );
+    expect(onlyAssistant().blocks).toEqual([{ kind: 'text', text: 'Hello' }]);
+
+    // text_end overwrites the streamed value with pi's full content.
+    dispatch({ type: 'message_update', assistantMessageEvent: { type: 'text_end', content: 'Hello world' } });
+    expect(onlyAssistant().blocks).toEqual([{ kind: 'text', text: 'Hello world' }]);
+  });
+
+  it('captures thinking deltas and thinking_end content', () => {
+    dispatch(
+      { type: 'message_start', message: { role: 'assistant' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'thinking_start' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'reason' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'thinking_end', thinking: 'reasoned fully' } },
+    );
+    expect(onlyAssistant().blocks).toEqual([
+      { kind: 'thinking', text: 'reasoned fully', collapsed: true },
+    ]);
+  });
+
+  it('does not start an assistant item for a non-assistant message_start', () => {
+    dispatch({ type: 'message_start', message: { role: 'user' } });
+    expect(items()).toHaveLength(0);
+  });
+
+  it('ignores message_update with no active assistant item', () => {
+    dispatch({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'x' } });
+    expect(items()).toHaveLength(0);
+  });
+
+  it('message_end marks complete and rebuilds blocks from authoritative content', () => {
+    dispatch(
+      { type: 'message_start', message: { role: 'assistant' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_start' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'partial' } },
+      {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'because' },
+            { type: 'text', text: 'final answer' },
+          ],
+        },
+      },
+    );
+    const a = onlyAssistant();
+    expect(a.isComplete).toBe(true);
+    expect(a.blocks).toEqual([
+      { kind: 'thinking', text: 'because', collapsed: true },
+      { kind: 'text', text: 'final answer' },
+    ]);
+  });
+
+  it('message_end resets the current assistant id so the next message starts fresh', () => {
+    dispatch(
+      { type: 'message_start', message: { role: 'assistant' } },
+      { type: 'message_end', message: { role: 'assistant', content: textContent('one') } },
+      { type: 'message_start', message: { role: 'assistant' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'two' } },
+    );
+    const assistants = items().filter((i): i is AssistantItem => i.itemKind === 'assistant');
+    expect(assistants).toHaveLength(2);
+    expect(assistants[1].blocks).toEqual([{ kind: 'text', text: 'two' }]);
+  });
+});
+
+// ─── Tool execution ─────────────────────────────────────────────────────────────
+
+describe('tool execution', () => {
+  it('tool_execution_start creates an incomplete tool item with args', () => {
+    dispatch({
+      type: 'tool_execution_start',
+      toolCallId: 'call_1',
+      toolName: 'bash',
+      args: { command: 'ls -la' },
+    });
+    const t = onlyTool();
+    expect(t).toMatchObject({
+      toolCallId: 'call_1',
+      toolName: 'bash',
+      args: { command: 'ls -la' },
+      isComplete: false,
+      isError: false,
+      finalOutput: null,
+      details: null,
+    });
+  });
+
+  it('tool_execution_update replaces (not appends) partial output', () => {
+    dispatch(
+      { type: 'tool_execution_start', toolCallId: 'c', toolName: 'bash', args: {} },
+      { type: 'tool_execution_update', toolCallId: 'c', partialResult: { content: textContent('line 1\n') } },
+      { type: 'tool_execution_update', toolCallId: 'c', partialResult: { content: textContent('line 1\nline 2\n') } },
+    );
+    // Accumulated output from pi is a full snapshot — must replace, not concatenate.
+    expect(onlyTool().partialOutput).toBe('line 1\nline 2\n');
+  });
+
+  it('tool_execution_end sets finalOutput, preserves details.patch, marks complete', () => {
+    const patch = '--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-old\n+new\n';
+    dispatch(
+      { type: 'tool_execution_start', toolCallId: 'e', toolName: 'edit', args: { filePath: '/x.ts' } },
+      {
+        type: 'tool_execution_end',
+        toolCallId: 'e',
+        result: { content: textContent('done'), details: { patch } },
+        isError: false,
+      },
+    );
+    const t = onlyTool();
+    expect(t.isComplete).toBe(true);
+    expect(t.finalOutput).toBe('done');
+    expect(t.details).toEqual({ patch });
+  });
+
+  it('propagates isError from tool_execution_end', () => {
+    dispatch(
+      { type: 'tool_execution_start', toolCallId: 'x', toolName: 'bash', args: {} },
+      { type: 'tool_execution_end', toolCallId: 'x', result: { content: textContent('boom') }, isError: true },
+    );
+    expect(onlyTool().isError).toBe(true);
+  });
+
+  it('correlates events by toolCallId across concurrent tools', () => {
+    dispatch(
+      { type: 'tool_execution_start', toolCallId: 'a', toolName: 'bash', args: {} },
+      { type: 'tool_execution_start', toolCallId: 'b', toolName: 'read', args: {} },
+      { type: 'tool_execution_update', toolCallId: 'b', partialResult: { content: textContent('B-only') } },
+    );
+    const tools = items().filter((i): i is ToolRunItem => i.itemKind === 'tool');
+    expect(tools.find((t) => t.toolCallId === 'a')!.partialOutput).toBe('');
+    expect(tools.find((t) => t.toolCallId === 'b')!.partialOutput).toBe('B-only');
+  });
+
+  it('ignores update / end for an unknown toolCallId without throwing', () => {
+    expect(() =>
+      dispatch(
+        { type: 'tool_execution_update', toolCallId: 'ghost', partialResult: { content: textContent('x') } },
+        { type: 'tool_execution_end', toolCallId: 'ghost', result: { content: textContent('y') }, isError: false },
+      ),
+    ).not.toThrow();
+    expect(items()).toHaveLength(0);
+  });
+});
+
+// ─── System notices ─────────────────────────────────────────────────────────────
+
+describe('system notices', () => {
+  it('compaction_start then compaction_end replaces the notice with the summary', () => {
+    dispatch({ type: 'compaction_start' });
+    expect((items()[0] as SystemItem).text).toBe('Compacting conversation…');
+
+    dispatch({ type: 'compaction_end', result: { summary: 'kept the gist' } });
+    const sys = items().filter((i): i is SystemItem => i.itemKind === 'system');
+    expect(sys).toHaveLength(1);
+    expect(sys[0].text).toBe('Compacted: kept the gist');
+  });
+
+  it('compaction_end aborted reports an aborted notice', () => {
+    dispatch({ type: 'compaction_start' }, { type: 'compaction_end', aborted: true });
+    const sys = items().filter((i): i is SystemItem => i.itemKind === 'system');
+    expect(sys[sys.length - 1].text).toBe('Compaction aborted.');
+  });
+
+  it('auto_retry_start adds a warning; failed auto_retry_end adds an error', () => {
+    dispatch({ type: 'auto_retry_start', attempt: 2, maxAttempts: 5 });
+    dispatch({ type: 'auto_retry_end', success: false, finalError: 'rate limited' });
+    const sys = items().filter((i): i is SystemItem => i.itemKind === 'system');
+    expect(sys[0]).toMatchObject({ level: 'warning', text: 'Retrying (attempt 2 of 5)…' });
+    expect(sys[1]).toMatchObject({ level: 'error', text: 'Failed after retries: rate limited' });
+  });
+
+  it('successful auto_retry_end adds no error item', () => {
+    dispatch({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3 });
+    dispatch({ type: 'auto_retry_end', success: true });
+    const sys = items().filter((i): i is SystemItem => i.itemKind === 'system');
+    expect(sys).toHaveLength(1); // only the "Retrying…" warning
+  });
+});
+
+// ─── Immutability (React change detection) ──────────────────────────────────────
+
+describe('immutability for React change detection', () => {
+  it('replaces the items array and clones mutated items on each batch', () => {
+    dispatch({ type: 'tool_execution_start', toolCallId: 'c', toolName: 'bash', args: {} });
+    const arrBefore = items();
+    const toolBefore = onlyTool();
+
+    dispatch({ type: 'tool_execution_update', toolCallId: 'c', partialResult: { content: textContent('out') } });
+
+    expect(items()).not.toBe(arrBefore); // new array reference
+    expect(onlyTool()).not.toBe(toolBefore); // cloned item reference
+    expect(toolBefore.partialOutput).toBe(''); // original left untouched
+    expect(onlyTool().partialOutput).toBe('out');
+  });
+
+  it('clones the assistant item and its blocks array when a delta arrives', () => {
+    dispatch(
+      { type: 'message_start', message: { role: 'assistant' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'a' } },
+    );
+    const assistantBefore = onlyAssistant();
+    const blocksBefore = assistantBefore.blocks;
+
+    dispatch({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'b' } });
+
+    expect(onlyAssistant()).not.toBe(assistantBefore);
+    expect(onlyAssistant().blocks).not.toBe(blocksBefore);
+    expect(onlyAssistant().blocks).toEqual([{ kind: 'text', text: 'ab' }]);
+  });
+});

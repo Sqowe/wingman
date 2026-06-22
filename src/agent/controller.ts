@@ -82,6 +82,27 @@ export class AgentController implements vscode.Disposable {
   }
 
   /**
+   * Send an abort command to pi (stops the current turn).
+   * Silently no-ops when the transport is not running.
+   *
+   * `isRunning` is defined on the `AgentTransport` interface (transport.ts) and
+   * accurately reflects whether the underlying process is alive and ready to
+   * accept commands. Abort during transport startup (before isRunning = true)
+   * is intentionally a no-op — pi has not yet accepted any prompt to abort.
+   */
+  public async sendAbort(): Promise<void> {
+    if (!this._transport?.isRunning) {
+      this._outputChannel.appendLine('[AgentController] sendAbort: transport not running, ignoring');
+      return;
+    }
+    try {
+      await this._transport.send({ type: 'abort' });
+    } catch (err) {
+      this._outputChannel.appendLine(`[AgentController] sendAbort failed: ${String(err)}`);
+    }
+  }
+
+  /**
    * Send a prompt string to pi.
    * If the transport is not yet running, attempts a late start first.
    */

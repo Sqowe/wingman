@@ -87,7 +87,9 @@
     "watch:host": "node esbuild.mjs --watch",
     "watch:webview": "npm --prefix webview-ui run dev",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "npm run test:host && npm run test:webview",
+    "test:host": "vitest run",
+    "test:webview": "npm --prefix webview-ui run test",
     "vscode:prepublish": "npm run build",
     "vsce:package": "vsce package"
   },

@@ -6,6 +6,9 @@
  *
  * Always add new message types here; never send ad-hoc, untyped payloads across
  * the postMessage boundary.
+ *
+ * Shared numeric limits (MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES, …) live in
+ * `src/shared/limits.ts` — import from there, not here.
  */
 
 // ─── Shared types ────────────────────────────────────────────────────────────
@@ -74,11 +77,47 @@ export interface ReadyMessage {
   type: 'ready';
 }
 
-/** Sent by the webview when the user submits a prompt (Phase 1 dev console). */
+/** Sent by the webview when the user submits a prompt. */
 export interface SendPromptMessage {
   type: 'sendPrompt';
   text: string;
 }
 
+/**
+ * Sent by the webview when the user clicks a copy button.
+ * The host writes `text` to the system clipboard via `vscode.env.clipboard`.
+ * Hard-limited to MAX_CLIPBOARD_BYTES (from limits.ts) on both sides.
+ */
+export interface CopyToClipboardMessage {
+  type: 'copyToClipboard';
+  text: string;
+}
+
+/**
+ * Sent by the webview when the user clicks the abort (stop) button.
+ * The host forwards an `abort` command to the active transport.
+ *
+ * Named `abortTurn` (not `abort`) to avoid semantic confusion with the
+ * lower-level transport `{ type: 'abort' }` RPC command in logs and traces.
+ */
+export interface AbortTurnMessage {
+  type: 'abortTurn';
+}
+
+/**
+ * Sent by the webview when the user clicks a link in assistant output.
+ * The host opens the URL via `vscode.env.openExternal` after validating
+ * the scheme (only http / https / mailto are forwarded).
+ */
+export interface OpenExternalMessage {
+  type: 'openExternal';
+  url: string;
+}
+
 /** Union of every message the webview can send to the host. */
-export type WebviewMessage = ReadyMessage | SendPromptMessage;
+export type WebviewMessage =
+  | ReadyMessage
+  | SendPromptMessage
+  | CopyToClipboardMessage
+  | AbortTurnMessage
+  | OpenExternalMessage;
