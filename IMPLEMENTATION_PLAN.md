@@ -25,7 +25,7 @@ wires pi's `edit` tool into VS Code's real diff editor.
 | Git repo name | `sqowe-wingman` (or `wingman` if hosted under a `sqowe` GitHub org) |
 | Branding / IP | Brand is **Sqowe-only**. pi is credited **descriptively** ("A VS Code client for the pi coding agent"), never absorbed into the product name. pi is MIT-licensed (author Mario Zechner, `github.com/earendil-works/pi`); ship pi's MIT copyright + license notice in the distribution. Do **not** reuse pi's logo or `pi.dev` branding. MIT grants no trademark rights, so keep "pi" out of the brand name. |
 | Transport to pi | **RPC sidecar** — spawn `pi --mode rpc` as a child process. Kept behind an `AgentTransport` interface so an in-process SDK adapter can be added later. |
-| pi acquisition | Detect a globally-installed `pi` → fall back to a bundled, pinned version → allow override via `sqoweWingman.piExecutablePath`. |
+| pi acquisition | **The user must have pi installed** — pi is **not** bundled (it has native deps; bundling would reintroduce per-platform builds and undermine the universal-VSIX/no-native-binaries design, and a separately pinned pi would drift from the user's shared CLI config). Resolve via `sqoweWingman.piExecutablePath` → `pi` on `PATH` (plus common npm-global / Homebrew bin dirs, since GUI-launched VS Code may not inherit the login-shell `PATH`). Run a version check against the declared minimum — **tested against pi `0.79.9`** (as of 2026-06-22) — and **warn (non-blocking)** if older. If unresolved, show a clear install prompt. |
 | Webview UI stack | React + Vite + Zustand (mirrors the Sqowe Pilot / Open Cowork renderer). |
 | UI surface / placement | A **`WebviewView`** in a dedicated **activity-bar** view container (Cline / Continue model), **not** an editor-tab `WebviewPanel`. Dockable: defaults to the primary (left) side bar; the user can drag it to the secondary (right) side bar or the bottom panel. Onboarding suggests moving it to the right side bar so Source Control (git) stays visible on the left. A bottom-panel default (`contributes.viewsContainers.panel`) is the fallback if zero-setup dual-view matters more than chat height. |
 | Marketplace target | A single **universal VSIX** (the RPC sidecar means no native binaries are bundled, so no per-platform builds are required). |
@@ -91,7 +91,7 @@ sqowe-wingman/
 │   ├── agent/
 │   │   ├── transport.ts      # AgentTransport interface
 │   │   ├── rpc-transport.ts  # spawn pi, JSONL framing, request/response correlation
-│   │   ├── pi-locator.ts     # find global pi / bundled / configured path
+│   │   ├── pi-locator.ts     # resolve pi: configured path / PATH; version check
 │   │   └── controller.ts     # owns session lifecycle, fans events to the webview
 │   ├── commands/             # native command handlers (model, compact, new, fork…)
 │   ├── diff/diff-service.ts  # patch → vscode.diff / WorkspaceEdit
@@ -129,7 +129,7 @@ stack and is a compelling demo.
 
 | Phase | Goal | Key VS Code / pi APIs | Done when |
 | --- | --- | --- | --- |
-| **0 — Scaffold** | Extension activates, empty sidebar view, dual build pipeline, pi located | `contributes.viewsContainers/views`, `registerWebviewViewProvider`, `asWebviewUri`, CSP | Activity-bar icon opens an empty panel; `pi --version` resolves |
+| **0 — Scaffold** | Extension activates, empty sidebar view, dual build pipeline, pi located | `contributes.viewsContainers/views`, `registerWebviewViewProvider`, `asWebviewUri`, CSP | Activity-bar icon opens an empty panel; `pi --version` resolves (or a clear install prompt is shown when pi is missing) |
 | **1 — Transport** | Spawn `pi --mode rpc`, JSONL client, event→webview bridge | `child_process`, custom LF reader (no `readline`), `webview.postMessage` | Events from a manual `prompt` appear in a dev console in the webview |
 | **2 — Core chat** | Composer sends prompt; stream assistant text + thinking; abort | `prompt` / `abort`; `message_update` text/thinking deltas | Full text round-trip with a stop button |
 | **3 — Tool cards** | Render `tool_execution_*`; bash output; copy buttons (clean source) | tool events; `vscode.env.clipboard` | Tool runs show live output cards with working copy |
@@ -248,8 +248,8 @@ against Electron's ABI).
 
 | Risk | Mitigation |
 | --- | --- |
-| pi pre-1.0 API churn | Use RPC (stabler than the SDK); pin a tested pi version; isolate behind `AgentTransport` |
-| pi not installed / wrong version | `pi-locator`: detect global → bundled pinned fallback → `sqoweWingman.piExecutablePath`; clear onboarding error |
+| pi pre-1.0 API churn | Use RPC (stabler than the SDK); declare a tested minimum pi version and version-check at startup; isolate behind `AgentTransport` |
+| pi not installed / wrong version | `pi-locator`: resolve `sqoweWingman.piExecutablePath` → `PATH` (+ common bin dirs); `pi --version` check warns (non-blocking) below the declared minimum; clear install/onboarding prompt when unresolved. pi is not bundled (keeps the universal VSIX native-binary-free and the version in sync with the user's shared CLI config) |
 | Multi-root workspace ambiguity | Explicit folder picker; one agent process per active folder |
 | Concurrent CLI + extension writes | Sessions are separate files (safe); rely on pi's `proper-lockfile`; avoid simultaneous settings writes |
 | Long sessions / large diffs | List virtualization; lazy-render big patches; cap inline diff size, offer "open in diff editor" |

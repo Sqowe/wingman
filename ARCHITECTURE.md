@@ -94,7 +94,8 @@ Config is shared with the CLI by default (no dir overrides); sessions are writte
 
 ## 6. Configuration & Environment Assumptions
 
-- pi resolved via global install → bundled pinned version → `sqoweWingman.piExecutablePath`.
+- pi must be user-installed (not bundled); resolved via `sqoweWingman.piExecutablePath` → `pi` on
+  `PATH`, with a non-blocking version-check warning below the declared minimum.
 - Extension settings under the `sqoweWingman.*` namespace.
 - Shared config roots: `~/.pi/agent/` (global) and `<workspace>/.pi/` (project, gated by pi's
   project-trust flow).

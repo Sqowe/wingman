@@ -29,8 +29,11 @@ sits; this file is the coding contract. RPC protocol rules live in [AI_PI_RPC.md
   added later. UI and command code depend on the **interface**, never on the concrete transport.
 - Spawn pi with `cwd` = the active workspace folder and **no** `--agent-dir` / `--session-dir`
   overrides (config is shared with the pi CLI by default).
-- Resolve the pi executable via `pi-locator`: global install → bundled pinned version →
-  `sqoweWingman.piExecutablePath`. One pi process per active workspace folder.
+- pi is **not bundled** — the user must have it installed. Resolve the executable via
+  `pi-locator`: `sqoweWingman.piExecutablePath` → `pi` on `PATH` (also probe common npm-global /
+  Homebrew bin dirs, because GUI-launched VS Code may not inherit the login-shell `PATH`). Run a
+  `pi --version` check and **warn without blocking** when below the declared minimum; show a clear
+  install prompt when nothing resolves. One pi process per active workspace folder.
 
 ## Diff service
 
