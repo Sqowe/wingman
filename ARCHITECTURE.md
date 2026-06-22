@@ -7,10 +7,10 @@ extension that is a graphical front-end over the pi coding agent
 (`@earendil-works/pi-coding-agent`). It is the architectural source of truth: what the components
 are, how they connect, and which parts are stable vs. likely to change.
 
-> Status: **pre-implementation (Phase 0 not yet started).** No application code exists yet, so this
-> describes the **target** architecture agreed in [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md),
-> which remains the authoritative, detailed plan. Update this file to reflect the code **as-is** as
-> each phase lands — do not describe imagined structure.
+> Status: **Phases 0–1 complete** (2026-06-22). The extension host, webview, pi locator, and the RPC
+> transport + event→webview bridge are implemented; the remaining phases follow
+> [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md), the authoritative, detailed plan. This file is
+> kept in sync with the code **as-is** as each phase lands — it does not describe unbuilt structure.
 
 This document does **not** define coding rules — see §8.
 
@@ -49,8 +49,8 @@ Three runtime pieces:
 
 Target layout (see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) §3 for detail):
 
-- `/src` — extension host (Node): `extension.ts`, `agent/`, `commands/`, `diff/`, `ui-protocol/`,
-  `webview/`, `shared/`.
+- `/src` — extension host (Node): `extension.ts`, plus `agent/`, `webview/`, and `shared/` (present
+  as of Phase 1); `commands/`, `diff/`, and `ui-protocol/` arrive in later phases.
 - `/webview-ui` — React app (Vite): `components/`, `store/`, `main.tsx`.
 - `/media` — activity-bar icon and static assets.
 - `/docs` — design docs; `docs/chats/` holds prior implementation conversations.
@@ -71,8 +71,9 @@ the bottom panel. Coding rules: [AI_WEBVIEW.md](AI_WEBVIEW.md).
 
 ### 4.3 Agent Transport / pi Sidecar
 The RPC client that spawns `pi --mode rpc`, frames JSONL, correlates commands with responses, and
-emits the render event stream. The only `AgentTransport` implementation for v1. Coding rules:
-[AI_PI_RPC.md](AI_PI_RPC.md).
+emits the render event stream. Implemented in Phase 1 as `RpcTransport` (id-correlated
+request/response, an `onEvent` render stream, and an `onClose` signal for unexpected exits); the only
+`AgentTransport` implementation for v1. Coding rules: [AI_PI_RPC.md](AI_PI_RPC.md).
 
 ### 4.4 External Integrations
 - **pi** (`@earendil-works/pi-coding-agent`, MIT) — the agent engine, run as an RPC sidecar.
@@ -94,8 +95,9 @@ Config is shared with the CLI by default (no dir overrides); sessions are writte
 
 ## 6. Configuration & Environment Assumptions
 
-- pi must be user-installed (not bundled); resolved via `sqoweWingman.piExecutablePath` → `pi` on
-  `PATH`, with a non-blocking version-check warning below the declared minimum.
+- pi must be user-installed (not bundled); resolved via `sqoweWingman.piExecutablePath`, else the
+  user's login-shell `PATH` + `which` + common/nvm bin dirs, choosing the highest version found, with
+  a non-blocking version-check warning below the declared minimum.
 - Extension settings under the `sqoweWingman.*` namespace.
 - Shared config roots: `~/.pi/agent/` (global) and `<workspace>/.pi/` (project, gated by pi's
   project-trust flow).
