@@ -1,35 +1,43 @@
 /**
  * WingmanViewProvider — registers and manages the chat WebviewView.
  *
- * Responsibilities in Phase 0:
- *  - Serve the React app with a strict per-load nonce CSP.
- *  - Bridge the pi status from the host to the webview once the webview is ready.
- *
- * Later phases will add event forwarding, prompt sending, etc.
+ * Phase 1 additions:
+ *  - Accept an AgentController ref so events can be forwarded to the webview.
+ *  - Handle `sendPrompt` messages from the webview.
+ *  - Expose `postAgentEvent()` for the controller to call.
  */
 
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
+import type { AgentController } from '../agent/controller';
 import type { HostMessage, PiStatus, WebviewMessage } from '../shared/messages';
+import type { RpcEvent } from '../agent/transport';
+import { MAX_PROMPT_BYTES } from '../shared/limits';
+
+/** Maximum ms between accepted prompts (simple rate-limit). */
+const PROMPT_RATE_LIMIT_MS = 500;
 
 export class WingmanViewProvider implements vscode.WebviewViewProvider {
   /** Must match the `id` in package.json contributes.views. */
   public static readonly viewType = 'sqoweWingman.chat';
 
   private _view?: vscode.WebviewView;
-
-  /** True once the webview has sent `ready` and is listening for messages. */
   private _webviewReady = false;
-
-  /**
-   * The most recent pi status. Retained across view hide/dispose so it can be
-   * (re)delivered to any webview that becomes ready — including after the view
-   * is moved between containers and re-resolved.
-   */
   private _lastPiStatus?: PiStatus;
-
-  /** Listeners tied to the current webview; disposed when the view is disposed. */
+  /** Last agent liveness reported by the controller — replayed on (re)ready. */
+  private _lastAgentStatus?: { running: boolean; reason?: string };
   private _viewDisposables: vscode.Disposable[] = [];
+  private _controller?: AgentController;
+  /** Bounded buffer of events received before the webview signals `ready`. */
+  private _pendingEvents: Array<{ event: RpcEvent; bytes: number }> = [];
+  /** Total byte size of buffered events. */
+  private _pendingEventBytes = 0;
+  private static readonly _MAX_PENDING_EVENTS = 20;
+  private static readonly _MAX_PENDING_EVENT_BYTES = 512_000; // 512 KB total
+  /** Timestamp of the last accepted sendPrompt — for basic rate-limiting. */
+  private _lastPromptAt = 0;
+  /** True while a prompt is in-flight — prevents concurrent sends. */
+  private _promptInFlight = false;
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -46,55 +54,113 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [
-        // Built React app
         vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview'),
-        // Static assets (icon, etc.)
         vscode.Uri.joinPath(this._extensionUri, 'media'),
       ],
     };
 
     webviewView.webview.html = this._buildHtml(webviewView.webview);
 
-    // Gate host→webview delivery on the `ready` handshake — not merely on the
-    // view existing. `_view` is set synchronously above, long before the React
-    // app mounts and attaches its `message` listener, so posting on `_view`
-    // alone can drop messages. We post only after `ready`, and replay the last
-    // status so nothing is lost regardless of ordering.
     this._viewDisposables.push(
       webviewView.webview.onDidReceiveMessage((message: WebviewMessage) => {
-        if (message.type === 'ready') {
-          this._webviewReady = true;
-          if (this._lastPiStatus !== undefined) {
-            this._postMessage({ type: 'piStatus', status: this._lastPiStatus });
-          }
+        switch (message.type) {
+          case 'ready':
+            this._webviewReady = true;
+            if (this._lastPiStatus !== undefined) {
+              this._postMessage({ type: 'piStatus', status: this._lastPiStatus });
+            }
+            if (this._lastAgentStatus !== undefined) {
+              this._postMessage({
+                type: 'agentStatus',
+                running: this._lastAgentStatus.running,
+                reason: this._lastAgentStatus.reason,
+              });
+            }
+            // Flush buffered events that arrived before the webview was ready.
+            for (const { event } of this._pendingEvents) {
+              this._postMessage({
+                type: 'agentEvent',
+                event: event as Record<string, unknown>,
+              });
+            }
+            this._pendingEvents = [];
+            this._pendingEventBytes = 0;
+            break;
+
+          case 'sendPrompt':
+            void this._handleSendPrompt(message.text);
+            break;
         }
       }),
     );
 
-    // Tie listener cleanup to the view's lifetime: when the view is closed or
-    // moved between containers (triggering a re-resolve), drop the stale
-    // listeners so they don't accumulate.
     webviewView.onDidDispose(() => {
       this._webviewReady = false;
       this._view = undefined;
-      while (this._viewDisposables.length > 0) {
-        this._viewDisposables.pop()?.dispose();
-      }
+      this._pendingEvents = [];
+      this._pendingEventBytes = 0;
+      for (const d of this._viewDisposables) d.dispose();
+      this._viewDisposables = [];
     });
   }
 
   // ─── Public host → webview API ────────────────────────────────────────────
 
-  /**
-   * Called by the host once locatePi() resolves. The status is stored and sent
-   * as soon as the webview signals `ready`; if it is already ready it is sent
-   * immediately. Safe to call before or after the view is resolved.
-   */
+  public setController(controller: AgentController): void {
+    this._controller = controller;
+  }
+
   public setPiStatus(status: PiStatus): void {
     this._lastPiStatus = status;
     if (this._webviewReady) {
       this._postMessage({ type: 'piStatus', status });
     }
+  }
+
+  /**
+   * Called by AgentController to report agent-transport liveness. A
+   * `running: false` after a successful start means pi exited/crashed.
+   */
+  public postAgentStatus(status: { running: boolean; reason?: string }): void {
+    this._lastAgentStatus = status;
+    if (this._webviewReady) {
+      this._postMessage({
+        type: 'agentStatus',
+        running: status.running,
+        reason: status.reason,
+      });
+    }
+  }
+
+  /**
+   * Called by AgentController for every pi event received from the transport.
+   * Forwards the raw event to the webview for rendering.
+   */
+  public postAgentEvent(event: RpcEvent): void {
+    // Serialize once for byte-accounting and forwarding.
+    const serialized = JSON.stringify(event);
+    const byteSize = Buffer.byteLength(serialized, 'utf8');
+
+    if (!this._webviewReady) {
+      // Drop oldest entries to stay within both count and byte limits (O(1) per entry).
+      while (
+        this._pendingEvents.length > 0 &&
+        (
+          this._pendingEvents.length >= WingmanViewProvider._MAX_PENDING_EVENTS ||
+          this._pendingEventBytes + byteSize > WingmanViewProvider._MAX_PENDING_EVENT_BYTES
+        )
+      ) {
+        const dropped = this._pendingEvents.shift();
+        if (dropped) this._pendingEventBytes -= dropped.bytes;
+      }
+      this._pendingEvents.push({ event, bytes: byteSize });
+      this._pendingEventBytes += byteSize;
+      return;
+    }
+    this._postMessage({
+      type: 'agentEvent',
+      event: event as Record<string, unknown>,
+    });
   }
 
   // ─── Internals ────────────────────────────────────────────────────────────
@@ -103,8 +169,56 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage(message);
   }
 
+  private async _handleSendPrompt(text: string): Promise<void> {
+    if (!this._controller) return;
+
+    // Validate: must be a non-empty string.
+    if (typeof text !== 'string' || text.trim().length === 0) return;
+
+    // Length guard — prevent oversized payloads from the webview.
+    if (Buffer.byteLength(text, 'utf8') > MAX_PROMPT_BYTES) {
+      void vscode.window.showWarningMessage(
+        `Sqowe Wingman: prompt exceeds the maximum allowed size (${MAX_PROMPT_BYTES} bytes).`,
+      );
+      this._postMessage({ type: 'promptRejected', reason: 'too-large' });
+      return;
+    }
+
+    // Busy gate: pi rejects a plain prompt while a turn is streaming. Until
+    // Phase 2 adds steer / follow-up queueing, reject cleanly instead of
+    // letting pi return an error. (Checked first so 'busy' is the clearest
+    // feedback the user sees.)
+    if (this._controller.isStreaming) {
+      this._postMessage({ type: 'promptRejected', reason: 'busy' });
+      return;
+    }
+
+    // Rate limit: reject if the last prompt was accepted too recently.
+    const now = Date.now();
+    if (now - this._lastPromptAt < PROMPT_RATE_LIMIT_MS) {
+      this._postMessage({ type: 'promptRejected', reason: 'rate-limited' });
+      return;
+    }
+
+    // In-flight gate: only one prompt at a time.
+    if (this._promptInFlight) {
+      this._postMessage({ type: 'promptRejected', reason: 'in-flight' });
+      return;
+    }
+
+    this._lastPromptAt = now;
+    this._promptInFlight = true;
+    try {
+      await this._controller.sendPrompt(text);
+    } catch (err) {
+      void vscode.window.showErrorMessage(String(err));
+      this._postMessage({ type: 'promptRejected', reason: 'error' });
+    } finally {
+      this._promptInFlight = false;
+    }
+  }
+
   private _buildHtml(webview: vscode.Webview): string {
-    // Fresh cryptographic nonce on every view resolution.
     const nonce = crypto.randomBytes(16).toString('base64');
 
     const scriptUri = webview.asWebviewUri(
@@ -114,12 +228,6 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
       vscode.Uri.joinPath(this._extensionUri, 'dist', 'webview', 'assets', 'main.css'),
     );
 
-    // Strict CSP:
-    //  - default-src 'none'  — deny everything not explicitly listed
-    //  - img-src              — allow images from the webview's local origin + https
-    //  - style-src            — only the Vite-built stylesheet, served from the
-    //                           webview's local origin (no inline styles)
-    //  - script-src           — only scripts carrying this nonce
     const csp = [
       `default-src 'none'`,
       `img-src ${webview.cspSource} https:`,

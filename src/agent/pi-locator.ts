@@ -1,13 +1,21 @@
 /**
  * Locates the pi executable and checks its version.
  *
- * Resolution order:
- *  1. sqoweWingman.piExecutablePath setting (if set)
- *  2. `pi` on the inherited PATH  (via `which` / `where`)
- *  3. Common install directories that may not be in a GUI-launched VS Code PATH
- *     (npm global, Homebrew, Volta, ~/.local/bin)
+ * Resolution strategy:
+ *  1. sqoweWingman.piExecutablePath setting — an explicit choice always wins
+ *     (used as-is regardless of version; a low version still warns).
+ *  2. Auto-detection gathers candidates from ALL of these sources, then picks
+ *     the one with the highest pi version (so a stale install on PATH never
+ *     shadows a newer one — the common nvm "two node versions" case):
+ *       a. the user's login shell PATH (`$SHELL -lic 'command -v pi'`) — this is
+ *          what their terminal would resolve, including version-manager defaults
+ *          that a GUI-launched VS Code does not inherit;
+ *       b. `pi` on the inherited PATH (`which` / `where`);
+ *       c. common install dirs + every nvm `versions/node/<ver>/bin` dir, which
+ *          a GUI-launched VS Code's PATH typically omits.
  *
- * Returns a PiStatus that the host forwards to the webview.
+ * Never throws — any failure is expressed as `{ kind: 'not-found' }`. All
+ * discovery steps are best-effort and log to the optional logger.
  */
 
 import * as vscode from 'vscode';
@@ -23,9 +31,13 @@ const execFileAsync = promisify(execFile);
 /** Minimum pi version that has been tested with this extension. */
 export const PI_MINIMUM_VERSION = '0.79.9';
 
+/** Optional diagnostics sink (wired to the extension's output channel). */
+export type LocatorLog = (message: string) => void;
+
 /**
- * Extra directories to probe when VS Code is launched from a GUI launcher
- * and the login-shell PATH is not inherited.
+ * Static directories to probe when VS Code is launched from a GUI launcher and
+ * the login-shell PATH is not inherited. nvm's versioned dirs are added
+ * dynamically (see findNvmBinDirs) because they are not at a fixed path.
  */
 const EXTRA_BIN_DIRS: readonly string[] = [
   path.join(os.homedir(), '.npm-global', 'bin'),
@@ -91,8 +103,38 @@ async function getPiVersion(execPath: string): Promise<string | null> {
 }
 
 /**
+ * Resolves `pi` the way the user's interactive terminal would, by asking their
+ * login shell. This captures version-manager defaults (nvm/fnm/asdf) that are
+ * configured in shell rc files and therefore missing from a GUI-launched VS
+ * Code's inherited PATH. POSIX-only; Windows uses `where` (see findPiOnPath).
+ */
+async function findPiViaLoginShell(log: LocatorLog): Promise<string | null> {
+  if (process.platform === 'win32') return null;
+  const shell = process.env.SHELL;
+  if (!shell) return null;
+  try {
+    // -l (login) + -i (interactive) source profile/rc where nvm et al. live.
+    const { stdout } = await execFileAsync(shell, ['-lic', 'command -v pi'], {
+      timeout: 5_000,
+    });
+    // Interactive shells can emit banner/job-control noise — scan for the first
+    // line that is an absolute path to an executable.
+    for (const raw of stdout.split('\n')) {
+      const line = raw.trim();
+      if (line.startsWith('/') && (await isExecutable(line))) {
+        return line;
+      }
+    }
+  } catch {
+    // shell missing / timed out / pi not found — fall through to other sources
+  }
+  log('[pi-locator] login shell did not resolve pi');
+  return null;
+}
+
+/**
  * Tries to find `pi` via the shell's `which` (macOS/Linux) or `where` (Windows).
- * This respects the PATH that was actually inherited by the extension host process.
+ * This respects the PATH that was actually inherited by the extension host.
  */
 async function findPiOnPath(): Promise<string | null> {
   const cmd = process.platform === 'win32' ? 'where' : 'which';
@@ -109,18 +151,50 @@ async function findPiOnPath(): Promise<string | null> {
 }
 
 /**
- * Probes the extra directories for a `pi` binary that `which` may have missed
- * because VS Code was not launched from a login shell.
+ * Returns every `versions/node/<ver>/bin` directory under the nvm install.
+ * nvm injects the active version's bin into PATH via shell rc, so a
+ * GUI-launched VS Code never sees it; probing the dirs recovers those installs.
  */
-async function findPiInExtraDirs(): Promise<string | null> {
+async function findNvmBinDirs(): Promise<string[]> {
+  const nvmDir = process.env.NVM_DIR ?? path.join(os.homedir(), '.nvm');
+  const versionsDir = path.join(nvmDir, 'versions', 'node');
+  try {
+    const entries = await fsp.readdir(versionsDir);
+    return entries.map((e) => path.join(versionsDir, e, 'bin'));
+  } catch {
+    return []; // no nvm install
+  }
+}
+
+/**
+ * Probes the static install dirs plus every nvm node bin dir for a `pi` binary
+ * that `which` may have missed (GUI-launched VS Code without a login-shell PATH).
+ * Returns ALL matches — the caller version-checks and picks the newest.
+ */
+async function findPiInProbeDirs(): Promise<string[]> {
   const binary = process.platform === 'win32' ? 'pi.cmd' : 'pi';
-  for (const dir of EXTRA_BIN_DIRS) {
+  const dirs = [...EXTRA_BIN_DIRS, ...(await findNvmBinDirs())];
+  const found: string[] = [];
+  for (const dir of dirs) {
     const candidate = path.join(dir, binary);
     if (await isExecutable(candidate)) {
-      return candidate;
+      found.push(candidate);
     }
   }
-  return null;
+  return found;
+}
+
+/** Builds the PiStatus for a resolved path + version (warns below the minimum). */
+function statusFor(execPath: string, version: string): PiStatus {
+  if (compareSemver(version, PI_MINIMUM_VERSION) < 0) {
+    return {
+      kind: 'version-warning',
+      version,
+      path: execPath,
+      minimum: PI_MINIMUM_VERSION,
+    };
+  }
+  return { kind: 'found', version, path: execPath };
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -128,16 +202,26 @@ async function findPiInExtraDirs(): Promise<string | null> {
 /**
  * Resolves the pi executable and returns its status.
  *
- * Never throws — any failure is expressed as `{ kind: 'not-found' }`.
+ * @param log Optional diagnostics sink; receives the candidate list and choice.
  */
-export async function locatePi(): Promise<PiStatus> {
+export async function locatePi(log: LocatorLog = () => {}): Promise<PiStatus> {
   const config = vscode.workspace.getConfiguration('sqoweWingman');
   const configured = expandHome(config.get<string>('piExecutablePath', '').trim());
 
-  // Build the candidate list in priority order; deduplicate.
+  // 1. An explicit setting always wins — respect the user's choice as-is.
+  if (configured) {
+    const version = await getPiVersion(configured);
+    if (version !== null) {
+      log(`[pi-locator] using configured piExecutablePath: ${configured} (v${version})`);
+      return statusFor(configured, version);
+    }
+    log(`[pi-locator] configured piExecutablePath is not a valid pi binary, ignoring: ${configured}`);
+    // fall through to auto-detection
+  }
+
+  // 2. Gather candidates from all sources concurrently, then dedup.
   const seen = new Set<string>();
   const candidates: string[] = [];
-
   const push = (p: string | null): void => {
     if (p && !seen.has(p)) {
       seen.add(p);
@@ -145,25 +229,45 @@ export async function locatePi(): Promise<PiStatus> {
     }
   };
 
-  if (configured) push(configured);
-  push(await findPiOnPath());
-  push(await findPiInExtraDirs());
+  const [shellPath, whichPath, probePaths] = await Promise.all([
+    findPiViaLoginShell(log),
+    findPiOnPath(),
+    findPiInProbeDirs(),
+  ]);
+  push(shellPath);
+  push(whichPath);
+  for (const p of probePaths) push(p);
 
-  for (const candidate of candidates) {
-    const version = await getPiVersion(candidate);
-    if (version === null) {
-      continue; // not a valid pi binary — try next
+  // 3. Version every candidate (in parallel); drop invalid ones.
+  const versioned = await Promise.all(
+    candidates.map(async (p) => ({ path: p, version: await getPiVersion(p) })),
+  );
+  const resolved: Array<{ path: string; version: string }> = [];
+  for (const v of versioned) {
+    if (v.version === null) {
+      log(`[pi-locator] skipping invalid/non-pi candidate: ${v.path}`);
+    } else {
+      resolved.push({ path: v.path, version: v.version });
     }
-    if (compareSemver(version, PI_MINIMUM_VERSION) < 0) {
-      return {
-        kind: 'version-warning',
-        version,
-        path: candidate,
-        minimum: PI_MINIMUM_VERSION,
-      };
-    }
-    return { kind: 'found', version, path: candidate };
   }
 
-  return { kind: 'not-found' };
+  if (resolved.length === 0) {
+    log('[pi-locator] no pi executable found (login shell, PATH, or probe dirs).');
+    return { kind: 'not-found' };
+  }
+
+  // 4. Pick the highest version so a stale install never shadows a newer one.
+  resolved.sort((a, b) => compareSemver(b.version, a.version));
+  const best = resolved[0];
+
+  if (resolved.length > 1) {
+    log('[pi-locator] multiple pi installs found:');
+    for (const r of resolved) {
+      log(`  - ${r.path} (v${r.version})${r === best ? '  ← selected (highest version)' : ''}`);
+    }
+  } else {
+    log(`[pi-locator] resolved pi: ${best.path} (v${best.version})`);
+  }
+
+  return statusFor(best.path, best.version);
 }

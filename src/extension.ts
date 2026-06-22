@@ -1,31 +1,43 @@
 /**
  * Extension entry point.
  *
- * Phase 0 responsibilities:
- *  - Register the chat WebviewView provider.
- *  - Locate pi asynchronously and surface its status (never block activation).
- *  - Register Phase 0 command stubs (wired to real RPC in later phases).
+ * Phase 1 additions:
+ *  - Instantiate AgentController and wire it to the provider.
+ *  - Start the transport once pi is located.
+ *  - Stop the transport on deactivation.
  */
 
 import * as vscode from 'vscode';
 import { WingmanViewProvider } from './webview/provider';
+import { AgentController } from './agent/controller';
 import { locatePi } from './agent/pi-locator';
 
+// Module-level controller so deactivate() can dispose it.
+let _controller: AgentController | undefined;
+
 export function activate(context: vscode.ExtensionContext): void {
+  // ── Controller ────────────────────────────────────────────────────────────
+  const controller = new AgentController();
+  _controller = controller;
+  // Push into subscriptions so VS Code cleans it up if deactivate() is not
+  // called (e.g., reload, test harness). AgentController.dispose() is
+  // idempotent, so the explicit deactivate() call is safe too.
+  context.subscriptions.push(controller);
+
   // ── WebviewView provider ──────────────────────────────────────────────────
   const provider = new WingmanViewProvider(context.extensionUri);
+  provider.setController(controller);
+  controller.setProvider(provider);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       WingmanViewProvider.viewType,
       provider,
-      // Keep the React app alive when the view is hidden so streaming state
-      // is not lost on every panel switch.
       { webviewOptions: { retainContextWhenHidden: true } },
     ),
   );
 
-  // ── Command stubs (Phase 0) ───────────────────────────────────────────────
+  // ── Commands ──────────────────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand('sqoweWingman.newSession', () => {
       // Phase 2: will send new_session RPC command.
@@ -35,14 +47,24 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
 
     vscode.commands.registerCommand('sqoweWingman.focusChat', () => {
-      // Focus the activity-bar view programmatically.
-      vscode.commands.executeCommand('sqoweWingman.chat.focus');
+      void vscode.commands.executeCommand('sqoweWingman.chat.focus');
     }),
   );
 
-  // ── Locate pi (non-blocking) ──────────────────────────────────────────────
-  // Run after activation returns so we never delay VS Code startup.
-  void locatePi().then((status) => {
+  // ── Locate pi and start transport (non-blocking) ──────────────────────────
+  // Wrapped in an async IIFE so any rejection from locatePi() is caught and
+  // surfaced as a user-visible error rather than an unhandled rejection.
+  void (async () => {
+    let status;
+    try {
+      status = await locatePi((m) => controller.outputChannel.appendLine(m));
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `Sqowe Wingman: failed to locate pi — ${String(err)}`,
+      );
+      return;
+    }
+
     provider.setPiStatus(status);
 
     if (status.kind === 'not-found') {
@@ -59,16 +81,21 @@ export function activate(context: vscode.ExtensionContext): void {
             );
           }
         });
-    } else if (status.kind === 'version-warning') {
+      return;
+    }
+
+    if (status.kind === 'version-warning') {
       void vscode.window.showWarningMessage(
         `Sqowe Wingman: pi ${status.version} is below the tested minimum ` +
           `(${status.minimum}). Update pi to avoid compatibility issues.`,
       );
     }
-  });
+
+    await controller.start(status);
+  })();
 }
 
 export function deactivate(): void {
-  // All disposables are registered in context.subscriptions and cleaned up
-  // automatically by VS Code on deactivation.
+  _controller?.dispose();
+  _controller = undefined;
 }
