@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output (extension host + webview)
+out/
+dist/
+*.tsbuildinfo
+
+# Packaged extension
+*.vsix
+
+# VS Code extension test runner
+.vscode-test/
+.vscode-test-web/
+
+# Vite cache
+.vite/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Test coverage
+coverage/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+
+# Scratch
+tmp/
