@@ -11,8 +11,9 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import type { AgentController } from '../agent/controller';
 import type { HostMessage, PiStatus, WebviewMessage } from '../shared/messages';
-import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES } from '../shared/limits';
+import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES, MAX_PATCH_BYTES } from '../shared/limits';
 import type { RpcEvent } from '../agent/transport';
+import type { DiffService } from '../diff/diff-service';
 
 /** Maximum ms between accepted prompts (simple rate-limit). */
 const PROMPT_RATE_LIMIT_MS = 500;
@@ -31,9 +32,10 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   private _webviewReady = false;
   private _lastPiStatus?: PiStatus;
   /** Last agent liveness reported by the controller — replayed on (re)ready. */
-  private _lastAgentStatus?: { running: boolean; reason?: string };
+  private _lastAgentStatus?: { running: boolean; cwd?: string; reason?: string };
   private _viewDisposables: vscode.Disposable[] = [];
   private _controller?: AgentController;
+  private _diffService?: DiffService;
   /** Bounded buffer of events received before the webview signals `ready`. */
   private _pendingEvents: Array<{ event: RpcEvent; bytes: number }> = [];
   /** Total byte size of buffered events. */
@@ -118,6 +120,14 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
           case 'openExternal':
             void this._handleOpenExternal(message.url);
             break;
+
+          case 'openDiff':
+            void this._handleOpenDiff(message.patch, message.toolCallId);
+            break;
+
+          case 'applyEdit':
+            void this._handleApplyEdit(message.patch, message.toolCallId);
+            break;
         }
       }),
     );
@@ -136,6 +146,10 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
 
   public setController(controller: AgentController): void {
     this._controller = controller;
+  }
+
+  public setDiffService(diffService: DiffService): void {
+    this._diffService = diffService;
   }
 
   // ─── Runtime message validation ───────────────────────────────────────────
@@ -224,6 +238,30 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
         return { type: 'openExternal', url: parsed.href };
       }
 
+      case 'openDiff':
+      case 'applyEdit': {
+        const kind = msg['type'] as 'openDiff' | 'applyEdit';
+        if (typeof msg['patch'] !== 'string') {
+          this._controller?.outputChannel?.appendLine(
+            `[WingmanViewProvider] dropped ${kind}: missing/invalid patch field`,
+          );
+          return null;
+        }
+        if (typeof msg['toolCallId'] !== 'string') {
+          this._controller?.outputChannel?.appendLine(
+            `[WingmanViewProvider] dropped ${kind}: missing/invalid toolCallId field`,
+          );
+          return null;
+        }
+        if (Buffer.byteLength(msg['patch'], 'utf8') > MAX_PATCH_BYTES) {
+          this._controller?.outputChannel?.appendLine(
+            `[WingmanViewProvider] dropped ${kind}: patch exceeds ${MAX_PATCH_BYTES} bytes`,
+          );
+          return null;
+        }
+        return { type: kind, patch: msg['patch'], toolCallId: msg['toolCallId'] };
+      }
+
       default:
         this._controller?.outputChannel?.appendLine(
           `[WingmanViewProvider] dropped unknown message type: ${msg['type']}`,
@@ -243,12 +281,13 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
    * Called by AgentController to report agent-transport liveness. A
    * `running: false` after a successful start means pi exited/crashed.
    */
-  public postAgentStatus(status: { running: boolean; reason?: string }): void {
+  public postAgentStatus(status: { running: boolean; cwd?: string; reason?: string }): void {
     this._lastAgentStatus = status;
     if (this._webviewReady) {
       this._postMessage({
         type: 'agentStatus',
         running: status.running,
+        cwd: status.cwd,
         reason: status.reason,
       });
     }
@@ -324,6 +363,61 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
         `[WingmanViewProvider] openExternal failed: ${String(err)}`,
       );
     }
+  }
+
+  private async _handleOpenDiff(patch: string, toolCallId: string): Promise<void> {
+    if (!this._diffService) {
+      this._controller?.outputChannel?.appendLine(
+        '[WingmanViewProvider] openDiff: DiffService not available',
+      );
+      return;
+    }
+    const cwd = this._resolveCwd();
+    if (!cwd) {
+      void vscode.window.showErrorMessage('Sqowe Wingman: no workspace folder open.');
+      return;
+    }
+    try {
+      await this._diffService.previewDiff(patch, cwd);
+    } catch (err) {
+      const message = String(err);
+      this._controller?.outputChannel?.appendLine(
+        `[WingmanViewProvider] openDiff failed: ${message}`,
+      );
+      void vscode.window.showErrorMessage(`Sqowe Wingman: could not open diff — ${message}`);
+      this._postMessage({ type: 'diffError', toolCallId, reason: 'open-failed', message });
+    }
+  }
+
+  private async _handleApplyEdit(patch: string, toolCallId: string): Promise<void> {
+    if (!this._diffService) {
+      this._controller?.outputChannel?.appendLine(
+        '[WingmanViewProvider] applyEdit: DiffService not available',
+      );
+      return;
+    }
+    const cwd = this._resolveCwd();
+    if (!cwd) {
+      void vscode.window.showErrorMessage('Sqowe Wingman: no workspace folder open.');
+      return;
+    }
+    try {
+      await this._diffService.applyPatch(patch, cwd);
+    } catch (err) {
+      const message = String(err);
+      this._controller?.outputChannel?.appendLine(
+        `[WingmanViewProvider] applyEdit failed: ${message}`,
+      );
+      void vscode.window.showErrorMessage(`Sqowe Wingman: could not apply edit — ${message}`);
+      this._postMessage({ type: 'diffError', toolCallId, reason: 'apply-failed', message });
+    }
+  }
+
+  /** Resolve the active workspace folder path (first folder, matching AgentController). */
+  private _resolveCwd(): string | undefined {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) return undefined;
+    return folders[0].uri.fsPath;
   }
 
   private _postMessage(message: HostMessage): void {

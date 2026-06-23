@@ -35,6 +35,7 @@ export default function App() {
   const isStreaming = useChatStore((s) => s.isStreaming);
   const addUserMessage = useChatStore((s) => s.addUserMessage);
   const dispatchEvents = useChatStore((s) => s.dispatchEvents);
+  const setDiffError = useChatStore((s) => s.setDiffError);
 
   // rAF coalescer: buffer incoming agentEvent messages and flush per frame.
   const pendingEvents = useRef<RpcEvent[]>([]);
@@ -91,6 +92,10 @@ export default function App() {
           }, 3_000);
           break;
         }
+
+        case 'diffError':
+          setDiffError(msg.toolCallId, msg.message);
+          break;
       }
     };
 

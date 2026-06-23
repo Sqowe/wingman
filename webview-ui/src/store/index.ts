@@ -44,6 +44,8 @@ export interface ToolRunItem {
   details: Record<string, unknown> | null;
   isError: boolean;
   isComplete: boolean;
+  /** Set when a diff open or apply operation fails for this tool card. */
+  diffError: string | null;
 }
 
 export interface SystemItem {
@@ -69,6 +71,8 @@ interface ChatActions {
   addUserMessage: (text: string) => void;
   /** Collapse / expand a thinking block. */
   toggleThinking: (itemId: string, blockIndex: number) => void;
+  /** Set a diff error on a tool card (from host diffError message). */
+  setDiffError: (toolCallId: string, message: string) => void;
   /**
    * Process a batch of raw pi RPC events in one store update.
    * Called from the rAF coalescer — never call per-delta.
@@ -229,6 +233,7 @@ function applyEvent(state: ChatState, event: RpcEvent): void {
         partialOutput: '',
         finalOutput: null,
         details: null,
+        diffError: null,
         isError: false,
         isComplete: false,
       };
@@ -342,6 +347,14 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
           return { ...b, collapsed: !b.collapsed };
         });
         return { ...item, blocks };
+      }),
+    })),
+
+  setDiffError: (toolCallId: string, message: string) =>
+    set((state) => ({
+      items: state.items.map((item) => {
+        if (item.itemKind !== 'tool' || item.toolCallId !== toolCallId) return item;
+        return { ...item, diffError: message };
       }),
     })),
 

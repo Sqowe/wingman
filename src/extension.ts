@@ -11,6 +11,7 @@ import * as vscode from 'vscode';
 import { WingmanViewProvider } from './webview/provider';
 import { AgentController } from './agent/controller';
 import { locatePi } from './agent/pi-locator';
+import { DiffService, DIFF_SCHEME } from './diff/diff-service';
 
 // Module-level controller so deactivate() can dispose it.
 let _controller: AgentController | undefined;
@@ -24,9 +25,17 @@ export function activate(context: vscode.ExtensionContext): void {
   // idempotent, so the explicit deactivate() call is safe too.
   context.subscriptions.push(controller);
 
+  // ── Diff service ──────────────────────────────────────────────────────────
+  const diffService = new DiffService();
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(DIFF_SCHEME, diffService),
+    diffService,
+  );
+
   // ── WebviewView provider ──────────────────────────────────────────────────
   const provider = new WingmanViewProvider(context.extensionUri);
   provider.setController(controller);
+  provider.setDiffService(diffService);
   controller.setProvider(provider);
 
   context.subscriptions.push(

@@ -188,7 +188,7 @@ export class AgentController implements vscode.Disposable {
     });
 
     // Tell the webview the agent is live (clears any prior "pi exited" notice).
-    this._provider?.postAgentStatus({ running: true });
+    this._provider?.postAgentStatus({ running: true, cwd });
   }
 
   /** Tracks pi's turn lifecycle so callers can tell when a prompt would be rejected. */

@@ -55,12 +55,31 @@ export interface PromptRejectedMessage {
  * Reports the liveness of the underlying agent transport (the pi process).
  * `running: false` after a successful start means pi exited or crashed; the
  * webview surfaces this rather than appearing to silently hang.
+ * `cwd` is included when `running` is true so the webview can display context;
+ * it is NOT used for filesystem operations (the host always derives cwd from
+ * `vscode.workspace.workspaceFolders` for any I/O).
  */
 export interface AgentStatusMessage {
   type: 'agentStatus';
   running: boolean;
+  /** Present when `running` is true — the active workspace folder path. */
+  cwd?: string;
   /** Human-readable reason, present when `running` is false. */
   reason?: string;
+}
+
+/**
+ * Sent by the host when a diff operation (openDiff / applyEdit) fails.
+ * The webview can surface this as inline feedback on the tool card.
+ *
+ * - `open-failed`  — the diff editor could not be opened (e.g. patch parse error).
+ * - `apply-failed` — workspace.applyEdit was rejected or threw.
+ */
+export interface DiffErrorMessage {
+  type: 'diffError';
+  toolCallId: string;
+  reason: 'open-failed' | 'apply-failed';
+  message: string;
 }
 
 /** Union of every message the host can send to the webview. */
@@ -68,7 +87,8 @@ export type HostMessage =
   | PiStatusMessage
   | AgentEventMessage
   | PromptRejectedMessage
-  | AgentStatusMessage;
+  | AgentStatusMessage
+  | DiffErrorMessage;
 
 // ─── Webview → Host ──────────────────────────────────────────────────────────
 
@@ -114,10 +134,41 @@ export interface OpenExternalMessage {
   url: string;
 }
 
+/**
+ * Sent by the webview when the user clicks "View Diff" on a completed edit card.
+ * The host opens VS Code's diff editor (before ↔ after, read-only preview).
+ * `patch` is the unified diff string from `result.details.patch`.
+ * `toolCallId` identifies the card so the host can route error feedback back.
+ *
+ * Note: no `cwd` field — the host derives the workspace root from
+ * `vscode.workspace.workspaceFolders` and never trusts filesystem paths from
+ * the webview (path-traversal defence).
+ */
+export interface OpenDiffMessage {
+  type: 'openDiff';
+  patch: string;
+  toolCallId: string;
+}
+
+/**
+ * Sent by the webview when the user clicks "Apply" on a completed edit card.
+ * The host applies the patch as a real WorkspaceEdit so the change appears in
+ * Source Control with Accept / Discard affordances.
+ *
+ * Note: no `cwd` field — see OpenDiffMessage.
+ */
+export interface ApplyEditMessage {
+  type: 'applyEdit';
+  patch: string;
+  toolCallId: string;
+}
+
 /** Union of every message the webview can send to the host. */
 export type WebviewMessage =
   | ReadyMessage
   | SendPromptMessage
   | CopyToClipboardMessage
   | AbortTurnMessage
-  | OpenExternalMessage;
+  | OpenExternalMessage
+  | OpenDiffMessage
+  | ApplyEditMessage;

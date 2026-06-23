@@ -14,3 +14,10 @@ export const MAX_PROMPT_BYTES = 32_768; // 32 KB
  * Enforced both webview-side (before sending) and host-side (in validation).
  */
 export const MAX_CLIPBOARD_BYTES = 5_242_880; // 5 MB
+
+/**
+ * Maximum byte length accepted for a patch string sent in openDiff / applyEdit
+ * messages from the webview. Patches beyond this are almost certainly a bug or
+ * an abuse attempt — reject early rather than running the diff algorithm.
+ */
+export const MAX_PATCH_BYTES = 1_048_576; // 1 MB

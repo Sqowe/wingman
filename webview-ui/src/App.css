@@ -400,6 +400,58 @@ body {
   border-top: 1px solid var(--vscode-inputValidation-errorBorder);
 }
 
+.tool-card__diff-actions {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
+.tool-card__diff-btn {
+  padding: 2px 10px;
+  font-size: 11px;
+  font-family: var(--vscode-font-family);
+  cursor: pointer;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  line-height: 18px;
+}
+
+.tool-card__diff-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.tool-card__diff-btn:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.tool-card__diff-btn--apply {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.tool-card__diff-btn--apply:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.tool-card__diff-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--vscode-inputValidation-errorForeground, var(--vscode-errorForeground));
+  background: var(--vscode-inputValidation-errorBackground);
+  border-top: 1px solid var(--vscode-inputValidation-errorBorder);
+}
+
+.tool-card__diff-error-icon {
+  flex-shrink: 0;
+}
+
 /* ── System message ───────────────────────────────────────────────────────── */
 
 .system-message {

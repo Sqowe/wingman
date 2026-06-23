@@ -241,6 +241,45 @@ describe('tool execution', () => {
     ).not.toThrow();
     expect(items()).toHaveLength(0);
   });
+
+  it('initialises diffError to null on tool_execution_start', () => {
+    dispatch({ type: 'tool_execution_start', toolCallId: 'd', toolName: 'edit', args: {} });
+    expect(onlyTool().diffError).toBeNull();
+  });
+});
+
+// ─── Diff error (Phase 4) ───────────────────────────────────────────────────────
+
+describe('setDiffError', () => {
+  it('sets a diff error message on the matching tool card', () => {
+    dispatch({ type: 'tool_execution_start', toolCallId: 'e', toolName: 'edit', args: {} });
+    useChatStore.getState().setDiffError('e', 'could not apply edit');
+    expect(onlyTool().diffError).toBe('could not apply edit');
+  });
+
+  it("clears the error (empty string) so the inline banner hides on retry", () => {
+    dispatch({ type: 'tool_execution_start', toolCallId: 'e', toolName: 'edit', args: {} });
+    useChatStore.getState().setDiffError('e', 'boom');
+    useChatStore.getState().setDiffError('e', '');
+    expect(onlyTool().diffError).toBe('');
+  });
+
+  it('only affects the tool card with the matching toolCallId', () => {
+    dispatch(
+      { type: 'tool_execution_start', toolCallId: 'a', toolName: 'edit', args: {} },
+      { type: 'tool_execution_start', toolCallId: 'b', toolName: 'edit', args: {} },
+    );
+    useChatStore.getState().setDiffError('b', 'only b failed');
+    const tools = items().filter((i): i is ToolRunItem => i.itemKind === 'tool');
+    expect(tools.find((t) => t.toolCallId === 'a')!.diffError).toBeNull();
+    expect(tools.find((t) => t.toolCallId === 'b')!.diffError).toBe('only b failed');
+  });
+
+  it('is a no-op for an unknown toolCallId', () => {
+    dispatch({ type: 'tool_execution_start', toolCallId: 'a', toolName: 'edit', args: {} });
+    expect(() => useChatStore.getState().setDiffError('ghost', 'x')).not.toThrow();
+    expect(onlyTool().diffError).toBeNull();
+  });
 });
 
 // ─── System notices ─────────────────────────────────────────────────────────────
