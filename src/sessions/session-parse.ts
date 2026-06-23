@@ -81,6 +81,24 @@ export function parseSessionText(text: string, sessionPath: string): SessionMeta
   return acc.finalize(sessionPath);
 }
 
+/**
+ * Keep only sessions whose `cwd` is one of the open workspace folders.
+ *
+ * pi runs as a single child process pinned to the workspace folder, and
+ * `switch_session` only loads a different transcript — it does not re-root the
+ * agent. Resuming a session recorded in another directory would therefore load
+ * its history but operate against the *current* workspace, which is incoherent.
+ * Scoping the list to the open folder(s) hides everything that can't be
+ * resumed here. Returns a new array.
+ */
+export function filterSessionsToCwds(
+  sessions: SessionMetadata[],
+  currentCwds: string[],
+): SessionMetadata[] {
+  const current = new Set(currentCwds);
+  return sessions.filter((s) => current.has(s.cwd));
+}
+
 export interface ProjectGroup {
   projectPath: string;
   sessions: SessionMetadata[];

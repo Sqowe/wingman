@@ -75,9 +75,13 @@ async function pickSession(controller: AgentController): Promise<string | undefi
   // Ensure sessions are loaded
   await provider.ensureLoaded();
 
-  const sessions = provider.getAllSessions();
+  // Only offer sessions for the open workspace folder(s) — see
+  // SessionTreeProvider.getScopedSessions / filterSessionsToCwds.
+  const sessions = provider.getScopedSessions();
   if (sessions.length === 0) {
-    void vscode.window.showInformationMessage('Sqowe Wingman: no sessions found.');
+    void vscode.window.showInformationMessage(
+      'Sqowe Wingman: no sessions for this workspace yet.',
+    );
     return undefined;
   }
 

@@ -1,8 +1,9 @@
 /**
  * SessionTreeProvider — VS Code TreeDataProvider for pi sessions.
  *
- * Reads session files from ~/.pi/agent/sessions/ and displays them
- * grouped by project directory.
+ * Reads session files from ~/.pi/agent/sessions/ and displays only those
+ * belonging to the open workspace folder(s) — the sessions pi can actually
+ * resume here (see filterSessionsToCwds) — grouped by project directory.
  */
 
 import * as vscode from 'vscode';
@@ -14,6 +15,7 @@ import * as os from 'os';
 import { SessionItem, ProjectFolderItem } from './session-item';
 import {
   SessionMetadataAccumulator,
+  filterSessionsToCwds,
   groupSessionsByProject,
   sortSessionsByRecency,
 } from './session-parse';
@@ -171,22 +173,24 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<vscode.TreeI
       // Root level - return project folders (or a flat list).
       // Ensure sessions are loaded (uses cache if available).
       return this.ensureLoaded().then(() => {
-        if (this._sessions.length === 0) {
+        // Only ever show sessions belonging to the open workspace folder(s):
+        // those are the only ones pi can coherently resume, since its process
+        // cwd is pinned to the workspace and `switch_session` does not re-root.
+        const scoped = this._scopedSessions();
+        if (scoped.length === 0) {
           return [];
         }
 
         if (this._groupByProject) {
-          // Group by project directory. The open workspace folders sort first
-          // and render expanded, so the sessions you can actually resume here
-          // are surfaced ahead of other projects (pi's process cwd is pinned
-          // to the workspace folder).
-          return groupSessionsByProject(this._sessions, this._currentCwds()).map(
+          // Group by project directory. After scoping, every group is one of
+          // the open workspace folders (rendered expanded).
+          return groupSessionsByProject(scoped, this._currentCwds()).map(
             (g) => new ProjectFolderItem(g.projectPath, g.sessions.length, g.isCurrent),
           );
         }
 
         // Flat list, newest first.
-        return sortSessionsByRecency(this._sessions).map(toSessionItem);
+        return sortSessionsByRecency(scoped).map(toSessionItem);
       });
     } else if (element instanceof ProjectFolderItem) {
       // Return this project's sessions, newest first.
@@ -204,6 +208,11 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<vscode.TreeI
     return (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
   }
 
+  /** Sessions belonging to the open workspace folder(s) — the resumable set. */
+  private _scopedSessions(): SessionMetadata[] {
+    return filterSessionsToCwds(this._sessions, this._currentCwds());
+  }
+
   /**
    * Get session metadata by path.
    */
@@ -212,9 +221,11 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<vscode.TreeI
   }
 
   /**
-   * Get all sessions.
+   * Sessions for the open workspace folder(s), newest-first — the set the
+   * switch-session picker offers. Foreign-project sessions are excluded for
+   * the same reason the tree hides them (cwd mismatch on resume).
    */
-  getAllSessions(): SessionMetadata[] {
-    return this._sessions;
+  getScopedSessions(): SessionMetadata[] {
+    return sortSessionsByRecency(this._scopedSessions());
   }
 }

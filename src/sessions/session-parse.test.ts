@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   SessionMetadataAccumulator,
   parseSessionText,
+  filterSessionsToCwds,
   groupSessionsByProject,
   sortSessionsByRecency,
   type SessionMetadata,
@@ -67,6 +68,31 @@ describe('SessionMetadataAccumulator / parseSessionText', () => {
   it('tolerates blank lines / trailing newline', () => {
     const text = [header(), '', messageLine('a'), ''].join('\n');
     expect(parseSessionText(text, '/p/s.jsonl')!.messageCount).toBe(1);
+  });
+});
+
+describe('filterSessionsToCwds', () => {
+  it('keeps only sessions whose cwd is an open workspace folder', () => {
+    const sessions = [
+      meta('/proj', '2026-06-22T10:00:00.000Z'),
+      meta('/other', '2026-06-23T10:00:00.000Z'),
+      meta('/proj', '2026-06-21T10:00:00.000Z'),
+    ];
+    const kept = filterSessionsToCwds(sessions, ['/proj']);
+    expect(kept.map((s) => s.cwd)).toEqual(['/proj', '/proj']);
+  });
+
+  it('matches any of multiple open folders (multi-root)', () => {
+    const sessions = [meta('/a', 't'), meta('/b', 't'), meta('/c', 't')];
+    expect(filterSessionsToCwds(sessions, ['/a', '/c']).map((s) => s.cwd)).toEqual(['/a', '/c']);
+  });
+
+  it('returns empty when no folders are open', () => {
+    expect(filterSessionsToCwds([meta('/proj', 't')], [])).toEqual([]);
+  });
+
+  it('requires an exact cwd match (a subdirectory is a different project)', () => {
+    expect(filterSessionsToCwds([meta('/proj/sub', 't')], ['/proj'])).toEqual([]);
   });
 });
 
