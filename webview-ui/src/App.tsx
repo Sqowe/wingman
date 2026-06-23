@@ -124,7 +124,11 @@ export default function App() {
       bannerEls.forEach((el) => { bannerH += el.getBoundingClientRect().height; });
       const w = containerRef.current.getBoundingClientRect().width;
       setListHeight(Math.max(100, total - composerH - bannerH - 16));
-      setListWidth(Math.max(100, w));
+      // w is the border-box width; subtract .app horizontal padding (2 × 12px),
+      // mirroring the 16px vertical padding subtracted from the height above.
+      // Without this the virtualized list overflows .app's content box and the
+      // right edge gets clipped by overflow:hidden (no right padding).
+      setListWidth(Math.max(100, w - 24));
     };
     measure();
     const ro = new ResizeObserver(measure);
