@@ -49,8 +49,8 @@ Three runtime pieces:
 
 Target layout (see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) §3 for detail):
 
-- `/src` — extension host (Node): `extension.ts`, plus `agent/`, `webview/`, and `shared/` (present
-  as of Phase 1); `commands/`, `diff/`, and `ui-protocol/` arrive in later phases.
+- `/src` — extension host (Node): `extension.ts`, plus `agent/`, `webview/`, `shared/`, `commands/`,
+  `diff/`, and `status-bar.ts` (present as of Phase 5); `ui-protocol/` arrives in a later phase.
 - `/webview-ui` — React app (Vite): `components/`, `store/`, `main.tsx`.
 - `/media` — activity-bar icon and static assets.
 - `/docs` — design docs; `docs/chats/` holds prior implementation conversations.
