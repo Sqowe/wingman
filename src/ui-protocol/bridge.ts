@@ -11,6 +11,8 @@
  * See pi's docs/rpc.md §"Extension UI Protocol" for the full schema.
  */
 
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AgentTransport, RpcEvent } from '../agent/transport';
 import type { WingmanViewProvider } from '../webview/provider';
@@ -260,12 +262,18 @@ export class UiProtocolBridge implements vscode.Disposable {
   }
 
   private async _handleConfirm(req: ConfirmRequest): Promise<void> {
-    const message = req.message ?? req.title ?? 'Confirm?';
+    // pi sends `title` as the headline ("Clear session?") and `message` as the
+    // supporting detail ("All messages will be lost."). In a VS Code modal the
+    // first arg is the bold primary line and `detail` is the smaller text below,
+    // so map title → primary and message → detail. Fall back to whichever is
+    // present when only one is given.
+    const primary = req.title ?? req.message ?? 'Confirm?';
+    const detail = req.title && req.message ? req.message : undefined;
     let result: string | undefined;
     try {
       result = await vscode.window.showWarningMessage(
-        message,
-        { modal: true, detail: req.message && req.title ? req.title : undefined },
+        primary,
+        { modal: true, detail },
         'Yes',
         'No',
       );
@@ -308,47 +316,76 @@ export class UiProtocolBridge implements vscode.Disposable {
 
   /**
    * `editor` requests a multi-line editor.  VS Code has no built-in multi-line
-   * input box, so we open a temporary untitled document, let the user edit, and
-   * read the text when they confirm via a quick-pick prompt.  This keeps the
-   * UI native and avoids any webview round-trip.
+   * input box, so we open a temporary document, let the user edit, and read the
+   * text when they confirm via a quick-pick prompt.  This keeps the UI native
+   * and avoids any webview round-trip.
+   *
+   * The scratch document is backed by a **temp file on disk** (not an untitled
+   * doc): an untitled doc is dirty as soon as it has content, and closing a
+   * dirty untitled editor pops a "Save changes?" prompt.  A file-backed doc can
+   * be reverted to a clean state and then closed silently (see _closeEditorDoc).
    *
    * Timeouts are handled by `_scheduleRequestTimeout` / `_sendResponse`: pi
    * auto-resolves on its end after the deadline, and `_sendResponse` suppresses
    * any late response from the bridge to prevent a protocol double-response.
    */
   private async _handleEditor(req: EditorRequest): Promise<void> {
-    // Create a temporary untitled document pre-filled with the requested text.
-    const doc = await vscode.workspace.openTextDocument({
-      content: req.prefill ?? '',
-      language: 'plaintext',
-    });
-    const editor = await vscode.window.showTextDocument(doc, { preview: false });
+    // Sanitise the request id for use in a filename (pi ids are uuids, but be
+    // defensive against any stray path characters).
+    const safeId = req.id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const tmpUri = vscode.Uri.file(path.join(os.tmpdir(), `wingman-editor-${safeId}.txt`));
 
-    // Prompt the user to confirm or cancel via a quick-pick overlay.
-    const action = await vscode.window.showQuickPick(['Submit', 'Cancel'], {
-      title: req.title ?? 'Edit text — choose Submit when done',
-      ignoreFocusOut: true,
-    });
-
-    if (this._disposed) return;
-
-    if (action === 'Submit') {
-      const text = doc.getText();
-      this._sendResponse({ type: 'extension_ui_response', id: req.id, value: text });
-    } else {
-      this._sendResponse({ type: 'extension_ui_response', id: req.id, cancelled: true });
-    }
-
-    // Close the temporary document: re-reveal the known editor tab first so
-    // we close the right one even if the user switched editors during the dialog.
-    // Falls back gracefully if it's already been closed.
+    let doc: vscode.TextDocument | undefined;
     try {
-      if (!editor.document.isClosed) {
-        await vscode.window.showTextDocument(editor.document, { preview: false, preserveFocus: false });
-        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+      await vscode.workspace.fs.writeFile(tmpUri, Buffer.from(req.prefill ?? '', 'utf8'));
+      doc = await vscode.workspace.openTextDocument(tmpUri);
+      await vscode.window.showTextDocument(doc, { preview: false });
+
+      // Prompt the user to confirm or cancel via a quick-pick overlay.
+      const action = await vscode.window.showQuickPick(['Submit', 'Cancel'], {
+        title: req.title ?? 'Edit text — choose Submit when done',
+        ignoreFocusOut: true,
+      });
+
+      if (this._disposed) return;
+
+      if (action === 'Submit') {
+        this._sendResponse({ type: 'extension_ui_response', id: req.id, value: doc.getText() });
       } else {
-        this._outputChannel.appendLine('[UiProtocolBridge] editor doc already closed — skipping close');
+        this._sendResponse({ type: 'extension_ui_response', id: req.id, cancelled: true });
       }
+    } finally {
+      if (doc) await this._closeEditorDoc(doc);
+      // Best-effort temp-file cleanup (the editor is closed by now). The file
+      // may never have been created if writeFile threw — ignore that case.
+      try {
+        await vscode.workspace.fs.delete(tmpUri);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * Reveal, revert, and close a temp editor document without triggering a
+   * "Save changes?" prompt.  Reverting a *file-backed* doc reloads it from disk
+   * (discarding the in-memory edits we have already captured), leaving the
+   * editor clean so `closeActiveEditor` is silent.  All steps are best-effort —
+   * failures are logged, never thrown.
+   */
+  private async _closeEditorDoc(doc: vscode.TextDocument): Promise<void> {
+    try {
+      if (doc.isClosed) {
+        this._outputChannel.appendLine('[UiProtocolBridge] editor doc already closed — skipping close');
+        return;
+      }
+      // Re-reveal so the temp doc is the active editor even if the user switched
+      // away during the dialog, then revert any unsaved edits before closing.
+      await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false });
+      if (doc.isDirty) {
+        await vscode.commands.executeCommand('workbench.action.revertActiveEditor');
+      }
+      await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
     } catch (err) {
       this._outputChannel.appendLine(`[UiProtocolBridge] could not close temp editor doc: ${String(err)}`);
     }

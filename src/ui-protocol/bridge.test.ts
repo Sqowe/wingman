@@ -50,6 +50,13 @@ vi.mock('vscode', () => ({
   },
   workspace: {
     openTextDocument: (...args: unknown[]) => mockOpenTextDocument(...(args as Parameters<typeof mockOpenTextDocument>)),
+    fs: {
+      writeFile: async () => undefined,
+      delete: async () => undefined,
+    },
+  },
+  Uri: {
+    file: (p: string) => ({ fsPath: p, scheme: 'file', path: p }),
   },
   commands: {
     executeCommand: (...args: unknown[]) => mockExecuteCommand(...(args as Parameters<typeof mockExecuteCommand>)),
@@ -198,6 +205,24 @@ describe('UiProtocolBridge', () => {
     });
   });
 
+  it('confirm: maps title → modal primary line and message → detail', async () => {
+    mockShowWarningMessage.mockResolvedValue('Yes');
+    bridge.handleEvent(makeRequest('confirm', { title: 'Clear session?', message: 'All messages will be lost.' }));
+    await vi.waitFor(() => expect(mockShowWarningMessage).toHaveBeenCalled());
+    const [primary, opts] = mockShowWarningMessage.mock.calls[0];
+    expect(primary).toBe('Clear session?');
+    expect(opts).toMatchObject({ modal: true, detail: 'All messages will be lost.' });
+  });
+
+  it('confirm: uses the lone message as the primary line when no title is given', async () => {
+    mockShowWarningMessage.mockResolvedValue('No');
+    bridge.handleEvent(makeRequest('confirm', { message: 'Proceed anyway?' }));
+    await vi.waitFor(() => expect(mockShowWarningMessage).toHaveBeenCalled());
+    const [primary, opts] = mockShowWarningMessage.mock.calls[0];
+    expect(primary).toBe('Proceed anyway?');
+    expect((opts as { detail?: string }).detail).toBeUndefined();
+  });
+
   it('confirm: sends confirmed:false when user clicks No', async () => {
     mockShowWarningMessage.mockResolvedValue('No');
     bridge.handleEvent(makeRequest('confirm', { title: 'Clear session?' }));
@@ -247,7 +272,7 @@ describe('UiProtocolBridge', () => {
   // ── editor ────────────────────────────────────────────────────────────
 
   it('editor: sends value response on Submit', async () => {
-    const fakeDoc = { getText: () => 'edited content\nline 2', isClosed: false };
+    const fakeDoc = { getText: () => 'edited content\nline 2', isClosed: false, isDirty: false };
     const fakeEditor = { document: fakeDoc };
     mockOpenTextDocument.mockResolvedValue(fakeDoc);
     mockShowTextDocument.mockResolvedValue(fakeEditor);
@@ -264,7 +289,7 @@ describe('UiProtocolBridge', () => {
   });
 
   it('editor: sends cancelled response on Cancel', async () => {
-    const fakeDoc = { getText: () => '', isClosed: false };
+    const fakeDoc = { getText: () => '', isClosed: false, isDirty: false };
     const fakeEditor = { document: fakeDoc };
     mockOpenTextDocument.mockResolvedValue(fakeDoc);
     mockShowTextDocument.mockResolvedValue(fakeEditor);
@@ -278,6 +303,43 @@ describe('UiProtocolBridge', () => {
       id: 'test-id-1',
       cancelled: true,
     });
+  });
+
+  it('editor: reverts a dirty temp doc before closing so no save prompt fires', async () => {
+    // A file-backed temp doc with unsaved edits must be reverted to a clean
+    // state, otherwise closeActiveEditor would pop a "Save changes?" dialog.
+    const fakeDoc = { getText: () => 'edited', isClosed: false, isDirty: true };
+    const fakeEditor = { document: fakeDoc };
+    mockOpenTextDocument.mockResolvedValue(fakeDoc);
+    mockShowTextDocument.mockResolvedValue(fakeEditor);
+    mockShowQuickPick.mockResolvedValue('Submit');
+    mockExecuteCommand.mockResolvedValue(undefined);
+
+    bridge.handleEvent(makeRequest('editor', { title: 'Edit text' }));
+    await vi.waitFor(() => expect(transport.sentRaw.length).toBe(1));
+
+    const commands = mockExecuteCommand.mock.calls.map((c) => c[0]);
+    const revertIdx = commands.indexOf('workbench.action.revertActiveEditor');
+    const closeIdx = commands.indexOf('workbench.action.closeActiveEditor');
+    expect(revertIdx).toBeGreaterThanOrEqual(0); // revert was issued
+    expect(closeIdx).toBeGreaterThanOrEqual(0); // close was issued
+    expect(revertIdx).toBeLessThan(closeIdx); // revert happened before close
+  });
+
+  it('editor: does not revert a clean temp doc (nothing to discard)', async () => {
+    const fakeDoc = { getText: () => '', isClosed: false, isDirty: false };
+    const fakeEditor = { document: fakeDoc };
+    mockOpenTextDocument.mockResolvedValue(fakeDoc);
+    mockShowTextDocument.mockResolvedValue(fakeEditor);
+    mockShowQuickPick.mockResolvedValue('Cancel');
+    mockExecuteCommand.mockResolvedValue(undefined);
+
+    bridge.handleEvent(makeRequest('editor', { title: 'Edit text' }));
+    await vi.waitFor(() => expect(transport.sentRaw.length).toBe(1));
+
+    const commands = mockExecuteCommand.mock.calls.map((c) => c[0]);
+    expect(commands).not.toContain('workbench.action.revertActiveEditor');
+    expect(commands).toContain('workbench.action.closeActiveEditor');
   });
 
   // ── notify ────────────────────────────────────────────────────────────
