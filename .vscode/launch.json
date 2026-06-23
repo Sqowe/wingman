@@ -7,13 +7,21 @@
   // For breakpoint debugging of the extension host, run `npm run watch:host`
   // in a terminal first (it emits inline source maps; the one-shot build does
   // not) and reload the dev-host window (Cmd/Ctrl+R) after edits.
+  //
+  // The dev host opens the bundled `sample-workspace/` folder so pi has a
+  // working directory (the agent needs an open workspace folder to spawn). To
+  // test against the extension's own source instead, change the trailing
+  // positional arg below to "${workspaceFolder}".
   "version": "0.2.0",
   "configurations": [
     {
       "name": "Run Extension",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "${workspaceFolder}/sample-workspace"
+      ],
       "outFiles": ["${workspaceFolder}/dist/**/*.js"],
       "preLaunchTask": "npm: build",
       "sourceMaps": true

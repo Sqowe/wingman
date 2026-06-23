@@ -38,4 +38,9 @@ Thumbs.db
 # Scratch
 tmp/
 
+# Dev-host scratch workspace (Run Extension target) — keep only the README,
+# ignore whatever the agent creates/edits during manual testing.
+/sample-workspace/*
+!/sample-workspace/README.md
+
 .kiro/hooks/

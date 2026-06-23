@@ -55,6 +55,10 @@ Open the folder in VS Code and press **F5** (or *Run ▸ Run Extension*). The bu
 loaded; its icon appears in the activity bar. This is the fastest way to test changes — edit
 code, then reload the dev-host window with **Cmd/Ctrl+R**.
 
+The dev host opens the `sample-workspace/` scratch folder so pi has a working directory (the
+agent needs an open workspace folder to spawn). To test against the extension's own source
+instead, point the trailing arg in `.vscode/launch.json` at `${workspaceFolder}`.
+
 ### Option B — Package a VSIX and install it into your daily VS Code
 
 ```sh
