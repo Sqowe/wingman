@@ -107,6 +107,15 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
             } else {
               void this._controller?.getCommands();
             }
+            // Flush buffered session messages
+            if (this._pendingSessionMessages) {
+              this._postMessage({
+                type: 'sessionMessages',
+                messages: this._pendingSessionMessages,
+              });
+              this._pendingSessionMessages = null;
+            }
+
             // Flush buffered events that arrived before the webview was ready.
             for (const { event } of this._pendingEvents) {
               this._postMessage({
@@ -365,6 +374,25 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
       this._postMessage({ type: 'sessionReset' });
     }
   }
+
+  /**
+   * Send session messages to the webview to replace the transcript.
+   * Called after switching sessions.
+   * If the webview is not ready, buffers the messages for replay.
+   */
+  public postSessionMessages(messages: unknown[]): void {
+    if (this._webviewReady) {
+      this._postMessage({ type: 'sessionMessages', messages });
+    } else {
+      // Buffer for replay when webview becomes ready
+      this._pendingSessionMessages = messages;
+    }
+  }
+
+  /**
+   * Buffered session messages - replayed when webview becomes ready.
+   */
+  private _pendingSessionMessages: unknown[] | null = null;
 
   // ─── UI protocol display methods (fire-and-forget) ────────────────────────
 

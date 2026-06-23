@@ -41,6 +41,10 @@ export class AgentController implements vscode.Disposable {
   private readonly _outputChannel: vscode.OutputChannel;
   /** Handles extension_ui_request events from pi. */
   private readonly _uiBridge: UiProtocolBridge;
+  /** Fires when a session is created or branched (new / fork / clone) so the
+   * sessions view can refresh without the user hitting Refresh manually. */
+  private readonly _onSessionsChanged = new vscode.EventEmitter<void>();
+  public readonly onSessionsChanged: vscode.Event<void> = this._onSessionsChanged.event;
 
   constructor() {
     this._outputChannel = vscode.window.createOutputChannel('Sqowe Wingman');
@@ -169,6 +173,8 @@ export class AgentController implements vscode.Disposable {
     if (opts?.clearTranscript) {
       this._provider?.postSessionReset();
     }
+    // Notify views (e.g. the sessions tree) that the session set changed.
+    this._onSessionsChanged.fire();
     // Refresh commands for the new session (non-blocking).
     void this.getCommands();
   }
@@ -246,6 +252,81 @@ export class AgentController implements vscode.Disposable {
     }
   }
 
+  /**
+   * Switch to a different session.
+   * Calls `switch_session` RPC, then loads messages.
+   * Returns true if successful, false if cancelled or failed.
+   */
+  public async switchSession(sessionPath: string): Promise<boolean> {
+    if (!this._transport?.isRunning) {
+      throw new Error('Sqowe Wingman: agent transport is not running');
+    }
+
+    try {
+      const response = await this.sendCommand({
+        type: 'switch_session',
+        sessionPath,
+      });
+
+      if (!response.success) {
+        throw new Error(
+          `Sqowe Wingman: switch_session failed — ${response.error ?? 'unknown error'}`,
+        );
+      }
+
+      const data = response.data as { cancelled?: boolean } | null;
+      if (data?.cancelled) {
+        return false; // Cancelled, not an error
+      }
+
+      // Load the messages from the new session
+      await this.loadSessionMessages();
+      return true;
+    } catch (err) {
+      this._outputChannel.appendLine(
+        `[AgentController] switchSession error: ${String(err)}`,
+      );
+      throw err; // Re-throw for caller to handle
+    }
+  }
+
+  /**
+   * Load messages from the current session via `get_messages` RPC.
+   * Sends the messages to the webview to replace the transcript.
+   * Returns true if successful, false if failed.
+   */
+  public async loadSessionMessages(): Promise<boolean> {
+    if (!this._transport?.isRunning) {
+      this._outputChannel.appendLine('[AgentController] loadSessionMessages: transport not running');
+      return false;
+    }
+
+    try {
+      const response = await this.sendCommand({ type: 'get_messages' });
+      if (!response.success) {
+        this._outputChannel.appendLine(
+          `[AgentController] get_messages failed: ${response.error ?? 'unknown'}`,
+        );
+        return false;
+      }
+
+      const data = response.data as { messages?: unknown[] } | null;
+      const messages = Array.isArray(data?.messages) ? data.messages : [];
+
+      // Send messages to webview to replace the transcript
+      this._provider?.postSessionMessages(messages);
+
+      // Refresh stats for the new session
+      void this._fetchSessionStats();
+      return true;
+    } catch (err) {
+      this._outputChannel.appendLine(
+        `[AgentController] loadSessionMessages error: ${String(err)}`,
+      );
+      return false;
+    }
+  }
+
   public dispose(): void {
     if (this._disposed) return;
     this._disposed = true;
@@ -253,6 +334,7 @@ export class AgentController implements vscode.Disposable {
     this._folderWatcher = undefined;
     this._tearDownTransport();
     this._uiBridge.dispose();
+    this._onSessionsChanged.dispose();
     this._outputChannel.dispose();
   }
 

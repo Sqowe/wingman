@@ -159,6 +159,15 @@ export interface UiSetEditorTextMessage {
   text: string;
 }
 
+/**
+ * Sent by the host when switching to a different session.
+ * The webview should replace its transcript with these messages.
+ */
+export interface SessionMessagesMessage {
+  type: 'sessionMessages';
+  messages: unknown[];
+}
+
 /** Union of every message the host can send to the webview. */
 export type HostMessage =
   | PiStatusMessage
@@ -171,7 +180,8 @@ export type HostMessage =
   | UiStatusMessage
   | UiWidgetMessage
   | UiTitleMessage
-  | UiSetEditorTextMessage;
+  | UiSetEditorTextMessage
+  | SessionMessagesMessage;
 
 // ─── Webview → Host ──────────────────────────────────────────────────────────
 
@@ -275,3 +285,4 @@ export type WebviewMessage =
   | ApplyEditMessage
   | RequestCommandsMessage
   | RequestNewSessionMessage;
+

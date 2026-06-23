@@ -48,6 +48,7 @@ export default function App() {
   const setUiTitle = useChatStore((s) => s.setUiTitle);
   const setUiEditorText = useChatStore((s) => s.setUiEditorText);
   const resetSession = useChatStore((s) => s.resetSession);
+  const setMessages = useChatStore((s) => s.setMessages);
 
   // rAF coalescer: buffer incoming agentEvent messages and flush per frame.
   const pendingEvents = useRef<RpcEvent[]>([]);
@@ -123,6 +124,16 @@ export default function App() {
           }
           resetSession();
           setPromptError(null);
+          break;
+
+        case 'sessionMessages':
+          // Load messages from a switched-to session.
+          pendingEvents.current = [];
+          if (rafId.current !== undefined) {
+            cancelAnimationFrame(rafId.current);
+            rafId.current = undefined;
+          }
+          setMessages(msg.messages);
           break;
 
         case 'uiStatus':

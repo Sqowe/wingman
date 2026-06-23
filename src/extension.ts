@@ -15,6 +15,7 @@ import { locatePi } from './agent/pi-locator';
 import { DiffService, DIFF_SCHEME } from './diff/diff-service';
 import { WingmanStatusBar } from './status-bar';
 import { registerCommands } from './commands/index';
+import { registerSessions } from './sessions';
 
 // Module-level controller so deactivate() can dispose it.
 let _controller: AgentController | undefined;
@@ -63,6 +64,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // ── Commands (Phase 5) ────────────────────────────────────────────────────
   registerCommands(context, controller);
+
+  // ── Sessions view (Phase 7) ───────────────────────────────────────────────
+  registerSessions(context, controller);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('sqoweWingman.focusChat', () => {
@@ -113,6 +117,21 @@ export function activate(context: vscode.ExtensionContext): void {
     await controller.start(status);
     // Fetch slash commands once transport is live.
     void controller.getCommands();
+
+    // Restore last session if available (Phase 7 session persistence).
+    const savedSessionPath = context.workspaceState.get<string>('sqoweWingman.lastSessionPath');
+    if (savedSessionPath) {
+      try {
+        const success = await controller.switchSession(savedSessionPath);
+        if (!success) {
+          // Session switch was cancelled (not an error) - don't clear the saved path
+          console.log('Sqowe Wingman: session restore was cancelled');
+        }
+      } catch {
+        // Session might have been deleted; clear the saved path.
+        context.workspaceState.update('sqoweWingman.lastSessionPath', undefined);
+      }
+    }
   })();
 }
 

@@ -490,3 +490,143 @@ describe('UI protocol state', () => {
     expect(after.uiEditorText).toBe('text');
   });
 });
+
+describe('setMessages (session restore)', () => {
+  function setMessages(messages: unknown[]): void {
+    useChatStore.getState().setMessages(messages);
+  }
+
+  it('restores user and assistant text/thinking', () => {
+    setMessages([
+      { role: 'user', content: 'hello', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'pondering' },
+          { type: 'text', text: 'hi there' },
+        ],
+        timestamp: 2,
+      },
+    ]);
+    const list = items();
+    expect(list).toHaveLength(2);
+    expect((list[0] as UserItem).text).toBe('hello');
+    const a = list[1] as AssistantItem;
+    expect(a.itemKind).toBe('assistant');
+    expect(a.isComplete).toBe(true);
+    expect(a.blocks).toEqual([
+      { kind: 'thinking', text: 'pondering', collapsed: true },
+      { kind: 'text', text: 'hi there' },
+    ]);
+  });
+
+  it('accepts user content as an array of text blocks', () => {
+    setMessages([{ role: 'user', content: textContent('from array'), timestamp: 1 }]);
+    expect((items()[0] as UserItem).text).toBe('from array');
+  });
+
+  it('reconstructs a tool card from a toolCall block + its toolResult', () => {
+    setMessages([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'running it' },
+          { type: 'toolCall', id: 'call_1', name: 'bash', arguments: { command: 'ls' } },
+        ],
+        timestamp: 1,
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'call_1',
+        toolName: 'bash',
+        content: textContent('file.txt'),
+        isError: false,
+        timestamp: 2,
+      },
+    ]);
+    const list = items();
+    // assistant bubble + one tool card, in order
+    expect(list.map((i) => i.itemKind)).toEqual(['assistant', 'tool']);
+    const tool = list[1] as ToolRunItem;
+    expect(tool.toolCallId).toBe('call_1');
+    expect(tool.toolName).toBe('bash');
+    expect(tool.args).toEqual({ command: 'ls' });
+    expect(tool.finalOutput).toBe('file.txt');
+    expect(tool.isError).toBe(false);
+    expect(tool.isComplete).toBe(true);
+  });
+
+  it('does not emit an empty assistant bubble for a tool-only message', () => {
+    setMessages([
+      {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'c1', name: 'read', arguments: {} }],
+        timestamp: 1,
+      },
+      { role: 'toolResult', toolCallId: 'c1', content: textContent('data'), timestamp: 2 },
+    ]);
+    const list = items();
+    expect(list).toHaveLength(1);
+    expect(list[0].itemKind).toBe('tool');
+  });
+
+  it('preserves toolResult details (e.g. edit patch) and error flag', () => {
+    setMessages([
+      {
+        role: 'assistant',
+        content: [{ type: 'toolCall', id: 'e1', name: 'edit', arguments: { filePath: '/x.ts' } }],
+        timestamp: 1,
+      },
+      {
+        role: 'toolResult',
+        toolCallId: 'e1',
+        content: textContent('boom'),
+        details: { patch: '--- a\n+++ b\n' },
+        isError: true,
+        timestamp: 2,
+      },
+    ]);
+    const tool = onlyTool();
+    expect(tool.details).toEqual({ patch: '--- a\n+++ b\n' });
+    expect(tool.isError).toBe(true);
+  });
+
+  it('renders a bashExecution message as a completed bash card', () => {
+    setMessages([
+      { role: 'bashExecution', command: 'npm test', output: 'ok', exitCode: 0, timestamp: 1 },
+      { role: 'bashExecution', command: 'false', output: 'nope', exitCode: 1, timestamp: 2 },
+    ]);
+    const tools = items().filter((i): i is ToolRunItem => i.itemKind === 'tool');
+    expect(tools).toHaveLength(2);
+    expect(tools[0]).toMatchObject({ toolName: 'bash', finalOutput: 'ok', isError: false });
+    expect(tools[0].args).toEqual({ command: 'npm test' });
+    expect(tools[1]).toMatchObject({ finalOutput: 'nope', isError: true });
+  });
+
+  it('renders an orphan toolResult (no matching call) as a standalone card', () => {
+    setMessages([
+      { role: 'toolResult', toolCallId: 'ghost', toolName: 'read', content: textContent('x'), timestamp: 1 },
+    ]);
+    const tool = onlyTool();
+    expect(tool.toolCallId).toBe('ghost');
+    expect(tool.finalOutput).toBe('x');
+    expect(tool.isComplete).toBe(true);
+  });
+
+  it('replaces any prior transcript and clears streaming state', () => {
+    dispatch({ type: 'agent_start' });
+    expect(useChatStore.getState().isStreaming).toBe(true);
+    setMessages([{ role: 'user', content: 'fresh', timestamp: 1 }]);
+    const state = useChatStore.getState();
+    expect(state.isStreaming).toBe(false);
+    expect(state._currentAssistantId).toBeNull();
+    expect(state.items).toHaveLength(1);
+  });
+
+  it('ignores malformed entries without throwing', () => {
+    setMessages([null, 42, 'nope', { role: 'mystery' }, { role: 'user', content: 'ok', timestamp: 1 }]);
+    const list = items();
+    expect(list).toHaveLength(1);
+    expect((list[0] as UserItem).text).toBe('ok');
+  });
+});

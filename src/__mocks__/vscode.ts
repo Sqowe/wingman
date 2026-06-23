@@ -11,6 +11,22 @@ export class Disposable {
   }
 }
 
+export class EventEmitter<T> {
+  private _listeners: Array<(e: T) => void> = [];
+  public event = (listener: (e: T) => void): Disposable => {
+    this._listeners.push(listener);
+    return new Disposable(() => {
+      this._listeners = this._listeners.filter((l) => l !== listener);
+    });
+  };
+  fire(data: T): void {
+    for (const l of [...this._listeners]) l(data);
+  }
+  dispose(): void {
+    this._listeners = [];
+  }
+}
+
 export const window = {
   createOutputChannel: (_name: string) => ({
     appendLine: (_line: string) => {},

@@ -300,6 +300,16 @@ describe('AgentController.onNewSession()', () => {
     // Stats / commands are still reset for the new session id.
     expect(provider.postSessionStats).toHaveBeenCalledWith(null);
   });
+
+  it('fires onSessionsChanged so the sessions view can refresh', () => {
+    const { controller } = makeController(() => ({
+      type: 'response', success: true, command: 'get_commands', data: { commands: [] },
+    }));
+    const listener = vi.fn();
+    controller.onSessionsChanged(listener);
+    controller.onNewSession();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ─── getCommands coalescing ─────────────────────────────────────────────────

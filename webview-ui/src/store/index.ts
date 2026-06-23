@@ -58,6 +58,134 @@ export interface SystemItem {
 
 export type ChatItem = UserItem | AssistantItem | ToolRunItem | SystemItem;
 
+// ── Restoring a stored session into ChatItems ───────────────────────
+//
+// `get_messages` returns pi `AgentMessage` objects (see rpc.md "Message
+// Types"), a different shape from the live `tool_execution_*` event stream.
+// To make a restored transcript render identically to a live one, we
+// reconstruct the same ChatItem shapes: assistant `toolCall` blocks become
+// ToolRunItem cards, and the matching `toolResult` message fills in each
+// card's output. `bashExecution` messages (from pi's `bash` RPC command)
+// render as completed bash cards.
+
+/** Build a completed ToolRunItem from an assistant `toolCall` content block. */
+function toolCallBlockToItem(block: Record<string, unknown>): ToolRunItem {
+  return {
+    itemKind: 'tool',
+    toolCallId: String(block['id'] ?? ''),
+    toolName: String(block['name'] ?? ''),
+    args: (block['arguments'] as Record<string, unknown>) ?? {},
+    partialOutput: '',
+    finalOutput: null, // filled in when the matching toolResult arrives
+    details: null,
+    diffError: null,
+    isError: false,
+    isComplete: true, // historical tool calls are always complete
+  };
+}
+
+/**
+ * Append the ChatItem(s) for one stored AgentMessage to `items`, threading
+ * tool calls through `toolsByCallId` so a later `toolResult` message can fill
+ * in the matching card's output/details. One assistant message can yield an
+ * assistant bubble plus several tool cards, so this appends rather than
+ * returning a single item.
+ */
+function appendAgentMessage(
+  items: ChatItem[],
+  toolsByCallId: Map<string, ToolRunItem>,
+  msg: Record<string, unknown>,
+): void {
+  const role = msg['role'] as string | undefined;
+  const timestamp = typeof msg['timestamp'] === 'number' ? (msg['timestamp'] as number) : Date.now();
+
+  if (role === 'user') {
+    const content = msg['content'];
+    const text = typeof content === 'string' ? content : extractTextFromContent(content);
+    items.push({ itemKind: 'user', id: nextId(), text, timestamp });
+    return;
+  }
+
+  if (role === 'assistant') {
+    const content = msg['content'];
+    const blocks: ContentBlock[] = [];
+    const toolCards: ToolRunItem[] = [];
+    if (Array.isArray(content)) {
+      for (const block of content as Array<Record<string, unknown>>) {
+        const t = block['type'];
+        if (t === 'text' && typeof block['text'] === 'string') {
+          blocks.push({ kind: 'text', text: block['text'] as string });
+        } else if (t === 'thinking' && typeof block['thinking'] === 'string') {
+          blocks.push({ kind: 'thinking', text: block['thinking'] as string, collapsed: true });
+        } else if (t === 'toolCall') {
+          toolCards.push(toolCallBlockToItem(block));
+        }
+      }
+    }
+    // Emit an assistant bubble only when it carries visible text/thinking; a
+    // message that is purely tool calls renders as its tool cards alone.
+    if (blocks.length > 0) {
+      items.push({ itemKind: 'assistant', id: nextId(), blocks, isComplete: true, timestamp });
+    }
+    for (const card of toolCards) {
+      items.push(card);
+      if (card.toolCallId) toolsByCallId.set(card.toolCallId, card);
+    }
+    return;
+  }
+
+  if (role === 'toolResult') {
+    const callId = String(msg['toolCallId'] ?? '');
+    const output = extractTextFromContent(msg['content']);
+    const details =
+      typeof msg['details'] === 'object' && msg['details'] !== null
+        ? (msg['details'] as Record<string, unknown>)
+        : null;
+    const isError = Boolean(msg['isError']);
+    const card = toolsByCallId.get(callId);
+    if (card) {
+      // Mutate the already-pushed card in place (same object reference).
+      card.finalOutput = output;
+      card.isError = isError;
+      if (details) card.details = details;
+    } else {
+      // Orphan result with no captured call — render standalone so output
+      // isn't silently dropped.
+      items.push({
+        itemKind: 'tool',
+        toolCallId: callId,
+        toolName: String(msg['toolName'] ?? ''),
+        args: {},
+        partialOutput: '',
+        finalOutput: output,
+        details,
+        diffError: null,
+        isError,
+        isComplete: true,
+      });
+    }
+    return;
+  }
+
+  if (role === 'bashExecution') {
+    const exitCode = typeof msg['exitCode'] === 'number' ? (msg['exitCode'] as number) : 0;
+    items.push({
+      itemKind: 'tool',
+      toolCallId: nextId(),
+      toolName: 'bash',
+      args: { command: msg['command'] ?? '' },
+      partialOutput: '',
+      finalOutput: typeof msg['output'] === 'string' ? (msg['output'] as string) : '',
+      details: null,
+      diffError: null,
+      isError: exitCode !== 0,
+      isComplete: true,
+    });
+    return;
+  }
+  // Unknown roles are ignored.
+}
+
 // ─── Store shape ──────────────────────────────────────────────────────────────
 
 // ─── UI protocol state ────────────────────────────────────────────────────────
@@ -115,6 +243,11 @@ interface ChatActions {
    * (it is project-scoped and managed separately via setCommands).
    */
   resetSession: () => void;
+  /**
+   * Replace the entire transcript with messages from a loaded session.
+   * Called after switching sessions.
+   */
+  setMessages: (messages: unknown[]) => void;
   /**
    * Process a batch of raw pi RPC events in one store update.
    * Called from the rAF coalescer — never call per-delta.
@@ -450,6 +583,23 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
       uiTitle: null,
       uiEditorText: null,
     })),
+
+  setMessages: (messages: unknown[]) =>
+    set(() => {
+      const items: ChatItem[] = [];
+      const toolsByCallId = new Map<string, ToolRunItem>();
+      for (const msg of messages) {
+        if (msg && typeof msg === 'object') {
+          appendAgentMessage(items, toolsByCallId, msg as Record<string, unknown>);
+        }
+      }
+      return {
+        items,
+        isStreaming: false,
+        _currentAssistantId: null,
+        // Preserve UI protocol state across session switches.
+      };
+    }),
 
   dispatchEvents: (events) =>
     set((state) => {
