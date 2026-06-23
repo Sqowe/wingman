@@ -102,7 +102,9 @@ body {
 
 .user-message {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
 }
 
 .user-message__text {
@@ -117,6 +119,74 @@ body {
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.5;
+}
+
+/* ── Skill block (collapsed pi skill expansion inside a user message) ───────── */
+
+.skill-block {
+  max-width: 85%;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.skill-block__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 10px;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-descriptionForeground);
+  border: none;
+  cursor: pointer;
+  font-family: var(--vscode-font-family);
+  font-size: 11px;
+  text-align: left;
+}
+
+.skill-block__toggle:hover {
+  background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-foreground);
+}
+
+.skill-block__chevron {
+  font-size: 9px;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.skill-block__chevron--open {
+  transform: rotate(90deg);
+}
+
+.skill-block__icon {
+  flex-shrink: 0;
+}
+
+.skill-block__label {
+  font-family: var(--vscode-editor-font-family);
+  color: var(--vscode-foreground);
+}
+
+.skill-block__tag {
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 9px;
+}
+
+.skill-block__body {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--vscode-textBlockQuote-background);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--vscode-descriptionForeground);
 }
 
 /* ── Assistant block ──────────────────────────────────────────────────────── */

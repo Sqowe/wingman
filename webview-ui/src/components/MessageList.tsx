@@ -5,11 +5,12 @@
  *
  * Scroll-to-bottom on new items (only when already near the bottom).
  */
-import React, { useRef, useCallback, useEffect, useLayoutEffect } from 'react';
+import React, { useRef, useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { VariableSizeList, type ListChildComponentProps } from 'react-window';
-import type { ChatItem } from '../store';
+import type { ChatItem, UserItem } from '../store';
 import { AssistantBlock } from './AssistantBlock';
 import { ToolCard } from './ToolCard';
+import { splitUserMessage } from '../lib/skill-blocks';
 
 // ─── Default row height estimates ────────────────────────────────────────────
 // react-window needs a size estimate up-front; we remeasure after render via a
@@ -142,11 +143,7 @@ const Row = React.memo(function Row({ index, style, items, setRowHeight }: RowPr
 function ItemRenderer({ item }: { item: ChatItem }) {
   switch (item.itemKind) {
     case 'user':
-      return (
-        <div className="user-message" aria-label="Your message">
-          <pre className="user-message__text">{item.text}</pre>
-        </div>
-      );
+      return <UserMessage item={item} />;
 
     case 'assistant':
       return <AssistantBlock item={item} />;
@@ -168,4 +165,51 @@ function ItemRenderer({ item }: { item: ChatItem }) {
     default:
       return null;
   }
+}
+
+// ─── User message ──────────────────────────────────────────────────────────────
+// pi expands slash-command skills inline into the user turn as
+// `<skill name="…">…</skill>` blocks. Render plain text as the normal bubble and
+// each skill block as a collapsed-by-default disclosure so the chat isn't
+// flooded with the whole SKILL.md. Collapse state is local: it defaults to
+// collapsed, which is also where react-window leaves it after a row remounts.
+
+function UserMessage({ item }: { item: UserItem }) {
+  const segments = useMemo(() => splitUserMessage(item.text), [item.text]);
+
+  return (
+    <div className="user-message" aria-label="Your message">
+      {segments.map((seg, i) =>
+        seg.kind === 'text' ? (
+          <pre key={i} className="user-message__text">{seg.text}</pre>
+        ) : (
+          <SkillBlock key={i} name={seg.name} body={seg.body} />
+        ),
+      )}
+    </div>
+  );
+}
+
+function SkillBlock({ name, body }: { name: string; body: string }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="skill-block">
+      <button
+        className="skill-block__toggle"
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+      >
+        <span className={`skill-block__chevron${expanded ? ' skill-block__chevron--open' : ''}`}>
+          ▶
+        </span>
+        <span className="skill-block__icon" aria-hidden="true">🧩</span>
+        <span className="skill-block__label">{name}</span>
+        <span className="skill-block__tag">skill</span>
+      </button>
+
+      {expanded && <pre className="skill-block__body">{body}</pre>}
+    </div>
+  );
 }
