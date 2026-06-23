@@ -60,6 +60,21 @@ export type ChatItem = UserItem | AssistantItem | ToolRunItem | SystemItem;
 
 // ─── Store shape ──────────────────────────────────────────────────────────────
 
+// ─── UI protocol state ────────────────────────────────────────────────────────
+
+/** An active status entry from pi's setStatus() call. */
+export interface UiStatusEntry {
+  key: string;
+  text: string;
+}
+
+/** An active widget block from pi's setWidget() call. */
+export interface UiWidget {
+  key: string;
+  lines: string[];
+  placement: 'aboveEditor' | 'belowEditor';
+}
+
 interface ChatState {
   items: ChatItem[];
   isStreaming: boolean;
@@ -67,6 +82,14 @@ interface ChatState {
   _currentAssistantId: string | null;
   /** Slash commands available in this session (from get_commands). */
   commands: PiCommand[];
+  /** Active status entries from pi's setStatus() calls (keyed by statusKey). */
+  uiStatuses: UiStatusEntry[];
+  /** Active widget blocks from pi's setWidget() calls (keyed by widgetKey). */
+  uiWidgets: UiWidget[];
+  /** Optional subtitle from pi's setTitle() call. */
+  uiTitle: string | null;
+  /** Pending pre-fill text from pi's set_editor_text() call. */
+  uiEditorText: string | null;
 }
 
 interface ChatActions {
@@ -78,6 +101,14 @@ interface ChatActions {
   setDiffError: (toolCallId: string, message: string) => void;
   /** Replace the current slash commands list. */
   setCommands: (commands: PiCommand[]) => void;
+  /** Set or clear a status entry (key → text | null). */
+  setUiStatus: (key: string, text: string | null) => void;
+  /** Set or clear a widget block (key → lines[] | null). */
+  setUiWidget: (key: string, lines: string[] | null, placement: 'aboveEditor' | 'belowEditor') => void;
+  /** Set the UI subtitle from pi's setTitle(). */
+  setUiTitle: (title: string) => void;
+  /** Set the pending composer pre-fill text; pass null to clear after consuming. */
+  setUiEditorText: (text: string | null) => void;
   /**
    * Clear the rendered transcript and per-turn state when the session is
    * replaced by a fresh, empty one. The slash command list is left intact
@@ -336,6 +367,10 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   isStreaming: false,
   _currentAssistantId: null,
   commands: [],
+  uiStatuses: [],
+  uiWidgets: [],
+  uiTitle: null,
+  uiEditorText: null,
 
   addUserMessage: (text) =>
     set((state) => ({
@@ -372,8 +407,49 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
 
   setCommands: (commands: PiCommand[]) => set(() => ({ commands })),
 
+  setUiStatus: (key, text) =>
+    set((state) => {
+      if (text === null) {
+        return { uiStatuses: state.uiStatuses.filter((s) => s.key !== key) };
+      }
+      const exists = state.uiStatuses.some((s) => s.key === key);
+      return {
+        uiStatuses: exists
+          ? state.uiStatuses.map((s) => (s.key === key ? { key, text } : s))
+          : [...state.uiStatuses, { key, text }],
+      };
+    }),
+
+  setUiWidget: (key, lines, placement) =>
+    set((state) => {
+      if (lines === null) {
+        return { uiWidgets: state.uiWidgets.filter((w) => w.key !== key) };
+      }
+      const exists = state.uiWidgets.some((w) => w.key === key);
+      return {
+        uiWidgets: exists
+          ? state.uiWidgets.map((w) =>
+              w.key === key ? { key, lines, placement } : w,
+            )
+          : [...state.uiWidgets, { key, lines, placement }],
+      };
+    }),
+
+  setUiTitle: (title) => set(() => ({ uiTitle: title })),
+
+  setUiEditorText: (text) => set(() => ({ uiEditorText: text })),
+
   resetSession: () =>
-    set(() => ({ items: [], isStreaming: false, _currentAssistantId: null })),
+    set(() => ({
+      items: [],
+      isStreaming: false,
+      _currentAssistantId: null,
+      // Clear all session-scoped UI state so stale widgets/prefills don't leak into new sessions.
+      uiStatuses: [],
+      uiWidgets: [],
+      uiTitle: null,
+      uiEditorText: null,
+    })),
 
   dispatchEvents: (events) =>
     set((state) => {
@@ -383,6 +459,12 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         isStreaming: state.isStreaming,
         _currentAssistantId: state._currentAssistantId,
         commands: state.commands,
+        // Carry UI-protocol state through unchanged — dispatchEvents only
+        // handles agent render events, never extension_ui_request.
+        uiStatuses: state.uiStatuses,
+        uiWidgets: state.uiWidgets,
+        uiTitle: state.uiTitle,
+        uiEditorText: state.uiEditorText,
       };
       // Deep-clone items array elements that will be mutated so React
       // detects the change correctly.

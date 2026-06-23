@@ -264,6 +264,14 @@ export class RpcTransport implements AgentTransport {
     });
   }
 
+  public sendRaw(payload: Record<string, unknown>): void {
+    if (!this._isRunning || !this._proc) {
+      throw new Error('RpcTransport: transport is not running');
+    }
+    const line = JSON.stringify(payload) + '\n';
+    this._enqueueWrite(line);
+  }
+
   public send(command: RpcCommand): Promise<RpcResponse> {
     if (!this._isRunning || !this._proc) {
       return Promise.reject(new Error('RpcTransport: transport is not running'));

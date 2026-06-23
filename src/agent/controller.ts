@@ -13,6 +13,7 @@ import { RpcTransport } from './rpc-transport';
 import type { AgentTransport, RpcEvent } from './transport';
 import type { WingmanViewProvider } from '../webview/provider';
 import type { PiStatus, PiCommand, SessionStats } from '../shared/messages';
+import { UiProtocolBridge } from '../ui-protocol/bridge';
 
 export class AgentController implements vscode.Disposable {
   private _transport: AgentTransport | undefined;
@@ -38,9 +39,12 @@ export class AgentController implements vscode.Disposable {
   private _startSeq = 0;
   /** Owned output channel — disposed with the controller. */
   private readonly _outputChannel: vscode.OutputChannel;
+  /** Handles extension_ui_request events from pi. */
+  private readonly _uiBridge: UiProtocolBridge;
 
   constructor() {
     this._outputChannel = vscode.window.createOutputChannel('Sqowe Wingman');
+    this._uiBridge = new UiProtocolBridge(this._outputChannel);
   }
 
   // ─── Public API ───────────────────────────────────────────────────────────
@@ -71,6 +75,7 @@ export class AgentController implements vscode.Disposable {
 
   public setProvider(provider: WingmanViewProvider): void {
     this._provider = provider;
+    this._uiBridge.setProvider(provider);
   }
 
   /**
@@ -247,6 +252,7 @@ export class AgentController implements vscode.Disposable {
     this._folderWatcher?.dispose();
     this._folderWatcher = undefined;
     this._tearDownTransport();
+    this._uiBridge.dispose();
     this._outputChannel.dispose();
   }
 
@@ -291,10 +297,14 @@ export class AgentController implements vscode.Disposable {
     }
 
     this._transport = transport;
+    this._uiBridge.setTransport(transport);
     this._isStreaming = false;
     this._eventDisposable = transport.onEvent((event: RpcEvent) => {
       this._trackStreaming(event);
-      this._provider?.postAgentEvent(event);
+      // UI protocol events are handled natively — do not forward to the webview.
+      if (!this._uiBridge.handleEvent(event)) {
+        this._provider?.postAgentEvent(event);
+      }
     });
     this._closeDisposable = transport.onClose(({ reason }) => {
       this._handleTransportClose(transport, reason);
@@ -384,6 +394,7 @@ export class AgentController implements vscode.Disposable {
     this._isStreaming = false;
     this._transport?.dispose();
     this._transport = undefined;
+    this._uiBridge.setTransport(undefined);
   }
 
   private _resolveCwd(): string | undefined {

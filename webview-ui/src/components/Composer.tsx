@@ -16,12 +16,19 @@ interface Props {
   piStatus: PiStatus | null;
   promptError: string | null;
   commands: PiCommand[];
+  /** Text to pre-fill in the textarea (from pi's set_editor_text / pasteToEditor). */
+  prefillText?: string | null;
+  /** Called once after the pre-fill has been applied so the store can clear it. */
+  onPrefillConsumed?: () => void;
   onSend: (text: string) => void;
 }
 
-export function Composer({ isStreaming, piStatus, promptError, commands, onSend }: Props) {
+export function Composer({ isStreaming, piStatus, promptError, commands, prefillText, onPrefillConsumed, onSend }: Props) {
   const textRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLUListElement>(null);
+  // The textarea is intentionally uncontrolled (no `value` prop, driven by ref).
+  // This avoids React re-rendering on every keystroke and makes imperative
+  // mutations (prefill, slash-menu injection) straightforward.
   const disabled = piStatus?.kind === 'not-found';
 
   // Slash-menu state.
@@ -117,6 +124,21 @@ export function Composer({ isStreaming, piStatus, promptError, commands, onSend 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     updateSlashFilter(e.target.value);
   }, [updateSlashFilter]);
+
+  // Apply pre-fill text from pi's set_editor_text() / pasteToEditor().
+  // Runs when prefillText changes; after writing to the textarea we notify the
+  // parent so the store entry is cleared (prevents re-applying on re-render).
+  // Guard on null/undefined only — empty string is a valid intentional clear.
+  useEffect(() => {
+    if (prefillText == null || !textRef.current) return;
+    textRef.current.value = prefillText;
+    // Dispatch a synthetic input event so any DOM listeners (e.g. autoresize)
+    // pick up the change, and update the slash-filter state to match.
+    textRef.current.dispatchEvent(new Event('input', { bubbles: true }));
+    textRef.current.focus();
+    updateSlashFilter(prefillText);
+    onPrefillConsumed?.();
+  }, [prefillText, onPrefillConsumed, updateSlashFilter]);
 
   // Scroll the highlighted menu item into view.
   useEffect(() => {

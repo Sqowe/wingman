@@ -35,6 +35,11 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   private _lastCommands: PiCommand[] | null = null;
   /** Last agent liveness reported by the controller — replayed on (re)ready. */
   private _lastAgentStatus?: { running: boolean; cwd?: string; reason?: string };
+  /** Buffered UI protocol state — replayed when the webview becomes ready. */
+  private _pendingUiStatuses = new Map<string, string | null>();
+  private _pendingUiWidgets = new Map<string, { lines: string[] | null; placement: 'aboveEditor' | 'belowEditor' }>();
+  private _pendingUiTitle: string | null = null;
+  private _pendingUiEditorText: string | null = null;
   private _viewDisposables: vscode.Disposable[] = [];
   private _controller?: AgentController;
   private _diffService?: DiffService;
@@ -111,6 +116,23 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
             }
             this._pendingEvents = [];
             this._pendingEventBytes = 0;
+            // Flush buffered UI protocol state.
+            for (const [key, text] of this._pendingUiStatuses) {
+              this._postMessage({ type: 'uiStatus', key, text });
+            }
+            this._pendingUiStatuses.clear();
+            for (const [key, { lines, placement }] of this._pendingUiWidgets) {
+              this._postMessage({ type: 'uiWidget', key, lines, placement });
+            }
+            this._pendingUiWidgets.clear();
+            if (this._pendingUiTitle !== null) {
+              this._postMessage({ type: 'uiTitle', title: this._pendingUiTitle });
+              this._pendingUiTitle = null;
+            }
+            if (this._pendingUiEditorText !== null) {
+              this._postMessage({ type: 'uiSetEditorText', text: this._pendingUiEditorText });
+              this._pendingUiEditorText = null;
+            }
             break;
 
           case 'sendPrompt':
@@ -332,8 +354,58 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
    * so nothing is cached.
    */
   public postSessionReset(): void {
+    // Clear buffered UI protocol state so stale title/status/widgets/editorText
+    // from the old session are not replayed into the new one when the webview
+    // becomes ready.
+    this._pendingUiStatuses.clear();
+    this._pendingUiWidgets.clear();
+    this._pendingUiTitle = null;
+    this._pendingUiEditorText = null;
     if (this._webviewReady) {
       this._postMessage({ type: 'sessionReset' });
+    }
+  }
+
+  // ─── UI protocol display methods (fire-and-forget) ────────────────────────
+
+  /** Called by UiProtocolBridge for setStatus — forwards to webview. */
+  public postUiStatus(key: string, text: string | null): void {
+    if (this._webviewReady) {
+      this._postMessage({ type: 'uiStatus', key, text });
+    } else {
+      // Buffer: last value per key wins (mirrors setStatus semantics).
+      this._pendingUiStatuses.set(key, text);
+    }
+  }
+
+  /** Called by UiProtocolBridge for setWidget — forwards to webview. */
+  public postUiWidget(
+    key: string,
+    lines: string[] | null,
+    placement: 'aboveEditor' | 'belowEditor',
+  ): void {
+    if (this._webviewReady) {
+      this._postMessage({ type: 'uiWidget', key, lines, placement });
+    } else {
+      this._pendingUiWidgets.set(key, { lines, placement });
+    }
+  }
+
+  /** Called by UiProtocolBridge for setTitle — forwards to webview. */
+  public postUiTitle(title: string): void {
+    if (this._webviewReady) {
+      this._postMessage({ type: 'uiTitle', title });
+    } else {
+      this._pendingUiTitle = title;
+    }
+  }
+
+  /** Called by UiProtocolBridge for set_editor_text — forwards to webview. */
+  public postUiSetEditorText(text: string): void {
+    if (this._webviewReady) {
+      this._postMessage({ type: 'uiSetEditorText', text });
+    } else {
+      this._pendingUiEditorText = text;
     }
   }
 

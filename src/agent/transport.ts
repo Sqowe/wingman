@@ -55,6 +55,17 @@ export interface AgentTransport extends vscode.Disposable {
   send(command: RpcCommand): Promise<RpcResponse>;
 
   /**
+   * Write a raw JSON payload directly to stdin without registering a pending
+   * request or adding a correlation id.  Used exclusively by UiProtocolBridge
+   * to send `extension_ui_response` payloads that pi emitted first.
+   * Throws if the transport is not running.
+   *
+   * Note: `RpcTransport` is the only v1 implementation.  Any future
+   * implementation (e.g. in-process SDK adapter) must implement this method.
+   */
+  sendRaw(payload: Record<string, unknown>): void;
+
+  /**
    * Register a listener that receives every inbound event (the render stream).
    * Returns a Disposable that unregisters the listener when disposed.
    */
@@ -67,6 +78,9 @@ export interface AgentTransport extends vscode.Disposable {
    */
   onClose(handler: (info: { reason: string }) => void): vscode.Disposable;
 
-  /** True while the underlying process / connection is alive. */
+  /** True while the underlying process / connection is alive.
+   * Declared here on the interface so bridge and other consumers can check
+   * liveness without depending on the concrete `RpcTransport` type.
+   */
   readonly isRunning: boolean;
 }

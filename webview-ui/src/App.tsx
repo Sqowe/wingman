@@ -10,6 +10,7 @@ import React, { useEffect, useRef, useCallback, useState } from 'react';
 import type { HostMessage, PiStatus } from '@shared/messages';
 import { vscode } from './vscodeApi';
 import { useChatStore } from './store';
+import type { UiWidget } from './store';
 import { MessageList } from './components/MessageList';
 import { Composer } from './components/Composer';
 import type { RpcEvent } from '../../src/agent/transport';
@@ -34,10 +35,18 @@ export default function App() {
   const items = useChatStore((s) => s.items);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const commands = useChatStore((s) => s.commands);
+  const uiStatuses = useChatStore((s) => s.uiStatuses);
+  const uiWidgets = useChatStore((s) => s.uiWidgets);
+  const uiTitle = useChatStore((s) => s.uiTitle);
+  const uiEditorText = useChatStore((s) => s.uiEditorText);
   const addUserMessage = useChatStore((s) => s.addUserMessage);
   const dispatchEvents = useChatStore((s) => s.dispatchEvents);
   const setDiffError = useChatStore((s) => s.setDiffError);
   const setCommands = useChatStore((s) => s.setCommands);
+  const setUiStatus = useChatStore((s) => s.setUiStatus);
+  const setUiWidget = useChatStore((s) => s.setUiWidget);
+  const setUiTitle = useChatStore((s) => s.setUiTitle);
+  const setUiEditorText = useChatStore((s) => s.setUiEditorText);
   const resetSession = useChatStore((s) => s.resetSession);
 
   // rAF coalescer: buffer incoming agentEvent messages and flush per frame.
@@ -115,6 +124,22 @@ export default function App() {
           resetSession();
           setPromptError(null);
           break;
+
+        case 'uiStatus':
+          setUiStatus(msg.key, msg.text);
+          break;
+
+        case 'uiWidget':
+          setUiWidget(msg.key, msg.lines, msg.placement);
+          break;
+
+        case 'uiTitle':
+          setUiTitle(msg.title);
+          break;
+
+        case 'uiSetEditorText':
+          setUiEditorText(msg.text);
+          break;
       }
     };
 
@@ -175,6 +200,10 @@ export default function App() {
     <div className="app" ref={containerRef}>
       <PiStatusBanner status={piStatus} />
 
+      {uiTitle && (
+        <div className="ui-title" aria-label="Session title">{uiTitle}</div>
+      )}
+
       {agentDown && piStatus?.kind !== 'not-found' && (
         <div className="status-banner status-banner--warning" role="alert">
           <strong>pi stopped.</strong> {agentDown}
@@ -183,15 +212,41 @@ export default function App() {
 
       <MessageList items={items} height={listHeight} width={listWidth} />
 
+      {/* aboveEditor widgets sit between the message list and the composer input. */}
+      {uiWidgets
+        .filter((w) => w.placement === 'aboveEditor')
+        .map((w) => (
+          <UiWidgetBlock key={w.key} widget={w} />
+        ))}
+
+      {uiStatuses.length > 0 && (
+        <div className="ui-status-strip" role="status" aria-live="polite">
+          {uiStatuses.map((s) => (
+            <span key={s.key} className="ui-status-strip__entry">
+              <span className="ui-status-strip__key">{s.key}:</span> {s.text}
+            </span>
+          ))}
+        </div>
+      )}
+
       <div ref={composerRef}>
         <Composer
           isStreaming={isStreaming}
           piStatus={piStatus}
           promptError={promptError}
           commands={commands}
+          prefillText={uiEditorText}
+          onPrefillConsumed={() => setUiEditorText(null)}
           onSend={handleSend}
         />
       </div>
+
+      {/* belowEditor widgets sit beneath the composer. */}
+      {uiWidgets
+        .filter((w) => w.placement === 'belowEditor')
+        .map((w) => (
+          <UiWidgetBlock key={w.key} widget={w} />
+        ))}
     </div>
   );
 }
@@ -222,6 +277,27 @@ function PiStatusBanner({ status }: { status: PiStatus | null }) {
     <div className="status-banner status-banner--ok">
       <strong>pi {status.version}</strong> ready
       <div className="status-banner__path" title={status.path}>{status.path}</div>
+    </div>
+  );
+}
+
+/** Renders a setWidget block as a collapsible pre-formatted text panel. */
+function UiWidgetBlock({ widget }: { widget: UiWidget }) {
+  const [collapsed, setCollapsed] = React.useState(false);
+  return (
+    <div className="ui-widget" data-placement={widget.placement}>
+      <button
+        className="ui-widget__toggle"
+        type="button"
+        aria-expanded={!collapsed}
+        onClick={() => setCollapsed((c) => !c)}
+        title={collapsed ? 'Expand widget' : 'Collapse widget'}
+      >
+        {collapsed ? '▶' : '▼'} <span className="ui-widget__key">{widget.key}</span>
+      </button>
+      {!collapsed && (
+        <pre className="ui-widget__content">{widget.lines.join('\n')}</pre>
+      )}
     </div>
   );
 }

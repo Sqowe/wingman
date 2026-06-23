@@ -118,6 +118,47 @@ export interface SessionResetMessage {
   type: 'sessionReset';
 }
 
+/**
+ * Sent by UiProtocolBridge when pi calls ctx.ui.setStatus().
+ * The webview renders the (key → text) map as a compact status strip.
+ * `text: null` clears the entry for that key.
+ */
+export interface UiStatusMessage {
+  type: 'uiStatus';
+  key: string;
+  text: string | null;
+}
+
+/**
+ * Sent by UiProtocolBridge when pi calls ctx.ui.setWidget().
+ * The webview renders lines as a collapsible block above or below the composer.
+ * `lines: null` clears the widget for that key.
+ */
+export interface UiWidgetMessage {
+  type: 'uiWidget';
+  key: string;
+  lines: string[] | null;
+  placement: 'aboveEditor' | 'belowEditor';
+}
+
+/**
+ * Sent by UiProtocolBridge when pi calls ctx.ui.setTitle().
+ * The webview can display this as a subtitle in the header area.
+ */
+export interface UiTitleMessage {
+  type: 'uiTitle';
+  title: string;
+}
+
+/**
+ * Sent by UiProtocolBridge when pi calls ctx.ui.set_editor_text() /
+ * ctx.ui.pasteToEditor().  The webview pre-fills the composer textarea.
+ */
+export interface UiSetEditorTextMessage {
+  type: 'uiSetEditorText';
+  text: string;
+}
+
 /** Union of every message the host can send to the webview. */
 export type HostMessage =
   | PiStatusMessage
@@ -126,7 +167,11 @@ export type HostMessage =
   | AgentStatusMessage
   | DiffErrorMessage
   | CommandsListMessage
-  | SessionResetMessage;
+  | SessionResetMessage
+  | UiStatusMessage
+  | UiWidgetMessage
+  | UiTitleMessage
+  | UiSetEditorTextMessage;
 
 // ─── Webview → Host ──────────────────────────────────────────────────────────
 

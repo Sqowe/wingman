@@ -49,7 +49,15 @@ const textContent = (text: string) => [{ type: 'text', text }];
 
 // Reset the singleton store before each test.
 beforeEach(() => {
-  useChatStore.setState({ items: [], isStreaming: false, _currentAssistantId: null });
+  useChatStore.setState({
+    items: [],
+    isStreaming: false,
+    _currentAssistantId: null,
+    uiStatuses: [],
+    uiWidgets: [],
+    uiTitle: null,
+    uiEditorText: null,
+  });
 });
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -364,5 +372,121 @@ describe('immutability for React change detection', () => {
     expect(onlyAssistant()).not.toBe(assistantBefore);
     expect(onlyAssistant().blocks).not.toBe(blocksBefore);
     expect(onlyAssistant().blocks).toEqual([{ kind: 'text', text: 'ab' }]);
+  });
+});
+
+// ─── UI protocol state (Phase 6) ────────────────────────────────────────────────
+//
+// These reducers fold pi's fire-and-forget extension UI methods (setStatus /
+// setWidget / setTitle / set_editor_text) into renderable state. Field
+// semantics are asserted against pi's rpc.md "Extension UI Protocol":
+//   - setStatus/setWidget are keyed; sending null text/lines clears that key
+//   - setTitle is a single subtitle; set_editor_text is a one-shot prefill
+
+describe('UI protocol state', () => {
+  it('setUiStatus adds a new status entry', () => {
+    useChatStore.getState().setUiStatus('ext-a', 'Turn 3 running…');
+    expect(useChatStore.getState().uiStatuses).toEqual([
+      { key: 'ext-a', text: 'Turn 3 running…' },
+    ]);
+  });
+
+  it('setUiStatus updates an existing key in place (no duplicate, order preserved)', () => {
+    const s = useChatStore.getState();
+    s.setUiStatus('a', 'first');
+    s.setUiStatus('b', 'second');
+    s.setUiStatus('a', 'updated');
+    expect(useChatStore.getState().uiStatuses).toEqual([
+      { key: 'a', text: 'updated' },
+      { key: 'b', text: 'second' },
+    ]);
+  });
+
+  it('setUiStatus with null removes the entry for that key only', () => {
+    const s = useChatStore.getState();
+    s.setUiStatus('a', 'x');
+    s.setUiStatus('b', 'y');
+    s.setUiStatus('a', null);
+    expect(useChatStore.getState().uiStatuses).toEqual([{ key: 'b', text: 'y' }]);
+  });
+
+  it('setUiStatus null for an unknown key is a harmless no-op', () => {
+    useChatStore.getState().setUiStatus('ghost', null);
+    expect(useChatStore.getState().uiStatuses).toEqual([]);
+  });
+
+  it('setUiWidget adds a widget block with lines and placement', () => {
+    useChatStore.getState().setUiWidget('w', ['line 1', 'line 2'], 'belowEditor');
+    expect(useChatStore.getState().uiWidgets).toEqual([
+      { key: 'w', lines: ['line 1', 'line 2'], placement: 'belowEditor' },
+    ]);
+  });
+
+  it('setUiWidget updates an existing widget in place (lines + placement)', () => {
+    const s = useChatStore.getState();
+    s.setUiWidget('w', ['old'], 'aboveEditor');
+    s.setUiWidget('w', ['new', 'lines'], 'belowEditor');
+    expect(useChatStore.getState().uiWidgets).toEqual([
+      { key: 'w', lines: ['new', 'lines'], placement: 'belowEditor' },
+    ]);
+  });
+
+  it('setUiWidget with null lines removes the widget for that key', () => {
+    const s = useChatStore.getState();
+    s.setUiWidget('w', ['x'], 'aboveEditor');
+    s.setUiWidget('w', null, 'aboveEditor');
+    expect(useChatStore.getState().uiWidgets).toEqual([]);
+  });
+
+  it('setUiTitle sets the subtitle', () => {
+    useChatStore.getState().setUiTitle('pi — my project');
+    expect(useChatStore.getState().uiTitle).toBe('pi — my project');
+  });
+
+  it('setUiEditorText sets the pending prefill and clears it with null', () => {
+    useChatStore.getState().setUiEditorText('prefill me');
+    expect(useChatStore.getState().uiEditorText).toBe('prefill me');
+    useChatStore.getState().setUiEditorText(null);
+    expect(useChatStore.getState().uiEditorText).toBeNull();
+  });
+
+  it('setUiEditorText treats empty string as a valid (non-null) value', () => {
+    useChatStore.getState().setUiEditorText('');
+    expect(useChatStore.getState().uiEditorText).toBe('');
+  });
+
+  it('resetSession clears all UI protocol state', () => {
+    const s = useChatStore.getState();
+    s.setUiStatus('a', 'x');
+    s.setUiWidget('w', ['y'], 'aboveEditor');
+    s.setUiTitle('title');
+    s.setUiEditorText('text');
+
+    useChatStore.getState().resetSession();
+
+    const after = useChatStore.getState();
+    expect(after.uiStatuses).toEqual([]);
+    expect(after.uiWidgets).toEqual([]);
+    expect(after.uiTitle).toBeNull();
+    expect(after.uiEditorText).toBeNull();
+  });
+
+  it('dispatchEvents preserves UI protocol state (it only folds agent events)', () => {
+    // Regression guard: the dispatchEvents draft must carry UI fields through
+    // unchanged — otherwise a single agent event would wipe active status /
+    // widget / title / prefill state mid-turn.
+    const s = useChatStore.getState();
+    s.setUiStatus('a', 'x');
+    s.setUiWidget('w', ['y'], 'aboveEditor');
+    s.setUiTitle('title');
+    s.setUiEditorText('text');
+
+    dispatch({ type: 'agent_start' });
+
+    const after = useChatStore.getState();
+    expect(after.uiStatuses).toEqual([{ key: 'a', text: 'x' }]);
+    expect(after.uiWidgets).toEqual([{ key: 'w', lines: ['y'], placement: 'aboveEditor' }]);
+    expect(after.uiTitle).toBe('title');
+    expect(after.uiEditorText).toBe('text');
   });
 });
