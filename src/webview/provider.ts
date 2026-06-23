@@ -10,7 +10,7 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import type { AgentController } from '../agent/controller';
-import type { HostMessage, PiStatus, WebviewMessage } from '../shared/messages';
+import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats } from '../shared/messages';
 import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES, MAX_PATCH_BYTES } from '../shared/limits';
 import type { RpcEvent } from '../agent/transport';
 import type { DiffService } from '../diff/diff-service';
@@ -31,6 +31,8 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
   private _webviewReady = false;
   private _lastPiStatus?: PiStatus;
+  /** Last commands list — null = not yet fetched, [] = fetched but empty. */
+  private _lastCommands: PiCommand[] | null = null;
   /** Last agent liveness reported by the controller — replayed on (re)ready. */
   private _lastAgentStatus?: { running: boolean; cwd?: string; reason?: string };
   private _viewDisposables: vscode.Disposable[] = [];
@@ -94,6 +96,12 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
                 reason: this._lastAgentStatus.reason,
               });
             }
+            // Replay commands list or trigger a fresh fetch.
+            if (this._lastCommands !== null) {
+              this._postMessage({ type: 'commandsList', commands: this._lastCommands });
+            } else {
+              void this._controller?.getCommands();
+            }
             // Flush buffered events that arrived before the webview was ready.
             for (const { event } of this._pendingEvents) {
               this._postMessage({
@@ -123,6 +131,16 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
 
           case 'openDiff':
             void this._handleOpenDiff(message.patch, message.toolCallId);
+            break;
+
+          case 'requestCommands':
+            void this._controller?.getCommands();
+            break;
+
+          case 'newSession':
+            // The webview forwards the new-session shortcut (keybindings don't
+            // reach the iframe). Run the same native command the palette uses.
+            void vscode.commands.executeCommand('sqoweWingman.newSession');
             break;
 
           case 'applyEdit':
@@ -262,6 +280,12 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
         return { type: kind, patch: msg['patch'], toolCallId: msg['toolCallId'] };
       }
 
+      case 'requestCommands':
+        return { type: 'requestCommands' };
+
+      case 'newSession':
+        return { type: 'newSession' };
+
       default:
         this._controller?.outputChannel?.appendLine(
           `[WingmanViewProvider] dropped unknown message type: ${msg['type']}`,
@@ -291,6 +315,41 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
         reason: status.reason,
       });
     }
+  }
+
+  /** Push an updated commands list to the webview (and cache for replay). */
+  public postCommandsList(commands: PiCommand[]): void {
+    this._lastCommands = commands.slice(); // defensive copy — null → [] marks as fetched
+    if (this._webviewReady) {
+      this._postMessage({ type: 'commandsList', commands });
+    }
+  }
+
+  /**
+   * Tell the webview to clear its rendered transcript because the active
+   * session was replaced with a fresh, empty one. A reset is point-in-time —
+   * if the webview is not yet ready there is nothing to clear (it starts empty),
+   * so nothing is cached.
+   */
+  public postSessionReset(): void {
+    if (this._webviewReady) {
+      this._postMessage({ type: 'sessionReset' });
+    }
+  }
+
+  /** Push updated session stats to the status bar via the controller callback.
+   * Passing `null` signals a session reset — the status bar should clear.
+   */
+  public postSessionStats(stats: SessionStats | null): void {
+    this._onSessionStats?.(stats);
+  }
+
+  /** Optional callback invoked with fresh session stats after each turn, or null on reset. */
+  private _onSessionStats?: (stats: SessionStats | null) => void;
+
+  /** Register a callback that receives session stats after each agent turn, or null on reset. */
+  public onSessionStats(cb: (stats: SessionStats | null) => void): void {
+    this._onSessionStats = cb;
   }
 
   /**

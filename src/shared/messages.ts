@@ -14,6 +14,22 @@
 // ─── Shared types ────────────────────────────────────────────────────────────
 
 /** Status of the pi executable after the locator has run. */
+
+/** A single slash command returned by pi's get_commands RPC call. */
+export interface PiCommand {
+  name: string;
+  description: string;
+  /** True for built-in TUI commands that are inert over RPC (not shown in the slash menu). */
+  builtIn?: boolean;
+}
+
+/** Session statistics returned by pi's get_session_stats RPC call. */
+export interface SessionStats {
+  totalTokens: number | null;
+  totalCost: number | null;
+  totalMessages: number | null;
+}
+
 export type PiStatus =
   | { kind: 'found'; version: string; path: string }
   | { kind: 'version-warning'; version: string; path: string; minimum: string }
@@ -82,13 +98,35 @@ export interface DiffErrorMessage {
   message: string;
 }
 
+/**
+ * Sent by the host (once on session start, and again on webview `ready` replay)
+ * with the list of user slash commands available in the current project.
+ * The webview uses this to populate the `/` autocomplete menu.
+ */
+export interface CommandsListMessage {
+  type: 'commandsList';
+  commands: PiCommand[];
+}
+
+/**
+ * Sent by the host when the active session is replaced by a fresh, empty one
+ * (the `new_session` command). The webview clears its rendered transcript and
+ * per-turn state so the old conversation does not linger. Not sent for
+ * fork / clone, which branch the existing history (the transcript stays valid).
+ */
+export interface SessionResetMessage {
+  type: 'sessionReset';
+}
+
 /** Union of every message the host can send to the webview. */
 export type HostMessage =
   | PiStatusMessage
   | AgentEventMessage
   | PromptRejectedMessage
   | AgentStatusMessage
-  | DiffErrorMessage;
+  | DiffErrorMessage
+  | CommandsListMessage
+  | SessionResetMessage;
 
 // ─── Webview → Host ──────────────────────────────────────────────────────────
 
@@ -163,6 +201,24 @@ export interface ApplyEditMessage {
   toolCallId: string;
 }
 
+/**
+ * Sent by the webview to request a fresh commands list from the host
+ * (e.g. after a new session or project switch).
+ */
+export interface RequestCommandsMessage {
+  type: 'requestCommands';
+}
+
+/**
+ * Sent by the webview when the user triggers the new-session keyboard shortcut
+ * from inside the chat. VS Code keybindings do not reach the extension while a
+ * webview iframe has focus, so the webview forwards the intent and the host
+ * runs the `sqoweWingman.newSession` command.
+ */
+export interface RequestNewSessionMessage {
+  type: 'newSession';
+}
+
 /** Union of every message the webview can send to the host. */
 export type WebviewMessage =
   | ReadyMessage
@@ -171,4 +227,6 @@ export type WebviewMessage =
   | AbortTurnMessage
   | OpenExternalMessage
   | OpenDiffMessage
-  | ApplyEditMessage;
+  | ApplyEditMessage
+  | RequestCommandsMessage
+  | RequestNewSessionMessage;

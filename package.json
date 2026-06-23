@@ -24,7 +24,20 @@
     "pi",
     "sqowe"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onCommand:sqoweWingman.focusChat",
+    "onCommand:sqoweWingman.newSession",
+    "onCommand:sqoweWingman.setModel",
+    "onCommand:sqoweWingman.cycleModel",
+    "onCommand:sqoweWingman.compactSession",
+    "onCommand:sqoweWingman.forkSession",
+    "onCommand:sqoweWingman.cloneSession",
+    "onCommand:sqoweWingman.exportHtml",
+    "onCommand:sqoweWingman.setThinkingLevel",
+    "onCommand:sqoweWingman.cycleThinkingLevel",
+    "onCommand:sqoweWingman.showStats",
+    "onView:sqoweWingman.chat"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -56,6 +69,65 @@
         "command": "sqoweWingman.focusChat",
         "category": "Sqowe Wingman",
         "title": "Focus Chat"
+      },
+      {
+        "command": "sqoweWingman.setModel",
+        "category": "Sqowe Wingman",
+        "title": "Set Model",
+        "icon": "$(symbol-misc)"
+      },
+      {
+        "command": "sqoweWingman.cycleModel",
+        "category": "Sqowe Wingman",
+        "title": "Cycle Model"
+      },
+      {
+        "command": "sqoweWingman.compactSession",
+        "category": "Sqowe Wingman",
+        "title": "Compact Session",
+        "icon": "$(fold)"
+      },
+      {
+        "command": "sqoweWingman.forkSession",
+        "category": "Sqowe Wingman",
+        "title": "Fork Session",
+        "icon": "$(repo-forked)"
+      },
+      {
+        "command": "sqoweWingman.cloneSession",
+        "category": "Sqowe Wingman",
+        "title": "Clone Session",
+        "icon": "$(files)"
+      },
+      {
+        "command": "sqoweWingman.exportHtml",
+        "category": "Sqowe Wingman",
+        "title": "Export Session as HTML",
+        "icon": "$(export)"
+      },
+      {
+        "command": "sqoweWingman.setThinkingLevel",
+        "category": "Sqowe Wingman",
+        "title": "Set Thinking Level",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "sqoweWingman.cycleThinkingLevel",
+        "category": "Sqowe Wingman",
+        "title": "Cycle Thinking Level"
+      },
+      {
+        "command": "sqoweWingman.showStats",
+        "category": "Sqowe Wingman",
+        "title": "Show Session Stats"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "sqoweWingman.newSession",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n",
+        "when": "focusedView == sqoweWingman.chat"
       }
     ],
     "menus": {
@@ -63,7 +135,37 @@
         {
           "command": "sqoweWingman.newSession",
           "when": "view == sqoweWingman.chat",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "sqoweWingman.setModel",
+          "when": "view == sqoweWingman.chat",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sqoweWingman.setThinkingLevel",
+          "when": "view == sqoweWingman.chat",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sqoweWingman.compactSession",
+          "when": "view == sqoweWingman.chat",
+          "group": "1_session@1"
+        },
+        {
+          "command": "sqoweWingman.forkSession",
+          "when": "view == sqoweWingman.chat",
+          "group": "1_session@2"
+        },
+        {
+          "command": "sqoweWingman.cloneSession",
+          "when": "view == sqoweWingman.chat",
+          "group": "1_session@3"
+        },
+        {
+          "command": "sqoweWingman.exportHtml",
+          "when": "view == sqoweWingman.chat",
+          "group": "1_session@4"
         }
       ]
     },

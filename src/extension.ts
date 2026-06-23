@@ -1,10 +1,11 @@
 /**
  * Extension entry point.
  *
- * Phase 1 additions:
- *  - Instantiate AgentController and wire it to the provider.
- *  - Start the transport once pi is located.
- *  - Stop the transport on deactivation.
+ * Phase 5 additions:
+ *  - WingmanStatusBar (always-visible session stats).
+ *  - registerCommands() wires all Phase 5 native commands.
+ *  - getCommands() fetched after transport starts.
+ *  - onSessionStats callback links controller → status bar.
  */
 
 import * as vscode from 'vscode';
@@ -12,6 +13,8 @@ import { WingmanViewProvider } from './webview/provider';
 import { AgentController } from './agent/controller';
 import { locatePi } from './agent/pi-locator';
 import { DiffService, DIFF_SCHEME } from './diff/diff-service';
+import { WingmanStatusBar } from './status-bar';
+import { registerCommands } from './commands/index';
 
 // Module-level controller so deactivate() can dispose it.
 let _controller: AgentController | undefined;
@@ -25,6 +28,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // idempotent, so the explicit deactivate() call is safe too.
   context.subscriptions.push(controller);
 
+  // ── Status bar ────────────────────────────────────────────────────────────
+  const statusBar = new WingmanStatusBar();
+  context.subscriptions.push(statusBar);
+
   // ── Diff service ──────────────────────────────────────────────────────────
   const diffService = new DiffService();
   context.subscriptions.push(
@@ -36,6 +43,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const provider = new WingmanViewProvider(context.extensionUri);
   provider.setController(controller);
   provider.setDiffService(diffService);
+  // Route session stats from the controller → status bar (null = session reset).
+  provider.onSessionStats((stats) => {
+    if (stats === null) {
+      statusBar.reset();
+    } else {
+      statusBar.update(stats);
+    }
+  });
   controller.setProvider(provider);
 
   context.subscriptions.push(
@@ -46,15 +61,10 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
-  // ── Commands ──────────────────────────────────────────────────────────────
-  context.subscriptions.push(
-    vscode.commands.registerCommand('sqoweWingman.newSession', () => {
-      // Phase 2: will send new_session RPC command.
-      vscode.window.showInformationMessage(
-        'Sqowe Wingman: New Session will be available once the transport is wired (Phase 2).',
-      );
-    }),
+  // ── Commands (Phase 5) ────────────────────────────────────────────────────
+  registerCommands(context, controller);
 
+  context.subscriptions.push(
     vscode.commands.registerCommand('sqoweWingman.focusChat', () => {
       void vscode.commands.executeCommand('sqoweWingman.chat.focus');
     }),
@@ -101,6 +111,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     await controller.start(status);
+    // Fetch slash commands once transport is live.
+    void controller.getCommands();
   })();
 }
 

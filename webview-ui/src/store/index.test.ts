@@ -75,6 +75,24 @@ describe('actions', () => {
     const after = onlyAssistant().blocks[0];
     expect(after).toMatchObject({ kind: 'thinking', collapsed: false });
   });
+
+  it('resetSession clears the transcript and streaming state but keeps commands', () => {
+    // Seed a streaming session with items and a command list.
+    dispatch({ type: 'agent_start' });
+    useChatStore.getState().addUserMessage('hello');
+    useChatStore.getState().setCommands([{ name: '/foo', description: 'bar' }]);
+    expect(items().length).toBeGreaterThan(0);
+    expect(useChatStore.getState().isStreaming).toBe(true);
+
+    useChatStore.getState().resetSession();
+
+    const state = useChatStore.getState();
+    expect(state.items).toEqual([]);
+    expect(state.isStreaming).toBe(false);
+    expect(state._currentAssistantId).toBeNull();
+    // Commands are project-scoped and managed separately — must survive a reset.
+    expect(state.commands).toEqual([{ name: '/foo', description: 'bar' }]);
+  });
 });
 
 // ─── Agent / streaming lifecycle ────────────────────────────────────────────────

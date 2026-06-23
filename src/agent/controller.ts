@@ -12,7 +12,7 @@ import * as vscode from 'vscode';
 import { RpcTransport } from './rpc-transport';
 import type { AgentTransport, RpcEvent } from './transport';
 import type { WingmanViewProvider } from '../webview/provider';
-import type { PiStatus } from '../shared/messages';
+import type { PiStatus, PiCommand, SessionStats } from '../shared/messages';
 
 export class AgentController implements vscode.Disposable {
   private _transport: AgentTransport | undefined;
@@ -23,6 +23,14 @@ export class AgentController implements vscode.Disposable {
   private _piStatus: PiStatus | undefined;
   /** True while pi is mid-turn (between agent_start and agent_end). */
   private _isStreaming = false;
+  /** Most-recent session stats (updated after every agent_end). */
+  private _lastSessionStats: SessionStats | null = null;
+  /** True while a get_session_stats fetch is in flight — prevents races. */
+  private _statsFetchSeq = 0;
+  /** Cached list of user slash commands for the current session. */
+  private _commands: PiCommand[] = [];
+  /** In-flight getCommands promise — coalesces concurrent fetches into one RPC call. */
+  private _commandsFetch: Promise<void> | undefined;
   /** In-flight start promise — prevents concurrent spawns. */
   private _starting: Promise<void> | undefined;
   private _disposed = false;
@@ -51,8 +59,113 @@ export class AgentController implements vscode.Disposable {
     return this._isStreaming;
   }
 
+  /** The most recently fetched session statistics, or null before the first turn. */
+  public get lastSessionStats(): SessionStats | null {
+    return this._lastSessionStats;
+  }
+
+  /** The most recently fetched slash command list. */
+  public get commands(): PiCommand[] {
+    return this._commands;
+  }
+
   public setProvider(provider: WingmanViewProvider): void {
     this._provider = provider;
+  }
+
+  /**
+   * Send an arbitrary RPC command and return the response.
+   * All command code must go through this — never touch the concrete transport.
+   */
+  public async sendCommand(command: import('./transport').RpcCommand): Promise<import('./transport').RpcResponse> {
+    if (!this._transport?.isRunning) {
+      throw new Error('Sqowe Wingman: agent transport is not running');
+    }
+    return this._transport.send(command);
+  }
+
+  /**
+   * Fetch and cache the user slash command list from pi.
+   * Pushes the result to the webview automatically.
+   *
+   * Concurrent callers (extension activation pre-warm + the webview `ready`
+   * replay) share a single in-flight fetch so pi sees only one RPC round-trip.
+   */
+  public getCommands(): Promise<void> {
+    if (this._commandsFetch) return this._commandsFetch;
+    this._commandsFetch = this._doGetCommands().finally(() => {
+      this._commandsFetch = undefined;
+    });
+    return this._commandsFetch;
+  }
+
+  private async _doGetCommands(): Promise<void> {
+    if (!this._transport?.isRunning) return;
+    try {
+      const response = await this.sendCommand({ type: 'get_commands' });
+      if (!response.success) {
+        this._outputChannel.appendLine(
+          `[AgentController] get_commands failed: ${response.error ?? 'unknown'}`,
+        );
+        return;
+      }
+      const data = response.data as { commands?: unknown[] } | null;
+      const raw = Array.isArray(data?.commands) ? data!.commands : [];
+      // Validate each entry — skip malformed ones defensively.
+      const valid = raw.filter(
+        (c): c is { name: string; description?: unknown } =>
+          !!c && typeof c === 'object' && typeof (c as Record<string, unknown>)['name'] === 'string',
+      );
+      // Filter out built-in TUI commands that are inert over RPC.
+      const BUILTIN_INERT = new Set([
+        'settings', 'model', 'new', 'resume', 'fork', 'clone',
+        'export', 'thinking', 'login', 'logout', 'compact',
+      ]);
+      const filtered: string[] = [];
+      this._commands = valid
+        .filter((c) => {
+          const stripped = c.name.replace(/^\//, '');
+          if (BUILTIN_INERT.has(stripped)) {
+            filtered.push(c.name);
+            return false;
+          }
+          return true;
+        })
+        .map((c) => ({
+          // Normalise: ensure every command name starts with '/'
+          name: c.name.startsWith('/') ? c.name : `/${c.name}`,
+          description: typeof c.description === 'string' ? c.description : '',
+        }));
+      if (filtered.length > 0) {
+        this._outputChannel.appendLine(
+          `[AgentController] filtered out ${filtered.length} inert built-in command(s): ${filtered.join(', ')}`,
+        );
+      }
+      this._provider?.postCommandsList(this._commands);
+    } catch (err) {
+      this._outputChannel.appendLine(`[AgentController] get_commands error: ${String(err)}`);
+    }
+  }
+
+  /**
+   * Called after new_session / fork / clone to reset per-session state and
+   * refresh the command list and status bar.
+   *
+   * `clearTranscript` wipes the webview's rendered conversation — only correct
+   * for `new_session` (a fresh, empty session). fork / clone branch the
+   * existing history, so their transcript stays valid and must not be cleared.
+   */
+  public onNewSession(opts?: { clearTranscript?: boolean }): void {
+    this._lastSessionStats = null;
+    this._commands = [];
+    this._provider?.postCommandsList([]);
+    // Signal a stats reset to the status bar via the provider callback.
+    this._provider?.postSessionStats(null);
+    if (opts?.clearTranscript) {
+      this._provider?.postSessionReset();
+    }
+    // Refresh commands for the new session (non-blocking).
+    void this.getCommands();
   }
 
   /**
@@ -197,6 +310,40 @@ export class AgentController implements vscode.Disposable {
       this._isStreaming = true;
     } else if (event.type === 'agent_end') {
       this._isStreaming = false;
+      // Refresh stats after every completed turn (non-blocking).
+      void this._fetchSessionStats();
+    }
+  }
+
+  /** Fetch session stats from pi and push them to the status bar + provider. */
+  private async _fetchSessionStats(): Promise<void> {
+    if (!this._transport?.isRunning) return;
+    // Sequence guard: only the latest fetch updates state.
+    const seq = ++this._statsFetchSeq;
+    try {
+      const response = await this.sendCommand({ type: 'get_session_stats' });
+      if (seq !== this._statsFetchSeq) return; // superseded by a newer fetch
+      if (!response.success) return;
+      // Normalise at the RPC boundary: tolerate camelCase/snake_case and coerce
+      // types — RPC payloads can return strings or undefined for numeric fields.
+      const data = (typeof response.data === 'object' && response.data !== null)
+        ? response.data as Record<string, unknown>
+        : {};
+      const toFiniteOrNull = (v: unknown): number | null => {
+        // Treat null / undefined / empty string as absent — not as 0.
+        if (v === null || v === undefined || v === '') return null;
+        const n = typeof v === 'number' ? v : Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+      const stats: SessionStats = {
+        totalTokens:   toFiniteOrNull(data['totalTokens']   ?? data['total_tokens']),
+        totalCost:     toFiniteOrNull(data['totalCost']     ?? data['total_cost']),
+        totalMessages: toFiniteOrNull(data['totalMessages'] ?? data['total_messages']),
+      };
+      this._lastSessionStats = stats;
+      this._provider?.postSessionStats(stats);
+    } catch {
+      // Stats are best-effort — swallow errors silently.
     }
   }
 

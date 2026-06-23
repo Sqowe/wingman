@@ -7,6 +7,7 @@
 
 import { create } from 'zustand';
 import type { RpcEvent } from '../../../src/agent/transport';
+import type { PiCommand } from '../../../src/shared/messages';
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -64,6 +65,8 @@ interface ChatState {
   isStreaming: boolean;
   /** id of the AssistantItem currently being streamed (null when idle). */
   _currentAssistantId: string | null;
+  /** Slash commands available in this session (from get_commands). */
+  commands: PiCommand[];
 }
 
 interface ChatActions {
@@ -73,6 +76,14 @@ interface ChatActions {
   toggleThinking: (itemId: string, blockIndex: number) => void;
   /** Set a diff error on a tool card (from host diffError message). */
   setDiffError: (toolCallId: string, message: string) => void;
+  /** Replace the current slash commands list. */
+  setCommands: (commands: PiCommand[]) => void;
+  /**
+   * Clear the rendered transcript and per-turn state when the session is
+   * replaced by a fresh, empty one. The slash command list is left intact
+   * (it is project-scoped and managed separately via setCommands).
+   */
+  resetSession: () => void;
   /**
    * Process a batch of raw pi RPC events in one store update.
    * Called from the rAF coalescer — never call per-delta.
@@ -324,6 +335,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   items: [],
   isStreaming: false,
   _currentAssistantId: null,
+  commands: [],
 
   addUserMessage: (text) =>
     set((state) => ({
@@ -358,6 +370,11 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
       }),
     })),
 
+  setCommands: (commands: PiCommand[]) => set(() => ({ commands })),
+
+  resetSession: () =>
+    set(() => ({ items: [], isStreaming: false, _currentAssistantId: null })),
+
   dispatchEvents: (events) =>
     set((state) => {
       // Mutate a draft copy so we make one `set` call for the whole batch.
@@ -365,6 +382,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         items: [...state.items],
         isStreaming: state.isStreaming,
         _currentAssistantId: state._currentAssistantId,
+        commands: state.commands,
       };
       // Deep-clone items array elements that will be mutated so React
       // detects the change correctly.

@@ -71,6 +71,8 @@ function makeController(opts?: { abortShouldThrow?: boolean }) {
       if (opts?.abortShouldThrow) throw new Error('transport gone');
     }),
     sendPrompt: vi.fn(async (_text: string) => {}),
+    sendCommand: vi.fn(async () => ({ type: 'response' as const, success: true })),
+    getCommands: vi.fn(async () => {}),
   };
 }
 
@@ -328,5 +330,118 @@ describe('WingmanViewProvider — prompt size enforcement', () => {
     expect(postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'promptRejected', reason: 'too-large' }),
     );
+  });
+});
+
+describe('WingmanViewProvider — session stats / status bar wiring', () => {
+  it('calls onSessionStats callback with stats when postSessionStats is called', () => {
+    const { provider } = resolveProvider();
+    const cb = vi.fn();
+    provider.onSessionStats(cb);
+    const stats = { totalTokens: 100, totalCost: 0.002, totalMessages: 3 };
+    provider.postSessionStats(stats);
+    expect(cb).toHaveBeenCalledWith(stats);
+  });
+
+  it('calls onSessionStats with null on session reset (onNewSession)', () => {
+    // Simulate what AgentController.onNewSession() does: posts null stats.
+    const { provider } = resolveProvider();
+    const cb = vi.fn();
+    provider.onSessionStats(cb);
+    provider.postSessionStats(null);
+    expect(cb).toHaveBeenCalledWith(null);
+  });
+
+  it('does not throw when no onSessionStats callback is registered', () => {
+    const { provider } = resolveProvider();
+    expect(() => provider.postSessionStats({ totalTokens: 1, totalCost: 0, totalMessages: 1 })).not.toThrow();
+    expect(() => provider.postSessionStats(null)).not.toThrow();
+  });
+});
+
+describe('WingmanViewProvider — commands list flow', () => {
+  it('calls controller.getCommands() on ready when no commands are cached', () => {
+    const { controller } = resolveProvider();
+    // resolveProvider() already sends ready — getCommands must have been called.
+    expect(controller.getCommands).toHaveBeenCalledTimes(1);
+  });
+
+  it('posts cached commandsList on ready when commands are already available', () => {
+    const { view, sendMessage, postMessage } = makeWebviewView();
+    const provider = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    const controller = makeController();
+    provider.setController(controller as unknown as AgentController);
+
+    // Pre-populate the commands cache before the webview signals ready.
+    const cmds = [{ name: '/hello', description: 'Say hello' }];
+    provider.postCommandsList(cmds);
+
+    provider.resolveWebviewView(
+      view,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    sendMessage({ type: 'ready' });
+
+    expect(postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'commandsList', commands: cmds }),
+    );
+    // Should NOT trigger a fresh fetch when cache is populated.
+    expect(controller.getCommands).not.toHaveBeenCalled();
+  });
+
+  it('calls controller.getCommands() when webview sends requestCommands', async () => {
+    const { controller, sendMessage } = resolveProvider();
+    const callsBefore = (controller.getCommands as ReturnType<typeof vi.fn>).mock.calls.length;
+    sendMessage({ type: 'requestCommands' });
+    await flushMicrotasks();
+    expect(controller.getCommands).toHaveBeenCalledTimes(callsBefore + 1);
+  });
+
+  it('does not trigger a fetch on ready when commands cache is populated', () => {
+    const { view, sendMessage } = makeWebviewView();
+    const provider = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    const controller = makeController();
+    provider.setController(controller as unknown as AgentController);
+    provider.postCommandsList([{ name: '/foo', description: 'bar' }]);
+    provider.resolveWebviewView(
+      view,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    sendMessage({ type: 'ready' });
+    expect(controller.getCommands).not.toHaveBeenCalled();
+  });
+});
+
+describe('WingmanViewProvider — session reset', () => {
+  it('posts a sessionReset message to the webview when ready', () => {
+    const { provider, postMessage } = resolveProvider();
+    provider.postSessionReset();
+    expect(postMessage).toHaveBeenCalledWith({ type: 'sessionReset' });
+  });
+
+  it('does not post sessionReset before the webview is ready (nothing to clear)', () => {
+    const { view, postMessage } = makeWebviewView();
+    const provider = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    provider.setController(makeController() as unknown as AgentController);
+    provider.resolveWebviewView(
+      view,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    // No 'ready' sent yet.
+    provider.postSessionReset();
+    expect(postMessage).not.toHaveBeenCalledWith({ type: 'sessionReset' });
+  });
+});
+
+describe('WingmanViewProvider — new-session shortcut forwarding', () => {
+  it('runs the newSession command when the webview forwards the shortcut', () => {
+    const exec = vi.spyOn(vscode.commands, 'executeCommand');
+    const { sendMessage } = resolveProvider();
+    sendMessage({ type: 'newSession' });
+    expect(exec).toHaveBeenCalledWith('sqoweWingman.newSession');
+    exec.mockRestore();
   });
 });

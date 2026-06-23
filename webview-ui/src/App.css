@@ -590,6 +590,54 @@ body {
   opacity: 0.85;
 }
 
+/* ── Slash menu ──────────────────────────────────────────────────────────── */
+
+.composer__slash-menu {
+  list-style: none;
+  margin: 0;
+  padding: 2px 0;
+  background: var(--vscode-editorWidget-background, var(--vscode-input-background));
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-input-border, transparent));
+  border-radius: 3px;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0,0,0,0.3));
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.composer__slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--vscode-foreground);
+}
+
+.composer__slash-item--active {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.composer__slash-item:hover:not(.composer__slash-item--active) {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.composer__slash-name {
+  font-family: var(--vscode-editor-font-family);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.composer__slash-desc {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Inline code (install instructions in banners) ────────────────────────── */
 
 code {

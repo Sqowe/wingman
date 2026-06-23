@@ -33,9 +33,12 @@ export default function App() {
   // Zustand store bindings.
   const items = useChatStore((s) => s.items);
   const isStreaming = useChatStore((s) => s.isStreaming);
+  const commands = useChatStore((s) => s.commands);
   const addUserMessage = useChatStore((s) => s.addUserMessage);
   const dispatchEvents = useChatStore((s) => s.dispatchEvents);
   const setDiffError = useChatStore((s) => s.setDiffError);
+  const setCommands = useChatStore((s) => s.setCommands);
+  const resetSession = useChatStore((s) => s.resetSession);
 
   // rAF coalescer: buffer incoming agentEvent messages and flush per frame.
   const pendingEvents = useRef<RpcEvent[]>([]);
@@ -96,12 +99,43 @@ export default function App() {
         case 'diffError':
           setDiffError(msg.toolCallId, msg.message);
           break;
+
+        case 'commandsList':
+          setCommands(msg.commands);
+          break;
+
+        case 'sessionReset':
+          // Drop any buffered (old-session) events so a pending rAF flush does
+          // not repopulate the transcript we are about to clear.
+          pendingEvents.current = [];
+          if (rafId.current !== undefined) {
+            cancelAnimationFrame(rafId.current);
+            rafId.current = undefined;
+          }
+          resetSession();
+          setPromptError(null);
+          break;
       }
     };
 
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
   }, [scheduleFlush]);
+
+  // Forward the New Session shortcut (Cmd/Ctrl+Alt+N) to the host. VS Code
+  // keybindings do not reach the extension while the webview iframe has focus,
+  // so the package.json keybinding only fires when the view frame (not its
+  // content) is focused; this covers the common case of typing in the composer.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.altKey && e.code === 'KeyN') {
+        e.preventDefault();
+        vscode.postMessage({ type: 'newSession' });
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const handleSend = useCallback((text: string) => {
     addUserMessage(text);
@@ -154,6 +188,7 @@ export default function App() {
           isStreaming={isStreaming}
           piStatus={piStatus}
           promptError={promptError}
+          commands={commands}
           onSend={handleSend}
         />
       </div>
