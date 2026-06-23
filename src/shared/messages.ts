@@ -30,6 +30,14 @@ export interface SessionStats {
   totalMessages: number | null;
 }
 
+/** The session's active model + thinking level, from pi's get_state. */
+export interface ModelState {
+  modelId: string | null;
+  modelName: string | null;
+  provider: string | null;
+  thinkingLevel: string | null;
+}
+
 export type PiStatus =
   | { kind: 'found'; version: string; path: string }
   | { kind: 'version-warning'; version: string; path: string; minimum: string }

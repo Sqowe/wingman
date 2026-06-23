@@ -13,7 +13,7 @@ import { WingmanViewProvider } from './webview/provider';
 import { AgentController } from './agent/controller';
 import { locatePi } from './agent/pi-locator';
 import { DiffService, DIFF_SCHEME } from './diff/diff-service';
-import { WingmanStatusBar } from './status-bar';
+import { WingmanStatusBar, ModelStatusBar } from './status-bar';
 import { registerCommands } from './commands/index';
 import { registerSessions } from './sessions';
 
@@ -31,7 +31,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // ── Status bar ────────────────────────────────────────────────────────────
   const statusBar = new WingmanStatusBar();
-  context.subscriptions.push(statusBar);
+  const modelStatusBar = new ModelStatusBar();
+  context.subscriptions.push(statusBar, modelStatusBar);
+  // Route model + thinking level from the controller → model status bar
+  // (null = unknown / pi down).
+  context.subscriptions.push(
+    controller.onModelState((state) => modelStatusBar.update(state)),
+  );
 
   // ── Diff service ──────────────────────────────────────────────────────────
   const diffService = new DiffService();

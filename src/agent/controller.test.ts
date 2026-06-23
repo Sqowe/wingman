@@ -14,7 +14,7 @@ vi.mock('vscode', async () => {
 import * as vscode from 'vscode';
 import { AgentController } from './controller';
 import type { WingmanViewProvider } from '../webview/provider';
-import type { SessionStats, PiCommand } from '../shared/messages';
+import type { SessionStats, PiCommand, ModelState } from '../shared/messages';
 
 // ─── Stub transport ───────────────────────────────────────────────────────────
 
@@ -329,5 +329,78 @@ describe('AgentController.getCommands() — coalescing', () => {
     // A later call after the in-flight one settles fetches again.
     await controller.getCommands();
     expect(calls).toBe(2);
+  });
+});
+
+// ─── model-state refresh tests (via sendCommand) ─────────────────────────────
+
+describe('AgentController model state', () => {
+  async function flush() {
+    // Let the fire-and-forget _refreshModelState microtasks settle.
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  }
+
+  it('refreshes and emits model + thinking level after a model-affecting command', async () => {
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: {
+            model: { id: 'tencent/hy3-preview', name: 'HY3 Preview', provider: 'openrouter' },
+            thinkingLevel: 'high',
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await controller.sendCommand({ type: 'set_model', provider: 'openrouter', modelId: 'tencent/hy3-preview' });
+    await flush();
+
+    expect(states.at(-1)).toEqual({
+      modelId: 'tencent/hy3-preview',
+      modelName: 'HY3 Preview',
+      provider: 'openrouter',
+      thinkingLevel: 'high',
+    });
+  });
+
+  it('does not refresh after a non-affecting command', async () => {
+    const getState = vi.fn();
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') getState();
+      return { type: 'response', success: true, command: cmd.type, data: {} };
+    });
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await controller.sendCommand({ type: 'get_messages' });
+    await flush();
+
+    expect(getState).not.toHaveBeenCalled();
+    expect(states).toEqual([]);
+  });
+
+  it('emits null model fields when pi reports no active model', async () => {
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: null, thinkingLevel: 'medium' },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+
+    expect(states.at(-1)).toEqual({
+      modelId: null, modelName: null, provider: null, thinkingLevel: 'medium',
+    });
   });
 });

@@ -12,8 +12,24 @@ import * as vscode from 'vscode';
 import { RpcTransport } from './rpc-transport';
 import type { AgentTransport, RpcEvent } from './transport';
 import type { WingmanViewProvider } from '../webview/provider';
-import type { PiStatus, PiCommand, SessionStats } from '../shared/messages';
+import type { PiStatus, PiCommand, SessionStats, ModelState } from '../shared/messages';
 import { UiProtocolBridge } from '../ui-protocol/bridge';
+
+/**
+ * Commands that change the active model or thinking level (directly, or by
+ * switching/branching the session). A successful one triggers a get_state
+ * refresh so the model status bar reflects the new value.
+ */
+const MODEL_AFFECTING_COMMANDS = new Set<string>([
+  'set_model',
+  'cycle_model',
+  'set_thinking_level',
+  'cycle_thinking_level',
+  'switch_session',
+  'new_session',
+  'fork',
+  'clone',
+]);
 
 export class AgentController implements vscode.Disposable {
   private _transport: AgentTransport | undefined;
@@ -45,6 +61,13 @@ export class AgentController implements vscode.Disposable {
    * sessions view can refresh without the user hitting Refresh manually. */
   private readonly _onSessionsChanged = new vscode.EventEmitter<void>();
   public readonly onSessionsChanged: vscode.Event<void> = this._onSessionsChanged.event;
+  /** Fires with the active model + thinking level (null = unknown / pi down). */
+  private readonly _onModelState = new vscode.EventEmitter<ModelState | null>();
+  public readonly onModelState: vscode.Event<ModelState | null> = this._onModelState.event;
+  /** Most-recent model state. */
+  private _lastModelState: ModelState | null = null;
+  /** Sequence guard for concurrent get_state fetches. */
+  private _modelStateSeq = 0;
 
   constructor() {
     this._outputChannel = vscode.window.createOutputChannel('Sqowe Wingman');
@@ -90,7 +113,50 @@ export class AgentController implements vscode.Disposable {
     if (!this._transport?.isRunning) {
       throw new Error('Sqowe Wingman: agent transport is not running');
     }
-    return this._transport.send(command);
+    const response = await this._transport.send(command);
+    // After a command that may have changed the model/thinking level, refresh
+    // the cached state (non-blocking) so the status bar stays accurate. get_state
+    // is not in the set, so this never recurses.
+    if (response.success && MODEL_AFFECTING_COMMANDS.has(command.type)) {
+      void this._refreshModelState();
+    }
+    return response;
+  }
+
+  /** The most recently fetched model + thinking level, or null before the first fetch. */
+  public get lastModelState(): ModelState | null {
+    return this._lastModelState;
+  }
+
+  /**
+   * Fetch the active model + thinking level via get_state and fire onModelState.
+   * Best-effort: sequence-guarded against concurrent fetches, errors swallowed.
+   */
+  private async _refreshModelState(): Promise<void> {
+    if (!this._transport?.isRunning) return;
+    const seq = ++this._modelStateSeq;
+    try {
+      const response = await this.sendCommand({ type: 'get_state' });
+      if (seq !== this._modelStateSeq) return; // superseded
+      if (!response.success) return;
+      const data = (typeof response.data === 'object' && response.data !== null)
+        ? response.data as Record<string, unknown>
+        : {};
+      const model = (typeof data['model'] === 'object' && data['model'] !== null)
+        ? data['model'] as Record<string, unknown>
+        : null;
+      const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null);
+      const state: ModelState = {
+        modelId: model ? str(model['id']) : null,
+        modelName: model ? str(model['name']) : null,
+        provider: model ? str(model['provider']) : null,
+        thinkingLevel: str(data['thinkingLevel']),
+      };
+      this._lastModelState = state;
+      this._onModelState.fire(state);
+    } catch {
+      // Best-effort — leave the last known state in place.
+    }
   }
 
   /**
@@ -335,6 +401,7 @@ export class AgentController implements vscode.Disposable {
     this._tearDownTransport();
     this._uiBridge.dispose();
     this._onSessionsChanged.dispose();
+    this._onModelState.dispose();
     this._outputChannel.dispose();
   }
 
@@ -394,6 +461,9 @@ export class AgentController implements vscode.Disposable {
 
     // Tell the webview the agent is live (clears any prior "pi exited" notice).
     this._provider?.postAgentStatus({ running: true, cwd });
+
+    // Populate the model status bar with the freshly-started session's state.
+    void this._refreshModelState();
   }
 
   /** Tracks pi's turn lifecycle so callers can tell when a prompt would be rejected. */
@@ -449,6 +519,9 @@ export class AgentController implements vscode.Disposable {
     if (transport !== this._transport) return;
     this._isStreaming = false;
     this._provider?.postAgentStatus({ running: false, reason });
+    // pi is gone — the displayed model is no longer authoritative.
+    this._lastModelState = null;
+    this._onModelState.fire(null);
   }
 
   /**

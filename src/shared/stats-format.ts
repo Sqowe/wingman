@@ -8,6 +8,8 @@
  * without having to validate types themselves.
  */
 
+import type { ModelState } from './messages';
+
 /**
  * Format a token count. Returns "—" for non-finite / missing values.
  * @example formatTokens(1234)   → "1.2k tok"
@@ -39,4 +41,31 @@ export function formatMessages(raw: unknown): string {
   const n = Number(raw);
   if (!Number.isFinite(n)) return '—';
   return String(Math.round(n));
+}
+
+/**
+ * A compact model label for the status bar: prefer the human name, else the
+ * last path segment of the id (`tencent/hy3-preview` → `hy3-preview`).
+ * Returns "—" when nothing usable is known.
+ */
+export function formatModelLabel(state: ModelState | null): string {
+  if (!state) return '—';
+  if (state.modelName) return state.modelName;
+  if (state.modelId) {
+    const seg = state.modelId.split('/').pop();
+    if (seg) return seg;
+  }
+  return '—';
+}
+
+/**
+ * The status bar text for the model item: `<model> · <thinking>`. The thinking
+ * suffix is dropped when the level is absent or "none"/"off".
+ * @example "hy3-preview · high"
+ */
+export function formatModelStatus(state: ModelState | null): string {
+  const label = formatModelLabel(state);
+  const level = state?.thinkingLevel;
+  const showLevel = level && level !== 'none' && level !== 'off';
+  return showLevel ? `${label} · ${level}` : label;
 }
