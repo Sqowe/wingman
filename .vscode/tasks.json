@@ -1,0 +1,18 @@
+{
+  // Build task used as the pre-launch step for the "Run Extension" debug
+  // target (see launch.json). One-shot build of host + webview into dist/.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "npm: build",
+      "type": "npm",
+      "script": "build",
+      "detail": "Bundle the extension host (esbuild) + webview (Vite) into dist/",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

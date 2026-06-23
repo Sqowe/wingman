@@ -9,8 +9,10 @@ agent event stream natively in a webview, and wires pi's `edit` tool into VS Cod
 editor. It reuses the same `~/.pi/agent/` global config and per-project `.pi/` resources as
 the pi CLI — it is a different front-end over the same brain.
 
-> **Status: early development (Phase 0 — scaffold).** The extension activates, shows an
-> activity-bar view, and locates pi. The chat transport and UI land in later phases. See
+> **Status: early development — MVP complete (Phases 0–4).** The extension activates, locates
+> pi, spawns `pi --mode rpc`, and renders the full chat loop: streaming assistant text and
+> thinking, collapsible tool cards, and native diff (View Diff / Apply) for `edit` patches.
+> Commands, sessions, and packaging land in later phases. See
 > [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for the phased roadmap.
 
 ## Prerequisites
@@ -31,6 +33,37 @@ pi **0.79.9**; older versions warn but are not blocked.
 | Setting | Default | Description |
 | --- | --- | --- |
 | `sqoweWingman.piExecutablePath` | `""` | Path to the `pi` executable (a leading `~` is expanded). Empty = auto-detect. |
+
+## Install from source
+
+Wingman isn't on the Marketplace yet, so install it from this repo. You need **Node ≥ 20**,
+**npm**, and [pi installed](#prerequisites).
+
+```sh
+git clone https://github.com/sqowe/sqowe-wingman.git
+cd sqowe-wingman
+npm run install:all   # install host + webview dependencies
+npm run build         # bundle host (esbuild) + webview (Vite) into dist/
+```
+
+Then pick one:
+
+### Option A — Run in an Extension Development Host (recommended for trying it out)
+
+Open the folder in VS Code and press **F5** (or *Run ▸ Run Extension*). The bundled
+`.vscode/launch.json` builds the project and opens a second VS Code window with Wingman
+loaded; its icon appears in the activity bar. This is the fastest way to test changes — edit
+code, then reload the dev-host window with **Cmd/Ctrl+R**.
+
+### Option B — Package a VSIX and install it into your daily VS Code
+
+```sh
+npm run vsce:package                       # produces wingman-0.0.1.vsix
+code --install-extension wingman-0.0.1.vsix
+```
+
+Or in VS Code: **Extensions** view ▸ **⋯** menu ▸ *Install from VSIX…* ▸ pick the file, then
+reload when prompted.
 
 ## Development
 

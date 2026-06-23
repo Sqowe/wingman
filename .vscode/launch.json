@@ -1,0 +1,22 @@
+{
+  // Press F5 to run Sqowe Wingman in a VS Code Extension Development Host.
+  // The "npm: build" pre-launch task bundles the host (esbuild) + webview
+  // (Vite) into dist/ first, then a second VS Code window opens with the
+  // extension loaded from this workspace.
+  //
+  // For breakpoint debugging of the extension host, run `npm run watch:host`
+  // in a terminal first (it emits inline source maps; the one-shot build does
+  // not) and reload the dev-host window (Cmd/Ctrl+R) after edits.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "preLaunchTask": "npm: build",
+      "sourceMaps": true
+    }
+  ]
+}
