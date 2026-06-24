@@ -42,6 +42,9 @@
     "onView:sqoweWingman.sessions"
   ],
   "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
