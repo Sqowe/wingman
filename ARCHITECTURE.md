@@ -7,8 +7,10 @@ extension that is a graphical front-end over the pi coding agent
 (`@earendil-works/pi-coding-agent`). It is the architectural source of truth: what the components
 are, how they connect, and which parts are stable vs. likely to change.
 
-> Status: **Phases 0–1 complete** (2026-06-22). The extension host, webview, pi locator, and the RPC
-> transport + event→webview bridge are implemented; the remaining phases follow
+> Status: **Phases 0–8 complete** (2026-06-24). The extension host, webview, pi locator, RPC
+> transport + event→webview bridge, core chat, tool cards, native diff, native commands, the
+> extension-UI protocol bridge, sessions (list / switch / resume, workspace-scoped), and
+> config / trust are all built and tested; Phase 9 (packaging) is next. The phases follow
 > [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md), the authoritative, detailed plan. This file is
 > kept in sync with the code **as-is** as each phase lands — it does not describe unbuilt structure.
 
@@ -50,7 +52,7 @@ Three runtime pieces:
 Target layout (see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) §3 for detail):
 
 - `/src` — extension host (Node): `extension.ts`, plus `agent/`, `webview/`, `shared/`, `commands/`,
-  `diff/`, and `status-bar.ts` (present as of Phase 5); `ui-protocol/` arrives in a later phase.
+  `diff/`, `ui-protocol/`, `sessions/`, `trust/`, and `status-bar.ts`.
 - `/webview-ui` — React app (Vite): `components/`, `store/`, `main.tsx`.
 - `/media` — activity-bar icon and static assets.
 - `/docs` — design docs; `docs/chats/` holds prior implementation conversations.
