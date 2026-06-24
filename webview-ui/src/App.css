@@ -574,6 +574,14 @@ body {
 
 /* ── Composer ─────────────────────────────────────────────────────────────── */
 
+/* Docks the composer to the bottom with a divider separating it from the
+   transcript above. Padding gives the input breathing room below the line. */
+.composer-dock {
+  flex-shrink: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+}
+
 .composer {
   flex-shrink: 0;
   display: flex;

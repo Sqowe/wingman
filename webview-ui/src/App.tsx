@@ -240,7 +240,7 @@ export default function App() {
         </div>
       )}
 
-      <div ref={composerRef}>
+      <div className="composer-dock" ref={composerRef}>
         <Composer
           isStreaming={isStreaming}
           piStatus={piStatus}
