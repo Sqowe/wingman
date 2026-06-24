@@ -5,14 +5,15 @@ A standalone VS Code extension that is a graphical front-end ("skin") over the
 agent ("pi"). The extension host spawns `pi --mode rpc` as a child process, renders pi's agent
 event stream natively in a webview, and wires pi's `edit` tool into VS Code's diff editor.
 
-> Status: **Phases 0–6 complete (2026-06-23)** — scaffold, pi RPC transport, core chat,
-> tool cards, native diff, native commands (slash menu + built-ins + session stats), and
-> the native extension-UI protocol bridge are all built and tested. Phase 7 (sessions) is next.
+> Status: **Phases 0–7 complete (2026-06-24)** — scaffold, pi RPC transport, core chat,
+> tool cards, native diff, native commands (slash menu + built-ins + session stats), the
+> native extension-UI protocol bridge, and sessions (list / switch / resume, scoped to the
+> workspace) are all built and tested. Phase 8 (config / trust) is next.
 > [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) is the authoritative design source;
 > see its milestone table for per-phase as-built notes.
 >
 > Build & test: `npm run build` (esbuild host + Vite webview), `npm test` (host vitest +
-> webview vitest), `npm run typecheck`. As of Phase 6: 157 host + 39 webview unit tests.
+> webview vitest), `npm run typecheck`. As of Phase 7: 197 host + 56 webview unit tests.
 
 ## Read before making changes
 
