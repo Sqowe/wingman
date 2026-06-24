@@ -12,7 +12,7 @@ import * as vscode from 'vscode';
 import { RpcTransport } from './rpc-transport';
 import type { AgentTransport, RpcEvent } from './transport';
 import type { WingmanViewProvider } from '../webview/provider';
-import type { PiStatus, PiCommand, SessionStats, ModelState } from '../shared/messages';
+import type { PiStatus, PiCommand, SessionStats, ModelState, AttachedImage } from '../shared/messages';
 import { UiProtocolBridge } from '../ui-protocol/bridge';
 import type { TrustDecision } from '../trust/project-trust';
 
@@ -254,11 +254,13 @@ export class AgentController implements vscode.Disposable {
         ? data['model'] as Record<string, unknown>
         : null;
       const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null);
+      const inputArr = Array.isArray(model?.['input']) ? (model!['input'] as unknown[]) : [];
       const state: ModelState = {
         modelId: model ? str(model['id']) : null,
         modelName: model ? str(model['name']) : null,
         provider: model ? str(model['provider']) : null,
         thinkingLevel: str(data['thinkingLevel']),
+        supportsImages: inputArr.includes('image'),
       };
       this._lastModelState = state;
       this._onModelState.fire(state);
@@ -439,10 +441,10 @@ export class AgentController implements vscode.Disposable {
   }
 
   /**
-   * Send a prompt string to pi.
+   * Send a prompt string (and optional images) to pi.
    * If the transport is not yet running, attempts a late start first.
    */
-  public async sendPrompt(text: string): Promise<void> {
+  public async sendPrompt(text: string, images?: AttachedImage[]): Promise<void> {
     if (!this._transport?.isRunning) {
       if (this._piStatus && this._piStatus.kind !== 'not-found') {
         await this.start(this._piStatus);
@@ -452,9 +454,14 @@ export class AgentController implements vscode.Disposable {
       }
     }
 
+    const rpcImages = images?.length
+      ? images.map((img) => ({ type: 'image' as const, data: img.data, mimeType: img.mimeType }))
+      : undefined;
+
     const response = await this._transport.send({
       type: 'prompt',
       message: text,
+      ...(rpcImages ? { images: rpcImages } : {}),
     });
 
     if (!response.success) {

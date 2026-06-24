@@ -144,6 +144,31 @@ appear: **Chat** (composer + transcript) and **Sessions** (your pi sessions for 
 Type a prompt and press **Enter** (**Shift+Enter** for a newline); type `/` to browse commands.
 When pi changes a file, use **View Diff** / **Apply** on the tool card.
 
+### Attaching images
+
+When the active model supports image input (e.g. Claude claude-sonnet-4-5, GPT-4o), you can send
+images alongside your prompt:
+
+- **＋ button** — opens a file picker (PNG, JPEG, GIF, WebP).
+- **Paste** — paste an image from the clipboard directly into the composer.
+- **Drag and drop** — drag image files onto the composer textarea.
+
+Attached images appear as thumbnail chips above the input; click **×** to remove one before
+sending. Sending is allowed with images and no text (image-only prompts).
+
+If the active model does not accept images the ＋ button is disabled and pasted/dropped images
+are ignored with a brief note naming the model.
+
+**Limits** (enforced on both the webview and the extension host):
+
+| Limit | Value |
+| --- | --- |
+| Max size per image | 5 MB decoded |
+| Max total image payload per prompt | 20 MB decoded |
+| Max images per prompt | 10 |
+| Accepted formats | PNG, JPEG, GIF, WebP |
+| Max prompt text size | 32 KB (UTF-8) |
+
 > Tip: drag the Wingman view to the **secondary (right) side bar** so Source Control stays
 > visible on the left.
 

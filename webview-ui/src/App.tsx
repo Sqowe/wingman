@@ -7,7 +7,7 @@
  *  - rAF-coalesced dispatch of streaming deltas (never re-renders per delta).
  */
 import React, { useEffect, useRef, useCallback, useState } from 'react';
-import type { HostMessage, PiStatus } from '@shared/messages';
+import type { HostMessage, PiStatus, AttachedImage } from '@shared/messages';
 import { vscode } from './vscodeApi';
 import { useChatStore } from './store';
 import type { UiWidget } from './store';
@@ -39,6 +39,8 @@ export default function App() {
   const uiWidgets = useChatStore((s) => s.uiWidgets);
   const uiTitle = useChatStore((s) => s.uiTitle);
   const uiEditorText = useChatStore((s) => s.uiEditorText);
+  const supportsImages = useChatStore((s) => s.supportsImages);
+  const modelName = useChatStore((s) => s.modelName);
   const addUserMessage = useChatStore((s) => s.addUserMessage);
   const dispatchEvents = useChatStore((s) => s.dispatchEvents);
   const setDiffError = useChatStore((s) => s.setDiffError);
@@ -49,6 +51,7 @@ export default function App() {
   const setUiEditorText = useChatStore((s) => s.setUiEditorText);
   const resetSession = useChatStore((s) => s.resetSession);
   const setMessages = useChatStore((s) => s.setMessages);
+  const setModelState = useChatStore((s) => s.setModelState);
 
   // rAF coalescer: buffer incoming agentEvent messages and flush per frame.
   const pendingEvents = useRef<RpcEvent[]>([]);
@@ -151,6 +154,10 @@ export default function App() {
         case 'uiSetEditorText':
           setUiEditorText(msg.text);
           break;
+
+        case 'modelState':
+          setModelState(msg.state);
+          break;
       }
     };
 
@@ -173,9 +180,12 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  const handleSend = useCallback((text: string) => {
-    addUserMessage(text);
-    vscode.postMessage({ type: 'sendPrompt', text });
+  const handleSend = useCallback((text: string, images?: AttachedImage[]) => {
+    const imageCount = images?.length ?? 0;
+    // Record the turn in the transcript. Pass the real text (may be empty for
+    // an image-only prompt); the attached-image count renders as a badge.
+    if (text || imageCount > 0) addUserMessage(text, imageCount);
+    vscode.postMessage({ type: 'sendPrompt', text, ...(imageCount > 0 ? { images } : {}) });
   }, [addUserMessage]);
 
   // Measure the available height for the virtualized list.
@@ -248,6 +258,8 @@ export default function App() {
           commands={commands}
           prefillText={uiEditorText}
           onPrefillConsumed={() => setUiEditorText(null)}
+          supportsImages={supportsImages}
+          modelName={modelName}
           onSend={handleSend}
         />
       </div>

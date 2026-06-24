@@ -37,9 +37,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const modelStatusBar = new ModelStatusBar();
   context.subscriptions.push(statusBar, modelStatusBar);
   // Route model + thinking level from the controller → model status bar
-  // (null = unknown / pi down).
+  // (null = unknown / pi down). Also forwarded to the webview so the composer
+  // can gate image-attachment affordances on the active model's modality.
   context.subscriptions.push(
-    controller.onModelState((state) => modelStatusBar.update(state)),
+    controller.onModelState((state) => {
+      modelStatusBar.update(state);
+      provider.postModelState(state);
+    }),
   );
 
   // ── Diff service ──────────────────────────────────────────────────────────
@@ -62,6 +66,11 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
   controller.setProvider(provider);
+
+  // Seed the webview with whatever model state the controller already has
+  // (e.g. restored from a previous session). If it's null the webview
+  // defaults supportsImages=false which is the safe/correct initial state.
+  provider.postModelState(controller.lastModelState);
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(

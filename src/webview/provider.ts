@@ -10,8 +10,8 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import type { AgentController } from '../agent/controller';
-import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats } from '../shared/messages';
-import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES, MAX_PATCH_BYTES } from '../shared/limits';
+import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage } from '../shared/messages';
+import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES, MAX_PATCH_BYTES, MAX_IMAGE_BYTES, MAX_IMAGES_PER_PROMPT, MAX_TOTAL_IMAGE_BYTES, ALLOWED_IMAGE_MIME_TYPES, type AllowedImageMimeType } from '../shared/limits';
 import type { RpcEvent } from '../agent/transport';
 import type { DiffService } from '../diff/diff-service';
 
@@ -49,6 +49,8 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   private _pendingEventBytes = 0;
   private static readonly _MAX_PENDING_EVENTS = 20;
   private static readonly _MAX_PENDING_EVENT_BYTES = 512_000; // 512 KB total
+  /** Last model state — replayed on webview (re)ready so the composer knows image support immediately. */
+  private _lastModelState: ModelState | null | undefined;
   /** Timestamp of the last accepted sendPrompt — for basic rate-limiting. */
   private _lastPromptAt = 0;
   /** Timestamp of the last accepted clipboard write — for basic rate-limiting. */
@@ -142,10 +144,14 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
               this._postMessage({ type: 'uiSetEditorText', text: this._pendingUiEditorText });
               this._pendingUiEditorText = null;
             }
+            // Replay model state so the composer knows image support immediately.
+            if (this._lastModelState !== undefined) {
+              this._postMessage({ type: 'modelState', state: this._lastModelState });
+            }
             break;
 
           case 'sendPrompt':
-            void this._handleSendPrompt(message.text);
+            void this._handleSendPrompt(message.text, message.images);
             break;
 
           case 'copyToClipboard':
@@ -234,7 +240,15 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
           );
           return null;
         }
-        return { type: 'sendPrompt', text: msg['text'] };
+        {
+          // Short-circuit: skip expensive validation when model is text-only or unknown.
+          const rawImages = msg['images'];
+          const supportsImages = this._lastModelState?.supportsImages === true;
+          const images = (supportsImages && rawImages !== undefined)
+            ? this._validateImages(rawImages)
+            : [];
+          return { type: 'sendPrompt', text: msg['text'], ...(images.length ? { images } : {}) };
+        }
 
       case 'copyToClipboard': {
         if (typeof msg['text'] !== 'string') {
@@ -323,6 +337,128 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
         );
         return null;
     }
+  }
+
+  /**
+   * Validate and sanitise a raw `images` field from a webview sendPrompt message.
+   * Returns a clean `AttachedImage[]` (possibly empty if none pass validation).
+   * Defense-in-depth: the webview enforces the same rules, but the host is
+   * authoritative so a buggy or compromised webview cannot push bad payloads.
+   */
+  private _validateImages(raw: unknown): AttachedImage[] {
+    if (!Array.isArray(raw)) return [];
+
+    /** Max raw entries to inspect — prevents DoS from huge malformed arrays. */
+    const MAX_RAW_ENTRIES = MAX_IMAGES_PER_PROMPT * 5;
+    /** Max base64 string length for a single image at the per-image byte cap. */
+    const MAX_B64_LEN = Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 4; // +4 for padding
+
+    const valid: AttachedImage[] = [];
+    let totalBytes = 0;
+
+    for (let i = 0; i < Math.min(raw.length, MAX_RAW_ENTRIES); i++) {
+      const item = raw[i];
+      if (typeof item !== 'object' || item === null) continue;
+      const entry = item as Record<string, unknown>;
+
+      const mimeType = entry['mimeType'];
+      if (typeof mimeType !== 'string' || !(ALLOWED_IMAGE_MIME_TYPES as readonly string[]).includes(mimeType)) {
+        this._controller?.outputChannel?.appendLine(
+          `[WingmanViewProvider] dropped image: disallowed mimeType ${String(mimeType)}`,
+        );
+        continue;
+      }
+
+      let dataRaw: string = entry['data'] as string;
+      if (typeof entry['data'] !== 'string' || entry['data'].length === 0) {
+        this._controller?.outputChannel?.appendLine(
+          '[WingmanViewProvider] dropped image: missing/empty data field',
+        );
+        continue;
+      }
+
+      // Strip data-URL prefix if the webview accidentally forwarded one.
+      // Verify the embedded MIME matches the declared mimeType to prevent
+      // type spoofing.
+      if (dataRaw.startsWith('data:')) {
+        const commaIdx = dataRaw.indexOf(',');
+        if (commaIdx < 0) {
+          this._controller?.outputChannel?.appendLine(
+            '[WingmanViewProvider] dropped image: malformed data URL (no comma)',
+          );
+          continue;
+        }
+        // Parse the declared MIME from the data URL header (data:<mime>;base64).
+        const header = dataRaw.slice(5, commaIdx); // strip 'data:'
+        const declaredMime = header.split(';')[0];
+        if (declaredMime !== mimeType) {
+          this._controller?.outputChannel?.appendLine(
+            `[WingmanViewProvider] dropped image: data URL MIME '${declaredMime}' doesn't match declared '${String(mimeType)}'`,
+          );
+          continue;
+        }
+        dataRaw = dataRaw.slice(commaIdx + 1);
+      }
+      const data: string = dataRaw;
+
+      // Early-reject strings that are clearly too long for the per-image cap.
+      if (data.length > MAX_B64_LEN) {
+        this._controller?.outputChannel?.appendLine(
+          `[WingmanViewProvider] dropped image: base64 string exceeds max length`,
+        );
+        continue;
+      }
+
+      // Validate base64: only allowed chars and valid padding.
+      // Reject length % 4 === 1 (structurally invalid — no valid base64 ends
+      // with 1 unpadded character after a complete group).
+      if (data.length % 4 === 1) {
+        this._controller?.outputChannel?.appendLine(
+          '[WingmanViewProvider] dropped image: invalid base64 length (len % 4 === 1)',
+        );
+        continue;
+      }
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(data)) {
+        this._controller?.outputChannel?.appendLine(
+          '[WingmanViewProvider] dropped image: data contains invalid base64 characters',
+        );
+        continue;
+      }
+
+      // Estimate decoded size via base64 length heuristic.
+      const decodedBytes = Math.floor((data.length * 3) / 4);
+      if (decodedBytes > MAX_IMAGE_BYTES) {
+        this._controller?.outputChannel?.appendLine(
+          `[WingmanViewProvider] dropped image: decoded size ~${decodedBytes} exceeds ${MAX_IMAGE_BYTES} bytes`,
+        );
+        continue;
+      }
+
+      // Enforce total payload cap.
+      if (totalBytes + decodedBytes > MAX_TOTAL_IMAGE_BYTES) {
+        this._controller?.outputChannel?.appendLine(
+          `[WingmanViewProvider] stopped: total payload would exceed ${MAX_TOTAL_IMAGE_BYTES} bytes`,
+        );
+        break;
+      }
+
+      totalBytes += decodedBytes;
+      const size = typeof entry['size'] === 'number' ? (entry['size'] as number) : decodedBytes;
+      const fileName = typeof entry['fileName'] === 'string' ? (entry['fileName'] as string) : undefined;
+      const allowedMime = mimeType as AllowedImageMimeType;
+      valid.push({ data, mimeType: allowedMime, size, ...(fileName !== undefined ? { fileName } : {}) });
+
+      if (valid.length >= MAX_IMAGES_PER_PROMPT) {
+        const remaining = raw.length - i - 1;
+        if (remaining > 0) {
+          this._controller?.outputChannel?.appendLine(
+            `[WingmanViewProvider] clamped images to ${MAX_IMAGES_PER_PROMPT}; dropped ${remaining} overflow`,
+          );
+        }
+        break;
+      }
+    }
+    return valid;
   }
 
   public setPiStatus(status: PiStatus): void {
@@ -434,6 +570,14 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
       this._postMessage({ type: 'uiSetEditorText', text });
     } else {
       this._pendingUiEditorText = text;
+    }
+  }
+
+  /** Push the active model's capabilities to the webview (and cache for replay on ready). */
+  public postModelState(state: ModelState | null): void {
+    this._lastModelState = state;
+    if (this._webviewReady) {
+      this._postMessage({ type: 'modelState', state });
     }
   }
 
@@ -583,14 +727,22 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage(message);
   }
 
-  private async _handleSendPrompt(text: string): Promise<void> {
+  private async _handleSendPrompt(text: string, images?: AttachedImage[]): Promise<void> {
     if (!this._controller) return;
 
-    // Validate: must be a non-empty string.
-    if (typeof text !== 'string' || text.trim().length === 0) return;
+    // Validate: must be a non-empty string when no images, or any string when images present.
+    if (typeof text !== 'string') return;
+    const hasImages = (images?.length ?? 0) > 0;
+    if (!hasImages && text.trim().length === 0) return;
 
-    // Length guard — prevent oversized payloads from the webview.
-    if (Buffer.byteLength(text, 'utf8') > MAX_PROMPT_BYTES) {
+    // Host-side modality gate: drop images silently when the active model is
+    // text-only. The webview enforces this too, but the host is authoritative.
+    const effectiveImages = (hasImages && this._lastModelState?.supportsImages === true)
+      ? images
+      : undefined;
+
+    // Length guard — only applies to non-empty text.
+    if (text.length > 0 && Buffer.byteLength(text, 'utf8') > MAX_PROMPT_BYTES) {
       void vscode.window.showWarningMessage(
         `Sqowe Wingman: prompt exceeds the maximum allowed size (${MAX_PROMPT_BYTES} bytes).`,
       );
@@ -623,7 +775,7 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     this._lastPromptAt = now;
     this._promptInFlight = true;
     try {
-      await this._controller.sendPrompt(text);
+      await this._controller.sendPrompt(text, effectiveImages);
     } catch (err) {
       void vscode.window.showErrorMessage(String(err));
       this._postMessage({ type: 'promptRejected', reason: 'error' });
@@ -644,7 +796,7 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
 
     const csp = [
       `default-src 'none'`,
-      `img-src ${webview.cspSource} https:`,
+      `img-src ${webview.cspSource} https: blob:`,
       `style-src ${webview.cspSource}`,
       `script-src 'nonce-${nonce}'`,
     ].join('; ');

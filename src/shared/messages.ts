@@ -11,6 +11,8 @@
  * `src/shared/limits.ts` — import from there, not here.
  */
 
+import type { AllowedImageMimeType } from './limits';
+
 // ─── Shared types ────────────────────────────────────────────────────────────
 
 /** Status of the pi executable after the locator has run. */
@@ -36,6 +38,23 @@ export interface ModelState {
   modelName: string | null;
   provider: string | null;
   thinkingLevel: string | null;
+  /** True when the active model accepts image input (model.input includes 'image'). */
+  supportsImages: boolean;
+}
+
+/**
+ * An image attached to a prompt, carried webview → host → pi RPC.
+ * `data` is a raw base64 string (no `data:<mime>;base64,` prefix).
+ * `mimeType` must be one of ALLOWED_IMAGE_MIME_TYPES.
+ * `fileName` is for display only and is never forwarded to pi.
+ * `size` is the decoded byte length used for UI feedback and host-side validation.
+ */
+export interface AttachedImage {
+  data: string;
+  /** Must be one of ALLOWED_IMAGE_MIME_TYPES from limits.ts. */
+  mimeType: AllowedImageMimeType;
+  fileName?: string;
+  size: number;
 }
 
 export type PiStatus =
@@ -176,6 +195,17 @@ export interface SessionMessagesMessage {
   messages: unknown[];
 }
 
+/**
+ * Sent by the host when the active model's capabilities change (on connect,
+ * model switch, or pi restart). The webview uses this to enable/disable
+ * image-attachment affordances in the composer.
+ * `state: null` means pi is down / model unknown.
+ */
+export interface ModelStateMessage {
+  type: 'modelState';
+  state: ModelState | null;
+}
+
 /** Union of every message the host can send to the webview. */
 export type HostMessage =
   | PiStatusMessage
@@ -189,7 +219,8 @@ export type HostMessage =
   | UiWidgetMessage
   | UiTitleMessage
   | UiSetEditorTextMessage
-  | SessionMessagesMessage;
+  | SessionMessagesMessage
+  | ModelStateMessage;
 
 // ─── Webview → Host ──────────────────────────────────────────────────────────
 
@@ -202,6 +233,8 @@ export interface ReadyMessage {
 export interface SendPromptMessage {
   type: 'sendPrompt';
   text: string;
+  /** Optional images attached to this prompt. Absent === text-only (legacy behaviour). */
+  images?: AttachedImage[];
 }
 
 /**

@@ -1,14 +1,19 @@
 /**
- * Composer — prompt input with send + abort buttons and a `/` slash menu.
+ * Composer — prompt input with send + abort buttons, a `/` slash menu,
+ * and image attachment (＋ button, paste, drag-and-drop).
  *
  * - Enter sends, Shift+Enter inserts newline.
  * - When isStreaming is true, shows an Abort button instead of Send.
  * - Typing `/` (or `/prefix`) opens an autocomplete dropdown from the
  *   commands list; Enter or click injects the command and sends it.
  * - Disabled when pi is not found.
+ * - Image attachment is gated on `supportsImages`; when the active model
+ *   does not accept images the ＋ button is disabled and pasted/dropped
+ *   images are ignored with an inline note.
  */
-import React, { useRef, useState, useCallback, useEffect } from 'react';
-import type { PiStatus, PiCommand } from '@shared/messages';
+import React, { useRef, useState, useCallback, useEffect, useReducer } from 'react';
+import type { PiStatus, PiCommand, AttachedImage } from '@shared/messages';
+import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_PROMPT, MAX_TOTAL_IMAGE_BYTES, ALLOWED_IMAGE_MIME_TYPES } from '@shared/limits';
 import { vscode } from '../vscodeApi';
 
 interface Props {
@@ -20,16 +25,88 @@ interface Props {
   prefillText?: string | null;
   /** Called once after the pre-fill has been applied so the store can clear it. */
   onPrefillConsumed?: () => void;
-  onSend: (text: string) => void;
+  /** True when the active model accepts image input. */
+  supportsImages: boolean;
+  /** Human-readable name of the active model (shown in the no-images note). */
+  modelName: string | null;
+  onSend: (text: string, images?: AttachedImage[]) => void;
 }
 
-export function Composer({ isStreaming, piStatus, promptError, commands, prefillText, onPrefillConsumed, onSend }: Props) {
+export function Composer({
+  isStreaming,
+  piStatus,
+  promptError,
+  commands,
+  prefillText,
+  onPrefillConsumed,
+  supportsImages,
+  modelName,
+  onSend,
+}: Props) {
   const textRef = useRef<HTMLTextAreaElement>(null);
   const menuRef = useRef<HTMLUListElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
   // The textarea is intentionally uncontrolled (no `value` prop, driven by ref).
-  // This avoids React re-rendering on every keystroke and makes imperative
-  // mutations (prefill, slash-menu injection) straightforward.
   const disabled = piStatus?.kind === 'not-found';
+
+  // ── Attachment state ──────────────────────────────────────────────────────
+  //
+  // A single `useReducer` keeps `image` and `previewUrl` in one atomic state
+  // entry so the two arrays can never desync. All mutations go through
+  // `attachDispatch`; no preview URL is ever created without a matching image
+  // and vice versa.
+
+  interface AttachEntry { image: AttachedImage; previewUrl: string; }
+
+  type AttachAction =
+    | { type: 'append'; entry: AttachEntry }
+    | { type: 'remove'; idx: number }
+    | { type: 'clear' };
+
+  function attachReducer(state: AttachEntry[], action: AttachAction): AttachEntry[] {
+    switch (action.type) {
+      case 'append': {
+        // Enforce the count + total-byte caps atomically here, not only in the
+        // addFiles pre-clamp: concurrent FileReader completions could otherwise
+        // overshoot the limits. Reject (and revoke) the entry if it would.
+        const bytes = state.reduce((sum, e) => sum + e.image.size, 0);
+        if (
+          state.length >= MAX_IMAGES_PER_PROMPT ||
+          bytes + action.entry.image.size > MAX_TOTAL_IMAGE_BYTES
+        ) {
+          URL.revokeObjectURL(action.entry.previewUrl);
+          return state;
+        }
+        return [...state, action.entry];
+      }
+      case 'remove': {
+        const removed = state[action.idx];
+        if (removed) URL.revokeObjectURL(removed.previewUrl);
+        return state.filter((_, i) => i !== action.idx);
+      }
+      case 'clear':
+        state.forEach((e) => URL.revokeObjectURL(e.previewUrl));
+        return [];
+    }
+  }
+
+  const [attachments, attachDispatch] = useReducer(attachReducer, []);
+
+  // Derive plain images array for send path (no preview URLs needed by host).
+  const images: AttachedImage[] = attachments.map((e) => e.image);
+
+  // Revoke all blob URLs on unmount.
+  useEffect(() => {
+    return () => attachDispatch({ type: 'clear' });
+  }, []);
+
+  /**
+   * Generation counter. Incremented whenever attachments are cleared (send,
+   * model-gate clear). FileReader onload callbacks capture the generation at
+   * read-start and discard if it changed, preventing stale reads re-appending.
+   */
+  const attachGenRef = useRef(0);
 
   // Slash-menu state.
   const [slashFilter, setSlashFilter] = useState<string | null>(null);
@@ -46,8 +123,6 @@ export function Composer({ isStreaming, piStatus, promptError, commands, prefill
 
   // Recompute slash filter from textarea value.
   const updateSlashFilter = useCallback((value: string) => {
-    // Only activate when the entire value is a slash command prefix
-    // (starts with `/`, no embedded whitespace yet).
     const match = /^(\/\S*)$/.exec(value);
     if (match) {
       setSlashFilter(match[1]);
@@ -57,13 +132,131 @@ export function Composer({ isStreaming, piStatus, promptError, commands, prefill
     }
   }, []);
 
+  /** Show a brief inline note (auto-clears after 3 s). */
+  const [imageNote, setImageNote] = useState<string | null>(null);
+  const imageNoteTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => {
+    return () => {
+      if (imageNoteTimerRef.current !== undefined) clearTimeout(imageNoteTimerRef.current);
+    };
+  }, []);
+
+  const showImageNote = useCallback((msg: string) => {
+    setImageNote(msg);
+    if (imageNoteTimerRef.current !== undefined) clearTimeout(imageNoteTimerRef.current);
+    imageNoteTimerRef.current = setTimeout(() => {
+      imageNoteTimerRef.current = undefined;
+      setImageNote(null);
+    }, 3_000);
+  }, []);
+
+  // Clear any pending images when the model changes to one that doesn't support images.
+  useEffect(() => {
+    if (!supportsImages && attachments.length > 0) {
+      attachGenRef.current += 1;
+      attachDispatch({ type: 'clear' });
+      showImageNote(`${modelName ?? 'This model'} doesn't accept images — attachments cleared.`);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supportsImages]);
+
+  /**
+   * Convert a FileList / File[] into AttachedImage entries and append them
+   * to the current images state, respecting the count and size limits.
+   * Pre-clamps to remaining slots before starting any FileReader reads.
+   */
+  const addFiles = useCallback((files: FileList | File[] | null) => {
+    if (!files) return;
+
+    const fileArray = Array.from(files);
+    const accepted: File[] = [];
+
+    for (const file of fileArray) {
+      if (!(ALLOWED_IMAGE_MIME_TYPES as readonly string[]).includes(file.type)) continue;
+      if (file.size > MAX_IMAGE_BYTES) {
+        showImageNote(`"${file.name}" exceeds the 5 MB image limit and was not attached.`);
+        continue;
+      }
+      accepted.push(file);
+    }
+
+    if (accepted.length === 0) return;
+
+    // Read current counts/bytes directly from the reducer state (not inside
+    // a setState updater, so no side effects in updaters).
+    const currentCount = attachments.length;
+    const currentBytes = attachments.reduce((s, e) => s + e.image.size, 0);
+    const remaining = MAX_IMAGES_PER_PROMPT - currentCount;
+
+    if (remaining <= 0) {
+      showImageNote(`Maximum of ${MAX_IMAGES_PER_PROMPT} images per prompt reached.`);
+      return;
+    }
+
+    const toProcess: File[] = [];
+    let projectedBytes = currentBytes;
+    for (const file of accepted) {
+      if (toProcess.length >= remaining) {
+        showImageNote(
+          `Maximum of ${MAX_IMAGES_PER_PROMPT} images per prompt reached; ${accepted.length - toProcess.length} image(s) not added.`,
+        );
+        break;
+      }
+      if (projectedBytes + file.size > MAX_TOTAL_IMAGE_BYTES) {
+        showImageNote('Total image size limit (20 MB) reached; remaining images not added.');
+        break;
+      }
+      projectedBytes += file.size;
+      toProcess.push(file);
+    }
+
+    if (toProcess.length === 0) return;
+
+    const capturedGen = attachGenRef.current;
+
+    for (const file of toProcess) {
+      const previewUrl = URL.createObjectURL(file);
+
+      const reader = new FileReader();
+
+      const cleanup = () => URL.revokeObjectURL(previewUrl);
+
+      reader.onload = (ev) => {
+        if (attachGenRef.current !== capturedGen) { cleanup(); return; }
+        const result = ev.target?.result as string | undefined;
+        if (!result) { cleanup(); return; }
+        const commaIdx = result.indexOf(',');
+        const data = commaIdx >= 0 ? result.slice(commaIdx + 1) : result;
+        // Append the image and its previewUrl atomically. The reducer re-checks
+        // the count/byte caps, so concurrent reads completing together can't
+        // overshoot the limits — the pre-clamp above is the fast path, this
+        // dispatch is the safety net (a rejected entry revokes its previewUrl).
+        attachDispatch({
+          type: 'append',
+          entry: {
+            image: { data, mimeType: file.type as AttachedImage['mimeType'], fileName: file.name, size: file.size },
+            previewUrl,
+          },
+        });
+      };
+
+      reader.onerror = cleanup;
+      reader.onabort = cleanup;
+
+      reader.readAsDataURL(file);
+    }
+  }, [attachments, showImageNote]);
+
   const handleSend = useCallback(() => {
     const text = textRef.current?.value.trim() ?? '';
-    if (!text || disabled) return;
-    onSend(text);
+    if ((!text && images.length === 0) || disabled) return;
+    onSend(text, images.length > 0 ? images : undefined);
     if (textRef.current) textRef.current.value = '';
+    attachGenRef.current += 1;
+    attachDispatch({ type: 'clear' });
     setSlashFilter(null);
-  }, [disabled, onSend]);
+  }, [disabled, images, onSend]);
 
   const handleAbort = useCallback(() => {
     vscode.postMessage({ type: 'abortTurn' });
@@ -75,7 +268,7 @@ export function Composer({ isStreaming, piStatus, promptError, commands, prefill
     textRef.current.value = cmd.name;
     textRef.current.focus();
     setSlashFilter(null);
-    // Send immediately — slash commands are self-contained.
+    // Slash commands are sent without images.
     onSend(cmd.name);
     textRef.current.value = '';
   }, [onSend]);
@@ -125,15 +318,61 @@ export function Composer({ isStreaming, piStatus, promptError, commands, prefill
     updateSlashFilter(e.target.value);
   }, [updateSlashFilter]);
 
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const imageItems: DataTransferItem[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        imageItems.push(item);
+      }
+    }
+
+    if (imageItems.length === 0) return;
+
+    // Prevent the default paste behavior (which would insert a file reference
+    // into the textarea) whenever image items are present.
+    e.preventDefault();
+
+    // Modality gate — ignore image paste on text-only models.
+    if (!supportsImages) {
+      showImageNote(
+        `${modelName ?? 'This model'} doesn't accept images.`,
+      );
+      return;
+    }
+
+    const files = imageItems
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => f !== null);
+    addFiles(files);
+  }, [supportsImages, modelName, addFiles, showImageNote]);
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLTextAreaElement>) => {
+    // Always prevent default when files are being dragged to avoid browser
+    // navigation / file-open fallback. Supportsimages gating is handled in onDrop.
+    const hasFile = Array.from(e.dataTransfer.items).some((item) => item.kind === 'file');
+    if (hasFile) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent<HTMLTextAreaElement>) => {
+    e.preventDefault();
+    if (!supportsImages) {
+      showImageNote(`${modelName ?? 'This model'} doesn't accept images.`);
+      return;
+    }
+    addFiles(e.dataTransfer.files);
+  }, [supportsImages, modelName, addFiles, showImageNote]);
+
   // Apply pre-fill text from pi's set_editor_text() / pasteToEditor().
-  // Runs when prefillText changes; after writing to the textarea we notify the
-  // parent so the store entry is cleared (prevents re-applying on re-render).
-  // Guard on null/undefined only — empty string is a valid intentional clear.
   useEffect(() => {
     if (prefillText == null || !textRef.current) return;
     textRef.current.value = prefillText;
-    // Dispatch a synthetic input event so any DOM listeners (e.g. autoresize)
-    // pick up the change, and update the slash-filter state to match.
     textRef.current.dispatchEvent(new Event('input', { bubbles: true }));
     textRef.current.focus();
     updateSlashFilter(prefillText);
@@ -162,12 +401,47 @@ export function Composer({ isStreaming, piStatus, promptError, commands, prefill
     return () => document.removeEventListener('mousedown', handler);
   }, [isMenuOpen]);
 
+  const removeImage = useCallback((idx: number) => {
+    attachDispatch({ type: 'remove', idx });
+  }, []);
+
   return (
     <div className="composer">
       {promptError && (
         <p className="composer__error" role="alert">
           {promptError}
         </p>
+      )}
+
+      {imageNote && (
+        <p className="composer__note" role="status" aria-live="polite">
+          {imageNote}
+        </p>
+      )}
+
+      {attachments.length > 0 && (
+        <div className="composer__chips" aria-label="Attached images">
+          {attachments.map((entry, idx) => (
+            <div key={idx} className="composer__chip">
+              <img
+                className="composer__chip-thumb"
+                src={entry.previewUrl}
+                alt={entry.image.fileName ?? `Image ${idx + 1}`}
+              />
+              <span className="composer__chip-name" title={entry.image.fileName}>
+                {entry.image.fileName ?? `Image ${idx + 1}`}
+              </span>
+              <button
+                type="button"
+                className="composer__chip-remove"
+                aria-label={`Remove ${entry.image.fileName ?? `image ${idx + 1}`}`}
+                onClick={() => removeImage(idx)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
       )}
 
       {isMenuOpen && (
@@ -187,7 +461,6 @@ export function Composer({ isStreaming, piStatus, promptError, commands, prefill
                 (i === menuIndex ? ' composer__slash-item--active' : '')
               }
               onMouseDown={(e) => {
-                // Use mousedown so the textarea doesn't lose focus before we act.
                 e.preventDefault();
                 selectCommand(cmd);
               }}
@@ -203,12 +476,38 @@ export function Composer({ isStreaming, piStatus, promptError, commands, prefill
       )}
 
       <div className="composer__row">
+        {/* Hidden file input — triggered by the ＋ button */}
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          aria-hidden="true"
+          onChange={(e) => addFiles(e.target.files)}
+          // Reset value so the same file can be re-attached after removal.
+          onClick={(e) => { (e.target as HTMLInputElement).value = ''; }}
+        />
+
+        <button
+          type="button"
+          className="composer__attach"
+          disabled={disabled || !supportsImages}
+          title={
+            supportsImages
+              ? 'Attach image'
+              : `${modelName ?? 'This model'} doesn't accept images`
+          }
+          aria-label="Attach image"
+          onClick={() => fileRef.current?.click()}
+        >
+          ＋
+        </button>
+
         <textarea
           ref={textRef}
           className="composer__input"
           placeholder={
-            // While streaming the animated working indicator (below) stands in
-            // for placeholder text, so keep the placeholder itself empty.
             isStreaming
               ? ''
               : 'Send a prompt… (/ for commands, Enter to send)'
@@ -217,6 +516,9 @@ export function Composer({ isStreaming, piStatus, promptError, commands, prefill
           disabled={disabled || isStreaming}
           onKeyDown={handleKeyDown}
           onChange={handleChange}
+          onPaste={handlePaste}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
           aria-label="Prompt input"
           aria-autocomplete={commands.length > 0 ? 'list' : 'none'}
           aria-expanded={isMenuOpen}

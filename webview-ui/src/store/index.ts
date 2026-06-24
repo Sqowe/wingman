@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import type { RpcEvent } from '../../../src/agent/transport';
-import type { PiCommand } from '../../../src/shared/messages';
+import type { PiCommand, ModelState } from '../../../src/shared/messages';
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -19,6 +19,8 @@ export interface UserItem {
   itemKind: 'user';
   id: string;
   text: string;
+  /** Attached image MIME types (for transcript display; data not stored here). */
+  imageCount?: number;
   timestamp: number;
 }
 
@@ -210,6 +212,10 @@ interface ChatState {
   _currentAssistantId: string | null;
   /** Slash commands available in this session (from get_commands). */
   commands: PiCommand[];
+  /** Whether the active model accepts image input (from modelState message). */
+  supportsImages: boolean;
+  /** Human-readable name of the active model (for UI messaging). */
+  modelName: string | null;
   /** Active status entries from pi's setStatus() calls (keyed by statusKey). */
   uiStatuses: UiStatusEntry[];
   /** Active widget blocks from pi's setWidget() calls (keyed by widgetKey). */
@@ -222,13 +228,15 @@ interface ChatState {
 
 interface ChatActions {
   /** Append a user message immediately when the user presses Send. */
-  addUserMessage: (text: string) => void;
+  addUserMessage: (text: string, imageCount?: number) => void;
   /** Collapse / expand a thinking block. */
   toggleThinking: (itemId: string, blockIndex: number) => void;
   /** Set a diff error on a tool card (from host diffError message). */
   setDiffError: (toolCallId: string, message: string) => void;
   /** Replace the current slash commands list. */
   setCommands: (commands: PiCommand[]) => void;
+  /** Update model capabilities from a modelState host message. */
+  setModelState: (state: ModelState | null) => void;
   /** Set or clear a status entry (key → text | null). */
   setUiStatus: (key: string, text: string | null) => void;
   /** Set or clear a widget block (key → lines[] | null). */
@@ -500,12 +508,14 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   isStreaming: false,
   _currentAssistantId: null,
   commands: [],
+  supportsImages: false,
+  modelName: null,
   uiStatuses: [],
   uiWidgets: [],
   uiTitle: null,
   uiEditorText: null,
 
-  addUserMessage: (text) =>
+  addUserMessage: (text, imageCount) =>
     set((state) => ({
       items: [
         ...state.items,
@@ -513,6 +523,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
           itemKind: 'user',
           id: nextId(),
           text,
+          ...(imageCount ? { imageCount } : {}),
           timestamp: Date.now(),
         } satisfies UserItem,
       ],
@@ -539,6 +550,12 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
     })),
 
   setCommands: (commands: PiCommand[]) => set(() => ({ commands })),
+
+  setModelState: (state: ModelState | null) =>
+    set(() => ({
+      supportsImages: state?.supportsImages ?? false,
+      modelName: state?.modelName ?? null,
+    })),
 
   setUiStatus: (key, text) =>
     set((state) => {
@@ -615,6 +632,8 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         uiWidgets: state.uiWidgets,
         uiTitle: state.uiTitle,
         uiEditorText: state.uiEditorText,
+        supportsImages: state.supportsImages,
+        modelName: state.modelName,
       };
       // Deep-clone items array elements that will be mutated so React
       // detects the change correctly.

@@ -176,15 +176,27 @@ function ItemRenderer({ item }: { item: ChatItem }) {
 
 function UserMessage({ item }: { item: UserItem }) {
   const segments = useMemo(() => splitUserMessage(item.text), [item.text]);
+  // An image-only prompt has empty text; skip the bubble and show only the badge.
+  const hasText = item.text.trim().length > 0;
+  const imageCount = item.imageCount ?? 0;
 
   return (
     <div className="user-message" aria-label="Your message">
-      {segments.map((seg, i) =>
-        seg.kind === 'text' ? (
-          <pre key={i} className="user-message__text">{seg.text}</pre>
-        ) : (
-          <SkillBlock key={i} name={seg.name} body={seg.body} />
-        ),
+      {hasText &&
+        segments.map((seg, i) =>
+          seg.kind === 'text' ? (
+            <pre key={i} className="user-message__text">{seg.text}</pre>
+          ) : (
+            <SkillBlock key={i} name={seg.name} body={seg.body} />
+          ),
+        )}
+      {imageCount > 0 && (
+        <div
+          className="user-message__attachments"
+          aria-label={`${imageCount} image${imageCount > 1 ? 's' : ''} attached`}
+        >
+          <span aria-hidden="true">🖼</span> {imageCount} image{imageCount > 1 ? 's' : ''}
+        </div>
       )}
     </div>
   );

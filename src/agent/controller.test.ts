@@ -364,6 +364,7 @@ describe('AgentController model state', () => {
       modelName: 'HY3 Preview',
       provider: 'openrouter',
       thinkingLevel: 'high',
+      supportsImages: false,
     });
   });
 
@@ -401,6 +402,149 @@ describe('AgentController model state', () => {
 
     expect(states.at(-1)).toEqual({
       modelId: null, modelName: null, provider: null, thinkingLevel: 'medium',
+      supportsImages: false,
     });
+  });
+});
+
+// ─── _refreshModelState: supportsImages ──────────────────────────────────────
+
+describe('AgentController._refreshModelState — supportsImages', () => {
+  async function flush() {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  }
+  it('sets supportsImages true when model.input includes "image"', async () => {
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: {
+            model: { id: 'm1', name: 'Vision', provider: 'anthropic', input: ['text', 'image'] },
+            thinkingLevel: null,
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+
+    expect(states.at(-1)?.supportsImages).toBe(true);
+  });
+
+  it('sets supportsImages false when model.input is text-only', async () => {
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: {
+            model: { id: 'm2', name: 'Text', provider: 'openai', input: ['text'] },
+            thinkingLevel: null,
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+
+    expect(states.at(-1)?.supportsImages).toBe(false);
+  });
+
+  it('sets supportsImages false when model.input is absent', async () => {
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: { id: 'm3', name: 'Old', provider: 'openai' }, thinkingLevel: null },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+
+    expect(states.at(-1)?.supportsImages).toBe(false);
+  });
+
+  it('sets supportsImages false when model is null', async () => {
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: null, thinkingLevel: null },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+
+    expect(states.at(-1)?.supportsImages).toBe(false);
+  });
+});
+
+// ─── sendPrompt: images forwarded to transport ───────────────────────────────
+
+describe('AgentController.sendPrompt — images', () => {
+  it('omits images field when no images are passed', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const { controller } = makeController((cmd) => {
+      captured = cmd as Record<string, unknown>;
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    await controller.sendPrompt('hello');
+    expect(captured?.['images']).toBeUndefined();
+  });
+
+  it('omits images field when an empty array is passed', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const { controller } = makeController((cmd) => {
+      captured = cmd as Record<string, unknown>;
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    await controller.sendPrompt('hello', []);
+    expect(captured?.['images']).toBeUndefined();
+  });
+
+  it('maps AttachedImage[] to RPC images with type:"image"', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const { controller } = makeController((cmd) => {
+      captured = cmd as Record<string, unknown>;
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    await controller.sendPrompt('describe this', [
+      { data: 'abc123', mimeType: 'image/png', size: 3 },
+    ]);
+    expect(captured?.['images']).toEqual([
+      { type: 'image', data: 'abc123', mimeType: 'image/png' },
+    ]);
+  });
+
+  it('strips fileName and size from RPC payload', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const { controller } = makeController((cmd) => {
+      captured = cmd as Record<string, unknown>;
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    await controller.sendPrompt('look', [
+      { data: 'xyz', mimeType: 'image/jpeg', fileName: 'photo.jpg', size: 1024 },
+    ]);
+    const rpcImgs = captured?.['images'] as Array<Record<string, unknown>>;
+    expect(rpcImgs[0]['fileName']).toBeUndefined();
+    expect(rpcImgs[0]['size']).toBeUndefined();
+    expect(rpcImgs[0]['type']).toBe('image');
   });
 });

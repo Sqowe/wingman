@@ -630,3 +630,52 @@ describe('setMessages (session restore)', () => {
     expect((list[0] as UserItem).text).toBe('ok');
   });
 });
+
+// ─── setModelState ────────────────────────────────────────────────────────────
+
+describe('store.setModelState', () => {
+  beforeEach(() => {
+    useChatStore.getState().resetSession();
+    useChatStore.setState({ supportsImages: false, modelName: null });
+  });
+
+  it('sets supportsImages and modelName from a full state', () => {
+    useChatStore.getState().setModelState({
+      modelId: 'm1', modelName: 'Vision', provider: 'anthropic',
+      thinkingLevel: null, supportsImages: true,
+    });
+    const s = useChatStore.getState();
+    expect(s.supportsImages).toBe(true);
+    expect(s.modelName).toBe('Vision');
+  });
+
+  it('defaults to false/null when state is null (pi down)', () => {
+    // First set to truthy values.
+    useChatStore.getState().setModelState({
+      modelId: 'm1', modelName: 'Vision', provider: 'anthropic',
+      thinkingLevel: null, supportsImages: true,
+    });
+    useChatStore.getState().setModelState(null);
+    const s = useChatStore.getState();
+    expect(s.supportsImages).toBe(false);
+    expect(s.modelName).toBeNull();
+  });
+
+  it('supportsImages false for text-only model', () => {
+    useChatStore.getState().setModelState({
+      modelId: 'm2', modelName: 'GPT-4', provider: 'openai',
+      thinkingLevel: null, supportsImages: false,
+    });
+    expect(useChatStore.getState().supportsImages).toBe(false);
+  });
+
+  it('preserves supportsImages across dispatchEvents (model state not clobbered)', () => {
+    useChatStore.getState().setModelState({
+      modelId: 'm1', modelName: 'Vision', provider: 'anthropic',
+      thinkingLevel: null, supportsImages: true,
+    });
+    useChatStore.getState().dispatchEvents([{ type: 'agent_start' }]);
+    expect(useChatStore.getState().supportsImages).toBe(true);
+    expect(useChatStore.getState().modelName).toBe('Vision');
+  });
+});

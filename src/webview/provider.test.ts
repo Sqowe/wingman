@@ -78,7 +78,7 @@ function makeController(opts?: { abortShouldThrow?: boolean }) {
 
 // ─── resolveProvider helper ───────────────────────────────────────────────────
 
-function resolveProvider(opts?: Parameters<typeof makeController>[0]) {
+function resolveProvider(opts?: Parameters<typeof makeController>[0] & { imageCapable?: boolean }) {
   const { view, sendMessage, postMessage } = makeWebviewView();
   const provider = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
   const controller = makeController(opts);
@@ -90,6 +90,13 @@ function resolveProvider(opts?: Parameters<typeof makeController>[0]) {
   );
   // Signal ready so the provider accepts subsequent messages.
   sendMessage({ type: 'ready' });
+  // Seed model state so image gating works in tests.
+  if (opts?.imageCapable) {
+    provider.postModelState({
+      modelId: 'test', modelName: 'TestModel', provider: 'test',
+      thinkingLevel: null, supportsImages: true,
+    });
+  }
   return { provider, controller, sendMessage, postMessage };
 }
 
@@ -443,5 +450,185 @@ describe('WingmanViewProvider — new-session shortcut forwarding', () => {
     sendMessage({ type: 'newSession' });
     expect(exec).toHaveBeenCalledWith('sqoweWingman.newSession');
     exec.mockRestore();
+  });
+});
+
+// ─── postModelState ────────────────────────────────────────────────────────
+
+describe('WingmanViewProvider — postModelState', () => {
+  it('posts a modelState message to the webview when ready', () => {
+    const { provider, postMessage } = resolveProvider();
+    provider.postModelState({ modelId: 'm1', modelName: 'Vision', provider: 'anthropic', thinkingLevel: null, supportsImages: true });
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'modelState',
+      state: { modelId: 'm1', modelName: 'Vision', provider: 'anthropic', thinkingLevel: null, supportsImages: true },
+    });
+  });
+
+  it('posts null state when pi is down', () => {
+    const { provider, postMessage } = resolveProvider();
+    provider.postModelState(null);
+    expect(postMessage).toHaveBeenCalledWith({ type: 'modelState', state: null });
+  });
+
+  it('replays cached model state on webview ready', async () => {
+    const { view: v2, postMessage: pm2, sendMessage: sm2 } = makeWebviewView();
+    const p2 = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    p2.setController(makeController() as unknown as AgentController);
+    p2.resolveWebviewView(
+      v2,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    // Cache model state before webview is ready.
+    p2.postModelState({ modelId: 'm2', modelName: 'GPT', provider: 'openai', thinkingLevel: null, supportsImages: false });
+    // Not posted yet.
+    expect(pm2).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'modelState' }));
+    // Signal ready — should replay.
+    sm2({ type: 'ready' });
+    await flushMicrotasks();
+    expect(pm2).toHaveBeenCalledWith({
+      type: 'modelState',
+      state: { modelId: 'm2', modelName: 'GPT', provider: 'openai', thinkingLevel: null, supportsImages: false },
+    });
+  });
+});
+
+// ─── sendPrompt image validation ─────────────────────────────────────────────
+
+describe('WingmanViewProvider — sendPrompt image validation', () => {
+  it('passes a clean images array to controller.sendPrompt', async () => {
+    const { controller, sendMessage } = resolveProvider({ imageCapable: true });
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'look',
+      images: [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    });
+    await flushMicrotasks();
+    expect(controller.sendPrompt).toHaveBeenCalledWith(
+      'look',
+      [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    );
+  });
+
+  it('drops images with disallowed mimeType', async () => {
+    const { controller, sendMessage } = resolveProvider({ imageCapable: true });
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'hi',
+      images: [{ data: 'AA==', mimeType: 'image/bmp', size: 1 }],
+    });
+    await flushMicrotasks();
+    // Images array is empty after dropping — sendPrompt called without images.
+    expect(controller.sendPrompt).toHaveBeenCalledWith('hi', undefined);
+  });
+
+  it('drops images with missing data field', async () => {
+    const { controller, sendMessage } = resolveProvider({ imageCapable: true });
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'hi',
+      images: [{ data: '', mimeType: 'image/png', size: 0 }],
+    });
+    await flushMicrotasks();
+    expect(controller.sendPrompt).toHaveBeenCalledWith('hi', undefined);
+  });
+
+  it('drops images whose decoded size exceeds MAX_IMAGE_BYTES', async () => {
+    const { controller, sendMessage } = resolveProvider({ imageCapable: true });
+    const oversized = 'A'.repeat(Math.ceil((5_242_880 * 4) / 3) + 100);
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'hi',
+      images: [{ data: oversized, mimeType: 'image/png', size: oversized.length }],
+    });
+    await flushMicrotasks();
+    expect(controller.sendPrompt).toHaveBeenCalledWith('hi', undefined);
+  });
+
+  it('stops accumulating images when total payload exceeds MAX_TOTAL_IMAGE_BYTES', async () => {
+    const { controller, sendMessage } = resolveProvider({ imageCapable: true });
+    const fourMbBase64 = 'A'.repeat(Math.ceil((4_194_304 * 4) / 3));
+    const imgs = Array.from({ length: 6 }, () => ({
+      data: fourMbBase64, mimeType: 'image/png', size: 4_194_304,
+    }));
+    sendMessage({ type: 'sendPrompt', text: 'many', images: imgs });
+    await flushMicrotasks();
+    const passedImages = (controller.sendPrompt as ReturnType<typeof vi.fn>).mock.calls[0][1] as unknown[];
+    expect(passedImages.length).toBeLessThanOrEqual(5);
+  });
+
+  it('clamps to MAX_IMAGES_PER_PROMPT and passes through the rest', async () => {
+    const { controller, sendMessage } = resolveProvider({ imageCapable: true });
+    const imgs = Array.from({ length: 15 }, () => ({
+      data: 'AA==', mimeType: 'image/png', size: 1,
+    }));
+    sendMessage({ type: 'sendPrompt', text: 'many', images: imgs });
+    await flushMicrotasks();
+    const passedImages = (controller.sendPrompt as ReturnType<typeof vi.fn>).mock.calls[0][1] as unknown[];
+    expect(passedImages).toHaveLength(10);
+  });
+
+  it('passes no images field to sendPrompt when images array is absent', async () => {
+    const { controller, sendMessage } = resolveProvider();
+    sendMessage({ type: 'sendPrompt', text: 'plain text' });
+    await flushMicrotasks();
+    expect(controller.sendPrompt).toHaveBeenCalledWith('plain text', undefined);
+  });
+
+  it('accepts an image-only prompt (empty text + images)', async () => {
+    const { controller, sendMessage } = resolveProvider({ imageCapable: true });
+    sendMessage({
+      type: 'sendPrompt',
+      text: '',
+      images: [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    });
+    await flushMicrotasks();
+    expect(controller.sendPrompt).toHaveBeenCalledWith(
+      '',
+      [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    );
+  });
+
+  it('drops images silently when model does not support images (host gate)', async () => {
+    // No imageCapable: true — model state is null, so supportsImages=false.
+    const { controller, sendMessage } = resolveProvider();
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'hi',
+      images: [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    });
+    await flushMicrotasks();
+    // Images dropped by host gate; text still sent.
+    expect(controller.sendPrompt).toHaveBeenCalledWith('hi', undefined);
+  });
+
+  it('drops images when ModelState is explicitly text-only (supportsImages=false)', async () => {
+    const { provider, controller, sendMessage } = resolveProvider();
+    provider.postModelState({
+      modelId: 'text-only', modelName: 'TextModel', provider: 'openai',
+      thinkingLevel: null, supportsImages: false,
+    });
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'describe',
+      images: [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    });
+    await flushMicrotasks();
+    expect(controller.sendPrompt).toHaveBeenCalledWith('describe', undefined);
+  });
+
+  it('rejects empty text with no images', async () => {
+    const { controller, sendMessage } = resolveProvider();
+    sendMessage({ type: 'sendPrompt', text: '' });
+    await flushMicrotasks();
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it('rejects whitespace-only text with no images', async () => {
+    const { controller, sendMessage } = resolveProvider();
+    sendMessage({ type: 'sendPrompt', text: '   ' });
+    await flushMicrotasks();
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
   });
 });

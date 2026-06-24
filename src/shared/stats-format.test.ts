@@ -10,6 +10,7 @@ const state = (over: Partial<ModelState> = {}): ModelState => ({
   modelName: null,
   provider: null,
   thinkingLevel: null,
+  supportsImages: false,
   ...over,
 });
 
