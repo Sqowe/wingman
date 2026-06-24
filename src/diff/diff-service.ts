@@ -127,7 +127,7 @@ export function applyUnifiedPatch(original: string, patch: string): string {
         if (origLines[cursor] !== content)
           throw new Error(
             `DiffService: context mismatch at line ${cursor + 1}: ` +
-            `expected ${JSON.stringify(origLines[cursor])}, got ${JSON.stringify(content)}`,
+            `file has ${JSON.stringify(origLines[cursor])}, patch expected ${JSON.stringify(content)}`,
           );
         output.push(content); cursor++; origConsumed++; newProduced++;
       } else if (prefix === '+') {
@@ -138,7 +138,7 @@ export function applyUnifiedPatch(original: string, patch: string): string {
         if (origLines[cursor] !== content)
           throw new Error(
             `DiffService: deletion mismatch at line ${cursor + 1}: ` +
-            `expected ${JSON.stringify(origLines[cursor])}, got ${JSON.stringify(content)}`,
+            `file has ${JSON.stringify(origLines[cursor])}, patch expected ${JSON.stringify(content)}`,
           );
         cursor++; origConsumed++;
       } // '\' (no-newline marker) is ignored
