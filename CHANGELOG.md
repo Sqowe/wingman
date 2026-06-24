@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-24
+
+### Fixed
+
+- **Chat auto-scroll** — streaming output no longer leaves the last line clipped
+  below the fold. The transcript re-pins to the true bottom once the final row's
+  height settles, instead of lagging one delta behind.
+
 ## [0.1.0] - 2026-06-24
 
 First preview release. A VS Code client for the
@@ -46,5 +54,6 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sqowe/sqowe-wingman/releases/tag/v0.1.0
