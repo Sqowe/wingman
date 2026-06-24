@@ -139,6 +139,17 @@
         "command": "sqoweWingman.showStats",
         "category": "Sqowe Wingman",
         "title": "Show Session Stats"
+      },
+      {
+        "command": "sqoweWingman.selectFolder",
+        "category": "Sqowe Wingman",
+        "title": "Select Workspace Folder",
+        "icon": "$(folder-active)"
+      },
+      {
+        "command": "sqoweWingman.trustProject",
+        "category": "Sqowe Wingman",
+        "title": "Trust Project (.pi/ Resources)"
       }
     ],
     "keybindings": [
@@ -185,6 +196,11 @@
           "command": "sqoweWingman.exportHtml",
           "when": "view == sqoweWingman.chat",
           "group": "1_session@4"
+        },
+        {
+          "command": "sqoweWingman.selectFolder",
+          "when": "view == sqoweWingman.chat && workspaceFolderCount > 1",
+          "group": "2_folder@1"
         },
         {
           "command": "sqoweWingman.refreshSessions",

@@ -154,12 +154,16 @@ export class RpcTransport implements AgentTransport {
   private _writeFlushing = false;
 
   /**
-   * @param piPath  Absolute path to the `pi` executable.
-   * @param cwd     Working directory (active workspace folder).
+   * @param piPath     Absolute path to the `pi` executable.
+   * @param cwd        Working directory (active workspace folder).
+   * @param extraArgs  Additional CLI flags to pass after `--mode rpc`.
+   *                   Used by Phase 8 to pass `--approve` / `--no-approve`
+   *                   for the project-trust gate.
    */
   constructor(
     private readonly _piPath: string,
     private readonly _cwd: string,
+    private readonly _extraArgs: string[] = [],
   ) {}
 
   // ─── AgentTransport ───────────────────────────────────────────────────────
@@ -174,7 +178,7 @@ export class RpcTransport implements AgentTransport {
     return new Promise((resolve, reject) => {
       const env = buildChildEnv();
 
-      const proc = spawn(this._piPath, ['--mode', 'rpc'], {
+      const proc = spawn(this._piPath, ['--mode', 'rpc', ...this._extraArgs], {
         cwd: this._cwd,
         env,
         stdio: ['pipe', 'pipe', 'pipe'],

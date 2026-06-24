@@ -14,6 +14,7 @@ import type { AgentTransport, RpcEvent } from './transport';
 import type { WingmanViewProvider } from '../webview/provider';
 import type { PiStatus, PiCommand, SessionStats, ModelState } from '../shared/messages';
 import { UiProtocolBridge } from '../ui-protocol/bridge';
+import type { TrustDecision } from '../trust/project-trust';
 
 /**
  * Commands that change the active model or thinking level (directly, or by
@@ -36,8 +37,27 @@ export class AgentController implements vscode.Disposable {
   private _eventDisposable: vscode.Disposable | undefined;
   private _closeDisposable: vscode.Disposable | undefined;
   private _folderWatcher: vscode.Disposable | undefined;
+  /** Persistent listener for active-folder removal in running multi-root sessions. */
+  private _activeFolderWatcher: vscode.Disposable | undefined;
   private _provider: WingmanViewProvider | undefined;
   private _piStatus: PiStatus | undefined;
+  /**
+   * The workspace folder path the user has explicitly selected (multi-root).
+   * `undefined` means "use the first workspace folder" (default).
+   */
+  private _activeFolderPath: string | undefined;
+  /**
+   * The cwd the currently running transport was spawned with. Set in _doStart
+   * after a successful transport.start(); cleared on teardown. Used as the
+   * stable "previous cwd" reference in the folder-change watcher so we never
+   * call _resolveCwd() (which mutates _activeFolderPath) for comparisons.
+   */
+  private _currentCwd: string | undefined;
+  /**
+   * The trust flag to pass when spawning pi for the current active folder.
+   * `'--approve'` / `'--no-approve'` / `undefined` (no flag).
+   */
+  private _trustArg: string | undefined;
   /** True while pi is mid-turn (between agent_start and agent_end). */
   private _isStreaming = false;
   /** Most-recent session stats (updated after every agent_end). */
@@ -61,6 +81,9 @@ export class AgentController implements vscode.Disposable {
    * sessions view can refresh without the user hitting Refresh manually. */
   private readonly _onSessionsChanged = new vscode.EventEmitter<void>();
   public readonly onSessionsChanged: vscode.Event<void> = this._onSessionsChanged.event;
+  /** Fires when the active workspace folder changes (multi-root). */
+  private readonly _onActiveFolderChanged = new vscode.EventEmitter<string>();
+  public readonly onActiveFolderChanged: vscode.Event<string> = this._onActiveFolderChanged.event;
   /** Fires with the active model + thinking level (null = unknown / pi down). */
   private readonly _onModelState = new vscode.EventEmitter<ModelState | null>();
   public readonly onModelState: vscode.Event<ModelState | null> = this._onModelState.event;
@@ -103,6 +126,91 @@ export class AgentController implements vscode.Disposable {
   public setProvider(provider: WingmanViewProvider): void {
     this._provider = provider;
     this._uiBridge.setProvider(provider);
+  }
+
+  /**
+   * Set the trust flag derived from the project-trust gate result.
+   * Must be called before `start()` for the flag to take effect.
+   *
+   * - `{ kind: 'no-resources' }` → no flag
+   * - `{ kind: 'saved', trusted: true }` → `--approve`
+   * - `{ kind: 'saved', trusted: false }` → `--no-approve`
+   * - `{ kind: 'needs-prompt' }` → clears any previous flag (safe default: no
+   *   project resources loaded) so a stale decision from a prior folder never
+   *   leaks into a new spawn.
+   */
+  public setTrustDecision(decision: TrustDecision): void {
+    if (decision.kind === 'no-resources') {
+      this._trustArg = undefined;
+    } else if (decision.kind === 'saved' || decision.kind === 'temporary') {
+      this._trustArg = decision.trusted ? '--approve' : '--no-approve';
+    } else {
+      // needs-prompt — caller has not resolved trust yet; clear any stale arg.
+      this._trustArg = undefined;
+    }
+  }
+
+  /**
+   * Initialise the active folder path without triggering a transport restart.
+   * Used by extension.ts during activation to restore the persisted folder
+   * before `start()` is called for the first time.
+   *
+   * Unlike `setActiveFolderPath`, this method:
+   *  - Does NOT restart the transport.
+   *  - DOES fire `onActiveFolderChanged` so any listeners initialise correctly.
+   *  - Validates that the path is still among the open workspace folders;
+   *    silently ignores the call if it is not.
+   */
+  public initActiveFolderPath(folderPath: string): void {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders?.some((f) => f.uri.fsPath === folderPath)) return;
+    this._activeFolderPath = folderPath;
+    this._onActiveFolderChanged.fire(folderPath);
+  }
+
+  /** Serialises all start/restart operations. Every call to _serializedStart
+   * chains onto this promise, so concurrent restarts queue up rather than
+   * racing to spawn multiple pi processes. */
+  private _restartChain: Promise<void> = Promise.resolve();
+
+  /**
+   * Force a transport restart for the current active folder, even if the
+   * folder path has not changed. Used by `trustProject` to apply a new trust
+   * decision immediately without requiring a folder switch.
+   * Serialized against concurrent restarts and start() calls.
+   * Only restarts when piStatus is 'found' or 'version-warning' (has a valid
+   * executable path); returns immediately for all other statuses.
+   */
+  public forceRestart(piStatus: PiStatus): Promise<void> {
+    if (this._disposed) return Promise.resolve();
+    if (piStatus.kind !== 'found' && piStatus.kind !== 'version-warning') {
+      return Promise.resolve();
+    }
+    return this._serializedStart(piStatus, { tearDownFirst: true });
+  }
+
+  /**
+   * Set the active workspace folder (multi-root support).
+   * If the path is not among the current workspace folders it is ignored.
+   * Restarts the transport if the folder actually changed and pi is running.
+   * Serialized against concurrent restarts.
+   */
+  public async setActiveFolderPath(
+    folderPath: string,
+    piStatus?: PiStatus,
+  ): Promise<void> {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders?.some((f) => f.uri.fsPath === folderPath)) return;
+    if (this._activeFolderPath === folderPath) return;
+
+    this._activeFolderPath = folderPath;
+    this._onActiveFolderChanged.fire(folderPath);
+
+    // Only restart the transport when we have a runnable pi status.
+    const status = piStatus ?? this._piStatus;
+    if (status?.kind === 'found' || status?.kind === 'version-warning') {
+      await this._serializedStart(status, { tearDownFirst: true });
+    }
   }
 
   /**
@@ -262,13 +370,51 @@ export class AgentController implements vscode.Disposable {
     }
 
     if (this._transport?.isRunning) return Promise.resolve();
-    if (this._starting) return this._starting;
 
-    this._starting = this._doStart(piStatus).finally(() => {
-      this._starting = undefined;
+    return this._serializedStart(piStatus, { tearDownFirst: false });
+  }
+
+  /**
+   * Serialized start/restart entry point.
+   *
+   * All concurrent calls chain onto `_restartChain` so only one spawn is ever
+   * in flight at a time. `tearDownFirst: true` tears down the current transport
+   * before starting (used by forceRestart / setActiveFolderPath). `false` skips
+   * teardown when we are simply starting from scratch (no running transport).
+   */
+  private _serializedStart(
+    piStatus: PiStatus & { kind: 'found' | 'version-warning' },
+    opts: { tearDownFirst: boolean },
+  ): Promise<void> {
+    // Each slot attaches to the current chain via .catch(() => {}) so a failure
+    // in one slot does not prevent subsequent slots from running. The slot
+    // itself re-throws so the direct caller still sees the error.
+    const slot = this._restartChain
+      .catch(() => { /* ignore predecessor failure — slot still runs */ })
+      .then(async () => {
+        if (this._disposed) return;
+        if (opts.tearDownFirst) {
+          this._tearDownTransport();
+        } else if (this._transport?.isRunning) {
+          return; // already running — nothing to do
+        }
+        // Delegate to the existing _doStart which manages the startSeq guard.
+        this._starting = this._doStart(piStatus).finally(() => {
+          this._starting = undefined;
+        });
+        await this._starting;
+      });
+
+    // Advance the chain with a version that swallows errors so the next slot
+    // always has a resolved predecessor to chain from.
+    this._restartChain = slot.catch((err: unknown) => {
+      this._outputChannel.appendLine(
+        `[AgentController] serialized start error: ${String(err)}`,
+      );
     });
 
-    return this._starting;
+    // Return the slot (not the chain) so the direct caller gets the raw error.
+    return slot;
   }
 
   /**
@@ -393,14 +539,25 @@ export class AgentController implements vscode.Disposable {
     }
   }
 
+  /**
+   * The currently active workspace folder path (multi-root).
+   * Returns undefined when no workspace is open.
+   */
+  public get activeFolderPath(): string | undefined {
+    return this._resolveCwd();
+  }
+
   public dispose(): void {
     if (this._disposed) return;
     this._disposed = true;
     this._folderWatcher?.dispose();
     this._folderWatcher = undefined;
+    this._activeFolderWatcher?.dispose();
+    this._activeFolderWatcher = undefined;
     this._tearDownTransport();
     this._uiBridge.dispose();
     this._onSessionsChanged.dispose();
+    this._onActiveFolderChanged.dispose();
     this._onModelState.dispose();
     this._outputChannel.dispose();
   }
@@ -422,7 +579,8 @@ export class AgentController implements vscode.Disposable {
 
     this._tearDownTransport();
 
-    const transport = new RpcTransport(piStatus.path, cwd);
+    const extraArgs = this._trustArg ? [this._trustArg] : [];
+    const transport = new RpcTransport(piStatus.path, cwd, extraArgs);
     transport.outputChannel = this._outputChannel;
 
     try {
@@ -461,9 +619,68 @@ export class AgentController implements vscode.Disposable {
 
     // Tell the webview the agent is live (clears any prior "pi exited" notice).
     this._provider?.postAgentStatus({ running: true, cwd });
+    // Record the cwd this transport was spawned with as a stable reference
+    // for the folder-change watcher (avoids calling _resolveCwd() for comparisons).
+    this._currentCwd = cwd;
 
     // Populate the model status bar with the freshly-started session's state.
     void this._refreshModelState();
+
+    // Install (or replace) the persistent active-folder watcher now that the
+    // transport is live. This watches for workspace-folder changes that affect
+    // the running agent (e.g. the active folder being removed) and restarts pi
+    // automatically. Unlike _folderWatcher, this is never disposed on a
+    // successful start — it stays active for the lifetime of the controller.
+    this._activeFolderWatcher?.dispose();
+    this._activeFolderWatcher = vscode.workspace.onDidChangeWorkspaceFolders(
+      ({ removed }) => {
+        if (this._disposed) return;
+        const folders = vscode.workspace.workspaceFolders;
+
+        // Use _currentCwd (set at transport-start time) as the stable "previous"
+        // reference. Calling _resolveCwd() here would mutate _activeFolderPath
+        // before we've handled the removal, making the comparison unreliable.
+        const previousCwd = this._currentCwd;
+
+        // If the active folder was removed, switch to the first remaining folder.
+        const activeFolderRemoved =
+          !!this._activeFolderPath &&
+          removed.some((f) => f.uri.fsPath === this._activeFolderPath);
+
+        if (activeFolderRemoved) {
+          const next = folders?.[0]?.uri.fsPath;
+          this._activeFolderPath = next;
+          if (next) {
+            this._onActiveFolderChanged.fire(next);
+          }
+        }
+
+        // Now compute the new effective cwd after updating _activeFolderPath.
+        const newCwd = this._resolveCwd();
+        const ps = this._piStatus;
+
+        if (!newCwd) {
+          // No folders left — tear down and wait for a folder to re-appear.
+          this._tearDownTransport();
+          this._provider?.postAgentStatus({
+            running: false,
+            reason: 'No workspace folder open',
+          });
+          if (ps) this._watchForWorkspaceFolder(ps);
+        } else if (newCwd !== previousCwd && (ps?.kind === 'found' || ps?.kind === 'version-warning')) {
+          // Only restart when the effective cwd actually changed; removals of
+          // unrelated folders in a multi-root workspace do not require a restart.
+          void this._serializedStart(
+            ps as PiStatus & { kind: 'found' | 'version-warning' },
+            { tearDownFirst: true },
+          ).catch((err: unknown) => {
+            this._outputChannel.appendLine(
+              `[AgentController] active-folder change restart error: ${String(err)}`,
+            );
+          });
+        }
+      },
+    );
   }
 
   /** Tracks pi's turn lifecycle so callers can tell when a prompt would be rejected. */
@@ -525,8 +742,17 @@ export class AgentController implements vscode.Disposable {
   }
 
   /**
-   * Watch for workspace folders being added. When one appears, retry start()
-   * automatically so the user doesn't have to reload after opening a folder.
+   * Watch for workspace folders being added or removed.
+   *
+   * - Added: retry start() when a folder first appears (no-workspace → workspace).
+   * - Removed: if the active folder was removed, auto-switch to the first
+   *   remaining folder and restart so the user always has a live agent.
+   */
+  /**
+   * Watch for the first workspace folder to appear when none was open at
+   * activation time. Disposes itself once a folder is available and start()
+   * succeeds. Active-folder removal while the transport is running is handled
+   * by the persistent `_activeFolderWatcher` installed in `_doStart`.
    */
   private _watchForWorkspaceFolder(piStatus: PiStatus): void {
     if (this._folderWatcher) return; // already watching
@@ -549,13 +775,31 @@ export class AgentController implements vscode.Disposable {
     this._isStreaming = false;
     this._transport?.dispose();
     this._transport = undefined;
+    this._currentCwd = undefined;
     this._uiBridge.setTransport(undefined);
   }
 
+  /**
+   * Resolve the cwd for the pi child process.
+   *
+   * Priority:
+   *   1. `_activeFolderPath` if it is still among the open workspace folders.
+   *   2. First workspace folder (fallback / single-root default).
+   *
+   * Also self-heals `_activeFolderPath` when the persisted folder is no longer
+   * in the workspace (e.g. after a folder is removed).
+   */
   private _resolveCwd(): string | undefined {
     const folders = vscode.workspace.workspaceFolders;
     if (!folders || folders.length === 0) return undefined;
-    // Phase 1: use the first folder. Multi-root support comes in Phase 8.
+
+    if (this._activeFolderPath) {
+      const still = folders.find((f) => f.uri.fsPath === this._activeFolderPath);
+      if (still) return still.uri.fsPath;
+      // The saved folder is gone — fall back and clear the stale value.
+      this._activeFolderPath = undefined;
+    }
+
     return folders[0].uri.fsPath;
   }
 }

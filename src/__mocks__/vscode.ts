@@ -37,13 +37,41 @@ export const window = {
   showInformationMessage: (_msg: string, ..._args: string[]) => Promise.resolve(undefined),
 };
 
+/** Backs `workspace.onDidChangeWorkspaceFolders` so tests can fire folder changes. */
+const _workspaceFoldersEmitter = new EventEmitter<{
+  added: readonly unknown[];
+  removed: readonly unknown[];
+}>();
+
 export const workspace = {
   getConfiguration: (_section?: string) => ({
     get: (_key: string, defaultValue?: unknown) => defaultValue,
   }),
-  workspaceFolders: undefined as undefined,
-  onDidChangeWorkspaceFolders: (_handler: () => void) => new Disposable(() => {}),
+  // Settable from tests: assign an array of `{ uri: { fsPath }, name }` folders.
+  workspaceFolders: undefined as
+    | readonly { uri: { fsPath: string }; name?: string }[]
+    | undefined,
+  onDidChangeWorkspaceFolders: (
+    handler: (e: { added: readonly unknown[]; removed: readonly unknown[] }) => void,
+  ): Disposable => _workspaceFoldersEmitter.event(handler),
 };
+
+/**
+ * Test helper: fire `onDidChangeWorkspaceFolders` with the given added/removed
+ * folders (each defaults to an empty array).
+ */
+export function __fireWorkspaceFoldersChanged(e: {
+  added?: readonly unknown[];
+  removed?: readonly unknown[];
+}): void {
+  _workspaceFoldersEmitter.fire({ added: e.added ?? [], removed: e.removed ?? [] });
+}
+
+/** Test helper: reset workspace mock state (call in `beforeEach`). */
+export function __resetWorkspace(): void {
+  workspace.workspaceFolders = undefined;
+  _workspaceFoldersEmitter.dispose();
+}
 
 export const env = {
   openExternal: (_uri: unknown) => Promise.resolve(true),

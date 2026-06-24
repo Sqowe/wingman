@@ -16,9 +16,12 @@ import { DiffService, DIFF_SCHEME } from './diff/diff-service';
 import { WingmanStatusBar, ModelStatusBar } from './status-bar';
 import { registerCommands } from './commands/index';
 import { registerSessions } from './sessions';
+import { promptForTrust, registerTrustCommands } from './trust/trust-commands';
+import type { PiStatus } from './shared/messages';
 
-// Module-level controller so deactivate() can dispose it.
+// Module-level controller and piStatus so deactivate() and trust commands can reach them.
 let _controller: AgentController | undefined;
+let _piStatus: PiStatus | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   // ── Controller ────────────────────────────────────────────────────────────
@@ -74,6 +77,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // ── Sessions view (Phase 7) ───────────────────────────────────────────────
   registerSessions(context, controller);
 
+  // ── Trust + folder commands (Phase 8) ────────────────────────────────────
+  registerTrustCommands(context, controller, () => _piStatus);
+
   context.subscriptions.push(
     vscode.commands.registerCommand('sqoweWingman.focusChat', () => {
       void vscode.commands.executeCommand('sqoweWingman.chat.focus');
@@ -94,6 +100,7 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
 
+    _piStatus = status;
     provider.setPiStatus(status);
 
     if (status.kind === 'not-found') {
@@ -120,6 +127,56 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     }
 
+    // ── Phase 8: restore active folder + run trust gate ──────────────────────
+    //
+    // 1. Restore the user's last-chosen folder from workspace state (multi-root).
+    //    Validates it is still among the open folders before applying.
+    // 2. Evaluate project trust for the active folder and, if needed, show the
+    //    native trust prompt.  The trust arg is passed to the controller so it
+    //    reaches the transport constructor before start() is called.
+
+    const savedFolder = context.workspaceState.get<string>('sqoweWingman.activeFolder');
+    const folders = vscode.workspace.workspaceFolders;
+    const activeFolderPath =
+      savedFolder && folders?.some((f) => f.uri.fsPath === savedFolder)
+        ? savedFolder
+        : folders?.[0]?.uri.fsPath;
+
+    if (activeFolderPath) {
+      // Persist the (potentially corrected) active folder.
+      if (activeFolderPath !== savedFolder) {
+        await context.workspaceState.update('sqoweWingman.activeFolder', activeFolderPath);
+      }
+
+      // Set folder on controller before trust via the supported API so
+      // _resolveCwd() is accurate when start() is called below, without
+      // triggering a premature transport restart.
+      controller.initActiveFolderPath(activeFolderPath);
+
+      // Run the trust gate for the active folder.
+      // promptForTrust handles all three cases: no-resources, saved decision,
+      // and needs-prompt (shows modal). It returns a structured result so we
+      // can distinguish a persisted decision from a one-run-only dismissal.
+      try {
+        const trustResult = await promptForTrust(activeFolderPath);
+        if (trustResult.arg === undefined) {
+          controller.setTrustDecision({ kind: 'no-resources' });
+        } else {
+          // Use 'saved' only when the decision was actually persisted;
+          // use 'temporary' for dismissals so no phantom denial is recorded.
+          controller.setTrustDecision({
+            kind: trustResult.persisted ? 'saved' : 'temporary',
+            trusted: trustResult.arg === '--approve',
+          });
+        }
+      } catch (err) {
+        controller.outputChannel.appendLine(
+          `[extension] trust gate error: ${String(err)} — defaulting to --no-approve`,
+        );
+        controller.setTrustDecision({ kind: 'temporary', trusted: false });
+      }
+    }
+
     await controller.start(status);
     // Fetch slash commands once transport is live.
     void controller.getCommands();
@@ -138,7 +195,13 @@ export function activate(context: vscode.ExtensionContext): void {
         context.workspaceState.update('sqoweWingman.lastSessionPath', undefined);
       }
     }
-  })();
+  })().catch((err: unknown) => {
+    // Catch any unexpected rejection from the activation IIFE so it is always
+    // surfaced to the output channel rather than silently swallowed.
+    controller.outputChannel.appendLine(
+      `[extension] activation error: ${String(err)}`,
+    );
+  });
 }
 
 export function deactivate(): void {
