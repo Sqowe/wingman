@@ -207,8 +207,10 @@ export function Composer({ isStreaming, piStatus, promptError, commands, prefill
           ref={textRef}
           className="composer__input"
           placeholder={
+            // While streaming the animated working indicator (below) stands in
+            // for placeholder text, so keep the placeholder itself empty.
             isStreaming
-              ? 'Agent is working…'
+              ? ''
               : 'Send a prompt… (/ for commands, Enter to send)'
           }
           rows={3}
@@ -220,6 +222,17 @@ export function Composer({ isStreaming, piStatus, promptError, commands, prefill
           aria-expanded={isMenuOpen}
           aria-haspopup={commands.length > 0 ? 'listbox' : undefined}
         />
+        {isStreaming && (
+          <div className="composer__working" role="status" aria-live="polite">
+            <span className="composer__working-bars" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+              <span />
+            </span>
+            <span className="composer__working-label">Agent is working…</span>
+          </div>
+        )}
         {isStreaming ? (
           <button
             className="composer__abort"
