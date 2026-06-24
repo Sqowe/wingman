@@ -4,9 +4,11 @@ webview-ui/
 
 # Config / tooling
 tsconfig.json
+tsconfig.test.json
 esbuild.mjs
 .eslintrc*
 .prettierrc*
+.vscode-test.mjs
 
 # Dev artifacts
 out/
@@ -30,6 +32,7 @@ node_modules/
 **/node_modules/
 
 # Tests
+test/
 **/*.test.ts
 **/*.spec.ts
 .vscode-test/

@@ -48,8 +48,33 @@ jobs:
           path: sqowe-wingman.vsix
           if-no-files-found: error
 
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            webview-ui/package-lock.json
+
+      - name: Install dependencies (root)
+        run: npm ci
+
+      - name: Install dependencies (webview-ui)
+        run: npm ci --prefix webview-ui
+
+      # The VS Code test host launches a real Electron window; xvfb provides a
+      # virtual display on the headless runner. `test:integration` runs its
+      # pretest (build + compile:test) first.
+      - name: Integration tests
+        run: xvfb-run -a npm run test:integration
+
   # ── Publish (enable once the `sqowe` Marketplace publisher + PAT exist) ──
-  # Trigger by pushing a tag like `v0.0.3`. Add VSCE_PAT to repo secrets first.
+  # Trigger by pushing a tag like `v0.1.0`. Add VSCE_PAT to repo secrets first.
   # publish:
   #   needs: build-test-package
   #   if: startsWith(github.ref, 'refs/tags/v')

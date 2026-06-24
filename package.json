@@ -239,14 +239,21 @@
     "test": "npm run test:host && npm run test:webview",
     "test:host": "vitest run",
     "test:webview": "npm --prefix webview-ui run test",
+    "compile:test": "tsc -p tsconfig.test.json",
+    "pretest:integration": "npm run build && npm run compile:test",
+    "test:integration": "vscode-test",
     "vscode:prepublish": "npm run build",
     "vsce:package": "vsce package"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.10",
     "@types/node": "18.19.130",
     "@types/vscode": "1.82.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
     "@vscode/vsce": "3.9.2",
     "esbuild": "0.21.5",
+    "mocha": "^11.7.6",
     "typescript": "5.5.3",
     "vitest": "1.6.0"
   }

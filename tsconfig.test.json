@@ -1,0 +1,20 @@
+{
+  // Separate compile for VS Code integration tests (run in a real Extension
+  // Development Host by @vscode/test-cli), kept apart from the host build
+  // (esbuild -> dist) and the vitest unit tests (src/**/*.test.ts with the
+  // mocked `vscode`). These tests live outside src/ and use the REAL vscode API.
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "outDir": "out/integration",
+    "rootDir": "test/integration",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "sourceMap": true
+  },
+  "include": ["test/integration/**/*.ts"]
+}
