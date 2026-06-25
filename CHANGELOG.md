@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-25
+
+### Changed
+
+- **Composer layout** — the prompt input and its actions now share a single
+  bordered shell with an inset bottom toolbar (attach on the left, Send on the
+  right). The image-attachment control is a borderless paperclip icon on the
+  input's bottom edge, replacing the boxed ＋, and its tooltip now shows
+  reliably even when the active model is text-only.
+
 ## [0.1.1] - 2026-06-24
 
 ### Fixed
@@ -54,6 +64,7 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sqowe/sqowe-wingman/releases/tag/v0.1.0
