@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.1] - 2026-06-24
 
+### Added
+
+- **Image attachments** — send images to the agent alongside a prompt via a ＋
+  button (file picker), clipboard paste, or drag-and-drop. Attachments show as
+  thumbnail chips with per-image removal; image-only prompts are allowed. Gated
+  on the active model's modality: when the model is text-only the control is
+  disabled and pasted/dropped images are ignored with a brief note. Enforced
+  size and count caps (5 MB per image, 20 MB total, 10 images) plus a MIME
+  allowlist, validated on both the webview and the extension host.
+
 ### Fixed
 
 - **Chat auto-scroll** — streaming output no longer leaves the last line clipped
