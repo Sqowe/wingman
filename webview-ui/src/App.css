@@ -672,36 +672,56 @@ body {
 }
 
 .composer__row {
-  position: relative;
   display: flex;
-  gap: 6px;
-  align-items: flex-end;
 }
 
-/* ＋ attach button */
-.composer__attach {
-  flex-shrink: 0;
-  align-self: flex-end;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 1px solid var(--vscode-input-border, transparent);
-  border-radius: 2px;
+/* Single bordered container: the textarea sits above an inset toolbar.
+   The shell owns the border + focus ring so it reads as one input. */
+.composer__shell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   background: var(--vscode-input-background);
-  color: var(--vscode-input-foreground);
-  font-size: 16px;
-  line-height: 1;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.composer__shell:focus-within {
+  border-color: var(--vscode-focusBorder);
+}
+
+/* Inset toolbar along the bottom edge of the shell. */
+.composer__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Attach button — borderless ghost icon (margin-right:auto pushes the rest right). */
+.composer__attach {
+  margin-right: auto;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-icon-foreground, var(--vscode-input-foreground));
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.composer__attach:hover:not(:disabled) {
+.composer__attach:hover:not(:disabled):not(.composer__attach--off) {
   background: var(--vscode-toolbar-hoverBackground);
 }
 
-.composer__attach:disabled {
+.composer__attach:disabled,
+.composer__attach--off {
   opacity: 0.4;
   cursor: not-allowed;
 }
@@ -709,19 +729,14 @@ body {
 .composer__input {
   flex: 1;
   resize: none;
-  background: var(--vscode-input-background);
+  background: transparent;
   color: var(--vscode-input-foreground);
-  border: 1px solid var(--vscode-input-border, transparent);
-  border-radius: 2px;
-  padding: 6px 8px;
+  border: none;
+  padding: 0;
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
   outline: none;
   line-height: 1.5;
-}
-
-.composer__input:focus {
-  border-color: var(--vscode-focusBorder);
 }
 
 .composer__input::placeholder {
@@ -733,12 +748,9 @@ body {
   cursor: not-allowed;
 }
 
-/* Animated "agent is working" indicator, overlaid on the disabled textarea
-   while streaming. Absolutely positioned so it never shifts the row layout. */
+/* Animated "agent is working" indicator — lives inline in the toolbar while
+   streaming, sitting to the left of the Stop button. */
 .composer__working {
-  position: absolute;
-  left: 9px;
-  top: 9px;
   display: flex;
   align-items: center;
   gap: 8px;

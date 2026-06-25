@@ -476,7 +476,7 @@ export function Composer({
       )}
 
       <div className="composer__row">
-        {/* Hidden file input — triggered by the ＋ button */}
+        {/* Hidden file input — triggered by the attach button */}
         <input
           ref={fileRef}
           type="file"
@@ -489,73 +489,104 @@ export function Composer({
           onClick={(e) => { (e.target as HTMLInputElement).value = ''; }}
         />
 
-        <button
-          type="button"
-          className="composer__attach"
-          disabled={disabled || !supportsImages}
-          title={
-            supportsImages
-              ? 'Attach image'
-              : `${modelName ?? 'This model'} doesn't accept images`
-          }
-          aria-label="Attach image"
-          onClick={() => fileRef.current?.click()}
-        >
-          ＋
-        </button>
+        {/* Single bordered shell holds the textarea and an inset toolbar so
+            the attach icon and Send sit on the input's bottom edge. */}
+        <div className="composer__shell">
+          <textarea
+            ref={textRef}
+            className="composer__input"
+            placeholder={
+              isStreaming
+                ? ''
+                : 'Send a prompt… (/ for commands, Enter to send)'
+            }
+            rows={3}
+            disabled={disabled || isStreaming}
+            onKeyDown={handleKeyDown}
+            onChange={handleChange}
+            onPaste={handlePaste}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            aria-label="Prompt input"
+            aria-autocomplete={commands.length > 0 ? 'list' : 'none'}
+            aria-expanded={isMenuOpen}
+            aria-haspopup={commands.length > 0 ? 'listbox' : undefined}
+          />
 
-        <textarea
-          ref={textRef}
-          className="composer__input"
-          placeholder={
-            isStreaming
-              ? ''
-              : 'Send a prompt… (/ for commands, Enter to send)'
-          }
-          rows={3}
-          disabled={disabled || isStreaming}
-          onKeyDown={handleKeyDown}
-          onChange={handleChange}
-          onPaste={handlePaste}
-          onDragOver={handleDragOver}
-          onDrop={handleDrop}
-          aria-label="Prompt input"
-          aria-autocomplete={commands.length > 0 ? 'list' : 'none'}
-          aria-expanded={isMenuOpen}
-          aria-haspopup={commands.length > 0 ? 'listbox' : undefined}
-        />
-        {isStreaming && (
-          <div className="composer__working" role="status" aria-live="polite">
-            <span className="composer__working-bars" aria-hidden="true">
-              <span />
-              <span />
-              <span />
-              <span />
-            </span>
-            <span className="composer__working-label">Agent is working…</span>
+          <div className="composer__toolbar">
+            <button
+              type="button"
+              className={'composer__attach' + (!supportsImages ? ' composer__attach--off' : '')}
+              // Truly disable only when pi is unavailable. For a text-only
+              // model use aria-disabled (not `disabled`) so the button stays
+              // hoverable and its `title` tooltip still appears.
+              disabled={disabled}
+              aria-disabled={!supportsImages}
+              title={
+                supportsImages
+                  ? 'Attach image'
+                  : `${modelName ?? 'This model'} doesn't accept images`
+              }
+              aria-label="Attach image"
+              onClick={() => {
+                if (disabled) return;
+                if (!supportsImages) {
+                  showImageNote(`${modelName ?? 'This model'} doesn't accept images.`);
+                  return;
+                }
+                fileRef.current?.click();
+              }}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+              </svg>
+            </button>
+
+            {isStreaming && (
+              <div className="composer__working" role="status" aria-live="polite">
+                <span className="composer__working-bars" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                <span className="composer__working-label">Agent is working…</span>
+              </div>
+            )}
+
+            {isStreaming ? (
+              <button
+                className="composer__abort"
+                type="button"
+                onClick={handleAbort}
+                aria-label="Stop agent"
+                title="Stop agent"
+              >
+                ■ Stop
+              </button>
+            ) : (
+              <button
+                className="composer__send"
+                type="button"
+                onClick={handleSend}
+                disabled={disabled}
+                aria-label="Send prompt"
+              >
+                Send
+              </button>
+            )}
           </div>
-        )}
-        {isStreaming ? (
-          <button
-            className="composer__abort"
-            type="button"
-            onClick={handleAbort}
-            aria-label="Stop agent"
-            title="Stop agent"
-          >
-            ■ Stop
-          </button>
-        ) : (
-          <button
-            className="composer__send"
-            type="button"
-            onClick={handleSend}
-            disabled={disabled}
-            aria-label="Send prompt"
-          >
-            Send
-          </button>
-        )}
+        </div>
       </div>
     </div>
   );
