@@ -585,6 +585,29 @@ body {
   color: var(--vscode-inputValidation-errorForeground, var(--vscode-errorForeground));
 }
 
+/* ── Code block (markdown fenced code) ────────────────────────────────────── */
+
+/* Wraps a rendered code block so the copy button can sit over its top-right
+   corner. The button stays hidden until the block is hovered or receives
+   keyboard focus, then fades in. */
+.code-block {
+  position: relative;
+}
+
+.code-block__copy {
+  position: absolute;
+  top: 12px;
+  right: 8px;
+  opacity: 0;
+  background: var(--vscode-editor-background);
+  transition: opacity 0.1s;
+}
+
+.code-block:hover .code-block__copy,
+.code-block:focus-within .code-block__copy {
+  opacity: 1;
+}
+
 /* ── Composer ─────────────────────────────────────────────────────────────── */
 
 /* Docks the composer to the bottom with a divider separating it from the

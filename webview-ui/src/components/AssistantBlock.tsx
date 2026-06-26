@@ -26,6 +26,21 @@ interface Props {
 /** Schemes the webview will forward to the host openExternal handler. */
 const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
 
+/**
+ * Flatten a React node subtree to its text content. Used to recover the raw
+ * source of a code block (whose children are React elements) so the copy
+ * button copies clean source, not rendered pixels.
+ */
+function nodeToText(node: React.ReactNode): string {
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(nodeToText).join('');
+  if (React.isValidElement(node)) {
+    return nodeToText((node.props as { children?: React.ReactNode }).children);
+  }
+  return '';
+}
+
 /** Intercept all links: validate scheme webview-side, then post to host for safe external opening. */
 const markdownComponents: Components = {
   a({ href, children }) {
@@ -50,6 +65,21 @@ const markdownComponents: Components = {
       >
         {children}
       </a>
+    );
+  },
+
+  /**
+   * Render fenced code blocks with a hover-reveal copy button. Overriding
+   * `pre` (not `code`) targets only block code — inline `code` stays
+   * untouched — and works even when the fence declares no language.
+   */
+  pre({ children }) {
+    const code = nodeToText(children).replace(/\n$/, '');
+    return (
+      <div className="code-block">
+        <CopyButton text={code} label="Copy code" className="code-block__copy" />
+        <pre>{children}</pre>
+      </div>
     );
   },
 };

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-06-26
+
+### Added
+
+- **Copy code blocks** — fenced code blocks in assistant messages now reveal a
+  copy button in the top-right corner on hover (and on keyboard focus). It
+  copies the block's clean source text rather than the rendered markup, reusing
+  the same size-guarded clipboard path as the other copy buttons.
+
 ## [0.1.2] - 2026-06-25
 
 ### Changed
@@ -74,7 +83,8 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/sqowe/sqowe-wingman/releases/tag/v0.1.0
