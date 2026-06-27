@@ -28,8 +28,6 @@ export function MessageList({ items, height, width }: Props) {
   const listRef = useRef<VariableSizeList>(null);
   const rowHeights = useRef<Record<number, number>>({});
   const isAtBottom = useRef(true);
-  const lastIndexRef = useRef(items.length - 1);
-  lastIndexRef.current = items.length - 1;
 
   const getItemSize = useCallback((index: number) => {
     return rowHeights.current[index] ?? DEFAULT_ROW_HEIGHT;
@@ -39,12 +37,6 @@ export function MessageList({ items, height, width }: Props) {
     if (rowHeights.current[index] === size) return;
     rowHeights.current[index] = size;
     listRef.current?.resetAfterIndex(index, false);
-    // The last row just settled to a new height. The scrollToItem that fired
-    // during render used the stale (shorter) cached height, leaving the final
-    // pixels below the fold. Re-pin now that the size cache is current.
-    if (isAtBottom.current && index === lastIndexRef.current) {
-      listRef.current?.scrollToItem(index, 'end');
-    }
   }, []);
 
   // Scroll to bottom when new items arrive (only when already pinned to bottom).
