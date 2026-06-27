@@ -9,7 +9,7 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import type { HostMessage, PiStatus, AttachedImage } from '@shared/messages';
 import { vscode } from './vscodeApi';
-import { useChatStore } from './store';
+import { useChatStore, normalizeEditToolActions } from './store';
 import type { UiWidget } from './store';
 import { MessageList } from './components/MessageList';
 import { Composer } from './components/Composer';
@@ -52,6 +52,7 @@ export default function App() {
   const resetSession = useChatStore((s) => s.resetSession);
   const setMessages = useChatStore((s) => s.setMessages);
   const setModelState = useChatStore((s) => s.setModelState);
+  const setChatConfig = useChatStore((s) => s.setChatConfig);
 
   // rAF coalescer: buffer incoming agentEvent messages and flush per frame.
   const pendingEvents = useRef<RpcEvent[]>([]);
@@ -157,6 +158,10 @@ export default function App() {
 
         case 'modelState':
           setModelState(msg.state);
+          break;
+
+        case 'chatConfig':
+          setChatConfig(normalizeEditToolActions(msg.editToolActions));
           break;
       }
     };

@@ -10,7 +10,7 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import type { AgentController } from '../agent/controller';
-import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage } from '../shared/messages';
+import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage, EditToolActions } from '../shared/messages';
 import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES, MAX_PATCH_BYTES, MAX_IMAGE_BYTES, MAX_IMAGES_PER_PROMPT, MAX_TOTAL_IMAGE_BYTES, ALLOWED_IMAGE_MIME_TYPES, type AllowedImageMimeType } from '../shared/limits';
 import type { RpcEvent } from '../agent/transport';
 import type { DiffService } from '../diff/diff-service';
@@ -51,6 +51,8 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   private static readonly _MAX_PENDING_EVENT_BYTES = 512_000; // 512 KB total
   /** Last model state — replayed on webview (re)ready so the composer knows image support immediately. */
   private _lastModelState: ModelState | null | undefined;
+  /** Last chat UI config — replayed on webview (re)ready so edit cards show the right buttons immediately. */
+  private _lastChatConfig: EditToolActions | undefined;
   /** Timestamp of the last accepted sendPrompt — for basic rate-limiting. */
   private _lastPromptAt = 0;
   /** Timestamp of the last accepted clipboard write — for basic rate-limiting. */
@@ -147,6 +149,10 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
             // Replay model state so the composer knows image support immediately.
             if (this._lastModelState !== undefined) {
               this._postMessage({ type: 'modelState', state: this._lastModelState });
+            }
+            // Replay chat UI config so edit cards show the right buttons immediately.
+            if (this._lastChatConfig !== undefined) {
+              this._postMessage({ type: 'chatConfig', editToolActions: this._lastChatConfig });
             }
             break;
 
@@ -578,6 +584,14 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     this._lastModelState = state;
     if (this._webviewReady) {
       this._postMessage({ type: 'modelState', state });
+    }
+  }
+
+  /** Push the chat UI config to the webview (and cache for replay on ready). */
+  public postChatConfig(editToolActions: EditToolActions): void {
+    this._lastChatConfig = editToolActions;
+    if (this._webviewReady) {
+      this._postMessage({ type: 'chatConfig', editToolActions });
     }
   }
 

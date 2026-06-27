@@ -57,6 +57,7 @@ function extractPatch(details: Record<string, unknown> | null): string | null {
 
 export function ToolCard({ item }: Props) {
   const setDiffError = useChatStore((s) => s.setDiffError);
+  const editToolActions = useChatStore((s) => s.editToolActions);
   // `null` = follow the default (expanded while running, collapsed once done);
   // a boolean = the user's explicit toggle, which then sticks. Deriving the
   // displayed state this way auto-collapses a card the instant it completes —
@@ -68,6 +69,11 @@ export function ToolCard({ item }: Props) {
   const summary = argsSummary(item.toolName, item.args);
   const label = toolLabel(item.toolName);
   const patch = item.isComplete && item.toolName === 'edit' ? extractPatch(item.details) : null;
+
+  // Config-driven visibility for the edit-card action buttons
+  // (`sqoweWingman.editToolActions` → chatConfig message).
+  const showDiff  = editToolActions === 'both' || editToolActions === 'diffOnly';
+  const showApply = editToolActions === 'both' || editToolActions === 'applyOnly';
 
   const statusClass = item.isComplete
     ? item.isError
@@ -152,24 +158,28 @@ export function ToolCard({ item }: Props) {
       )}
 
       {/* ── Diff actions (edit tool only) ── */}
-      {patch !== null && (
+      {patch !== null && (showDiff || showApply) && (
         <div className="tool-card__diff-actions">
-          <button
-            type="button"
-            className="tool-card__diff-btn"
-            onClick={handleViewDiff}
-            title="Open VS Code diff editor (read-only preview)"
-          >
-            View Diff
-          </button>
-          <button
-            type="button"
-            className="tool-card__diff-btn tool-card__diff-btn--apply"
-            onClick={handleApply}
-            title="Apply this edit to the file (appears in Source Control)"
-          >
-            Apply
-          </button>
+          {showDiff && (
+            <button
+              type="button"
+              className="tool-card__diff-btn"
+              onClick={handleViewDiff}
+              title="Open VS Code diff editor (read-only preview)"
+            >
+              View Diff
+            </button>
+          )}
+          {showApply && (
+            <button
+              type="button"
+              className="tool-card__diff-btn tool-card__diff-btn--apply"
+              onClick={handleApply}
+              title="Apply this edit to the file (appears in Source Control)"
+            >
+              Apply
+            </button>
+          )}
         </div>
       )}
 

@@ -10,7 +10,7 @@
  *   - tool `result.details` (incl. `patch`) is preserved for the Phase 4 diff
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useChatStore } from './index';
+import { useChatStore, normalizeEditToolActions } from './index';
 import type {
   AssistantItem,
   ChatItem,
@@ -677,5 +677,61 @@ describe('store.setModelState', () => {
     useChatStore.getState().dispatchEvents([{ type: 'agent_start' }]);
     expect(useChatStore.getState().supportsImages).toBe(true);
     expect(useChatStore.getState().modelName).toBe('Vision');
+  });
+});
+
+// ─── setChatConfig ───────────────────────────────────────────────────────────
+
+describe('store.setChatConfig', () => {
+  beforeEach(() => {
+    useChatStore.getState().resetSession();
+    useChatStore.setState({ editToolActions: 'both' });
+  });
+
+  it('defaults to “both”', () => {
+    expect(useChatStore.getState().editToolActions).toBe('both');
+  });
+
+  it('sets each of the four modes', () => {
+    for (const mode of ['diffOnly', 'applyOnly', 'none', 'both'] as const) {
+      useChatStore.getState().setChatConfig(mode);
+      expect(useChatStore.getState().editToolActions).toBe(mode);
+    }
+  });
+
+  it('is preserved across dispatchEvents (config not clobbered by agent events)', () => {
+    useChatStore.getState().setChatConfig('diffOnly');
+    useChatStore.getState().dispatchEvents([{ type: 'agent_start' }]);
+    expect(useChatStore.getState().editToolActions).toBe('diffOnly');
+  });
+
+  it('is preserved across resetSession (config is not session-scoped)', () => {
+    useChatStore.getState().setChatConfig('none');
+    useChatStore.getState().resetSession();
+    expect(useChatStore.getState().editToolActions).toBe('none');
+  });
+});
+
+// ─── normalizeEditToolActions ────────────────────────────────────────────────
+
+describe('store.normalizeEditToolActions', () => {
+  it.each(['both', 'diffOnly', 'applyOnly', 'none'] as const)(
+    'passes through each valid value (%s)',
+    (mode) => {
+      expect(normalizeEditToolActions(mode)).toBe(mode);
+    },
+  );
+
+  it.each([
+    undefined,
+    null,
+    '',
+    'BOTH',
+    'both ',
+    'apply',
+    42,
+    { actions: 'both' },
+  ])('coerces unknown / malformed values to "both" (%j)', (raw) => {
+    expect(normalizeEditToolActions(raw)).toBe('both');
   });
 });

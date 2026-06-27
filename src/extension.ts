@@ -17,11 +17,22 @@ import { WingmanStatusBar, ModelStatusBar } from './status-bar';
 import { registerCommands } from './commands/index';
 import { registerSessions } from './sessions';
 import { promptForTrust, registerTrustCommands } from './trust/trust-commands';
-import type { PiStatus } from './shared/messages';
+import type { PiStatus, EditToolActions } from './shared/messages';
 
 // Module-level controller and piStatus so deactivate() and trust commands can reach them.
 let _controller: AgentController | undefined;
 let _piStatus: PiStatus | undefined;
+
+/**
+ * Read the `sqoweWingman.editToolActions` setting, coercing any unknown value
+ * to the default. Drives which action buttons appear on completed `edit` cards.
+ */
+function readEditToolActions(): EditToolActions {
+  const raw = vscode.workspace
+    .getConfiguration('sqoweWingman')
+    .get<string>('editToolActions', 'both');
+  return raw === 'diffOnly' || raw === 'applyOnly' || raw === 'none' ? raw : 'both';
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   // ── Controller ────────────────────────────────────────────────────────────
@@ -71,6 +82,18 @@ export function activate(context: vscode.ExtensionContext): void {
   // (e.g. restored from a previous session). If it's null the webview
   // defaults supportsImages=false which is the safe/correct initial state.
   provider.postModelState(controller.lastModelState);
+
+  // Seed the webview with the chat UI config (which action buttons to show on
+  // completed `edit` tool cards) and keep it in sync if the user changes the
+  // setting while the extension is running.
+  provider.postChatConfig(readEditToolActions());
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('sqoweWingman.editToolActions')) {
+        provider.postChatConfig(readEditToolActions());
+      }
+    }),
+  );
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(

@@ -494,6 +494,46 @@ describe('WingmanViewProvider — postModelState', () => {
   });
 });
 
+// ─── postChatConfig ─────────────────────────────────────────────────────────
+
+describe('WingmanViewProvider — postChatConfig', () => {
+  it('posts a chatConfig message to the webview when ready', () => {
+    const { provider, postMessage } = resolveProvider();
+    provider.postChatConfig('diffOnly');
+    expect(postMessage).toHaveBeenCalledWith({ type: 'chatConfig', editToolActions: 'diffOnly' });
+  });
+
+  it('does not post before the webview signals ready, then replays on ready', async () => {
+    const { view: v2, postMessage: pm2, sendMessage: sm2 } = makeWebviewView();
+    const p2 = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    p2.setController(makeController() as unknown as AgentController);
+    p2.resolveWebviewView(
+      v2,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    // Cache chat config before webview is ready.
+    p2.postChatConfig('none');
+    expect(pm2).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'chatConfig' }));
+    // Signal ready — should replay.
+    sm2({ type: 'ready' });
+    await flushMicrotasks();
+    expect(pm2).toHaveBeenCalledWith({ type: 'chatConfig', editToolActions: 'none' });
+  });
+
+  it('re-posts chatConfig when pushed again while the webview is already ready', () => {
+    // Mirrors the onDidChangeConfiguration path in extension.ts: while the
+    // webview is up, a setting change calls postChatConfig again and the new
+    // value must be delivered immediately (not buffered or dropped).
+    const { provider, postMessage } = resolveProvider();
+    provider.postChatConfig('diffOnly');
+    expect(postMessage).toHaveBeenCalledWith({ type: 'chatConfig', editToolActions: 'diffOnly' });
+    // Simulate the user changing the setting while running.
+    provider.postChatConfig('none');
+    expect(postMessage).toHaveBeenLastCalledWith({ type: 'chatConfig', editToolActions: 'none' });
+  });
+});
+
 // ─── sendPrompt image validation ─────────────────────────────────────────────
 
 describe('WingmanViewProvider — sendPrompt image validation', () => {

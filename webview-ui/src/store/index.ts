@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import type { RpcEvent } from '../../../src/agent/transport';
-import type { PiCommand, ModelState } from '../../../src/shared/messages';
+import type { PiCommand, ModelState, EditToolActions } from '../../../src/shared/messages';
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -216,6 +216,8 @@ interface ChatState {
   supportsImages: boolean;
   /** Human-readable name of the active model (for UI messaging). */
   modelName: string | null;
+  /** Which action buttons to show on completed edit tool cards (from chatConfig message). */
+  editToolActions: EditToolActions;
   /** Active status entries from pi's setStatus() calls (keyed by statusKey). */
   uiStatuses: UiStatusEntry[];
   /** Active widget blocks from pi's setWidget() calls (keyed by widgetKey). */
@@ -237,6 +239,8 @@ interface ChatActions {
   setCommands: (commands: PiCommand[]) => void;
   /** Update model capabilities from a modelState host message. */
   setModelState: (state: ModelState | null) => void;
+  /** Update the chat UI config (edit tool action buttons) from a chatConfig host message. */
+  setChatConfig: (editToolActions: EditToolActions) => void;
   /** Set or clear a status entry (key → text | null). */
   setUiStatus: (key: string, text: string | null) => void;
   /** Set or clear a widget block (key → lines[] | null). */
@@ -264,6 +268,16 @@ interface ChatActions {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Coerce an untrusted `editToolActions` value (from the host message stream)
+ * to a valid `EditToolActions`, defaulting to `'both'` for anything unknown.
+ * Defends against contract drift / malformed messages so the UI never hides
+ * both buttons unintentionally.
+ */
+export function normalizeEditToolActions(raw: unknown): EditToolActions {
+  return raw === 'diffOnly' || raw === 'applyOnly' || raw === 'none' ? raw : 'both';
+}
 
 let _idCounter = 0;
 function nextId(): string {
@@ -510,6 +524,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   commands: [],
   supportsImages: false,
   modelName: null,
+  editToolActions: 'both',
   uiStatuses: [],
   uiWidgets: [],
   uiTitle: null,
@@ -557,6 +572,8 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
       modelName: state?.modelName ?? null,
     })),
 
+  setChatConfig: (editToolActions: EditToolActions) => set(() => ({ editToolActions })),
+
   setUiStatus: (key, text) =>
     set((state) => {
       if (text === null) {
@@ -590,7 +607,12 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   setUiEditorText: (text) => set(() => ({ uiEditorText: text })),
 
   resetSession: () =>
-    set(() => ({
+    set((state) => ({
+      // Carry over extension-scoped state (commands, model capabilities, and
+      // the editToolActions setting) — only session-scoped transcript + UI
+      // protocol state is cleared. Spreading `state` makes this preservation
+      // explicit rather than relying on Zustand's partial-merge default.
+      ...state,
       items: [],
       isStreaming: false,
       _currentAssistantId: null,
@@ -634,6 +656,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         uiEditorText: state.uiEditorText,
         supportsImages: state.supportsImages,
         modelName: state.modelName,
+        editToolActions: state.editToolActions,
       };
       // Deep-clone items array elements that will be mutated so React
       // detects the change correctly.

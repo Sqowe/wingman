@@ -206,6 +206,20 @@ export interface ModelStateMessage {
   state: ModelState | null;
 }
 
+/** Which action buttons to show on completed `edit` tool cards. */
+export type EditToolActions = 'both' | 'diffOnly' | 'applyOnly' | 'none';
+
+/**
+ * Sent by the host with the chat UI configuration (which action buttons to
+ * show on completed `edit` tool cards), per the `sqoweWingman.editToolActions`
+ * setting. Pushed once on startup, replayed on webview `ready`, and re-pushed
+ * whenever the setting changes while the extension is running.
+ */
+export interface ChatConfigMessage {
+  type: 'chatConfig';
+  editToolActions: EditToolActions;
+}
+
 /** Union of every message the host can send to the webview. */
 export type HostMessage =
   | PiStatusMessage
@@ -220,7 +234,8 @@ export type HostMessage =
   | UiTitleMessage
   | UiSetEditorTextMessage
   | SessionMessagesMessage
-  | ModelStateMessage;
+  | ModelStateMessage
+  | ChatConfigMessage;
 
 // ─── Webview → Host ──────────────────────────────────────────────────────────
 

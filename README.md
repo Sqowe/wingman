@@ -63,11 +63,12 @@ Tested against pi **0.79.x**; older versions warn but are not blocked. Requires 
 
 ### VS Code settings (intentionally minimal)
 
-The extension exposes exactly one setting, because everything else belongs to pi:
+The extension exposes only Wingman-side GUI settings; everything else belongs to pi:
 
 | Setting | Default | Description |
 | --- | --- | --- |
 | `sqoweWingman.piExecutablePath` | `""` | Path to the `pi` executable (a leading `~` is expanded). Empty = auto-detect from `PATH`, npm-global, Homebrew, and Volta. |
+| `sqoweWingman.editToolActions` | `"both"` | Action buttons shown on completed `edit` tool cards: `both` = View Diff + Apply, `diffOnly` = hide Apply, `applyOnly` = hide View Diff, `none` = hide both. Changes apply to the running chat immediately. |
 
 ### pi's configuration (shared with the CLI)
 
