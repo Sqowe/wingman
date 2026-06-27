@@ -4,9 +4,15 @@
  * grouping logic is unit-testable without mocking the filesystem or VS Code.
  */
 
+import * as path from 'path';
+
 export interface SessionMetadata {
   sessionPath: string;
   sessionName: string | undefined;
+  /** UUID from the session header — stable key for the title index. */
+  sessionId: string;
+  /** Raw text of the first user message, if present. */
+  firstUserMessage: string | undefined;
   cwd: string;
   timestamp: string;
   messageCount: number;
@@ -14,6 +20,7 @@ export interface SessionMetadata {
 
 interface SessionHeader {
   type?: string;
+  id?: string;
   cwd?: string;
   timestamp?: string;
   name?: string;
@@ -36,6 +43,8 @@ export class SessionMetadataAccumulator {
   private _messageCount = 0;
   private _seenFirst = false;
   private _invalid = false;
+  private _firstUserMessage: string | undefined = undefined;
+  private _gotFirstUser = false;
 
   addLine(rawLine: string): void {
     if (this._invalid) return;
@@ -59,6 +68,53 @@ export class SessionMetadataAccumulator {
 
     if (line.startsWith('{"type":"message"')) {
       this._messageCount++;
+
+      // Capture the first user message text (parse once, then skip).
+      if (!this._gotFirstUser) {
+        try {
+          const msg = JSON.parse(line) as {
+            type: string;
+            message?: { role?: string; content?: unknown };
+            // Some older records use top-level role/content directly
+            role?: string;
+            content?: unknown;
+          };
+          // Normalise: pi v3 wraps in `message`, older records are flat.
+          const role = msg.message?.role ?? msg.role;
+          const content = msg.message?.content ?? msg.content;
+          if (role === 'user') {
+            let extracted: string | undefined;
+            if (typeof content === 'string' && content.length > 0) {
+              extracted = content;
+            } else if (Array.isArray(content)) {
+              // content block array — find first text block
+              for (const block of content) {
+                if (
+                  block &&
+                  typeof block === 'object' &&
+                  (block as Record<string, unknown>).type === 'text'
+                ) {
+                  const text = (block as Record<string, unknown>).text;
+                  if (typeof text === 'string' && text.length > 0) {
+                    extracted = text;
+                    break;
+                  }
+                }
+              }
+            }
+            if (extracted !== undefined) {
+              // Successfully extracted text — stop scanning.
+              this._gotFirstUser = true;
+              this._firstUserMessage = extracted;
+            }
+            // If content had no extractable text (e.g. tool-call only, empty
+            // array), don't set _gotFirstUser — keep scanning later messages.
+          }
+        } catch {
+          // Malformed line — skip this line but keep scanning subsequent
+          // lines for a valid first user message. Do NOT set _gotFirstUser.
+        }
+      }
     }
   }
 
@@ -67,12 +123,63 @@ export class SessionMetadataAccumulator {
     return {
       sessionPath,
       sessionName: this._header.name,
+      sessionId: this._header.id ?? '',
+      firstUserMessage: this._firstUserMessage,
       cwd: this._header.cwd ?? '',
       timestamp: this._header.timestamp ?? '',
       messageCount: this._messageCount,
     };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Title derivation helpers (pure, no I/O)
+// ---------------------------------------------------------------------------
+
+/** Replace runs of whitespace / newlines with a single space and trim. */
+export function collapseWhitespace(s: string): string {
+  return s.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Truncate `s` to at most `maxLen` Unicode code points. If truncation occurs,
+ * append `…`. Tries to break on a word boundary (last space before the limit).
+ * Operating on code points (via Array.from) avoids splitting surrogate pairs.
+ */
+export function truncateTitle(s: string, maxLen = 60): string {
+  const codePoints = Array.from(s);
+  if (codePoints.length <= maxLen) return s;
+  // Try to cut at a word boundary within the last 15 code points of the limit.
+  const candidate = codePoints.slice(0, maxLen).join('');
+  const boundary = candidate.lastIndexOf(' ');
+  const cut = boundary > maxLen - 15 ? boundary : maxLen;
+  return codePoints.slice(0, cut).join('').trimEnd() + '\u2026'; // …
+}
+
+/**
+ * Derive a human-readable session title using the precedence chain:
+ *   override (index / manual) → pi header `name` → first user message → filename.
+ */
+export function deriveSessionTitle(
+  m: Pick<SessionMetadata, 'sessionName' | 'firstUserMessage' | 'sessionPath'>,
+  override?: string,
+): string {
+  // Normalise helper: collapse whitespace + truncate, return undefined if empty.
+  const normalise = (s: string | undefined): string | undefined => {
+    if (!s) return undefined;
+    const collapsed = collapseWhitespace(s);
+    return collapsed ? truncateTitle(collapsed) : undefined;
+  };
+
+  return (
+    normalise(override) ??
+    normalise(m.sessionName) ??
+    normalise(m.firstUserMessage) ??
+    path.basename(m.sessionPath, '.jsonl')
+  );
+}
+
+// ---------------------------------------------------------------------------
 
 /** Convenience wrapper: build metadata from a whole file's text (used in tests). */
 export function parseSessionText(text: string, sessionPath: string): SessionMetadata | null {

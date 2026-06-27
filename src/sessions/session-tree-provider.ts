@@ -18,14 +18,19 @@ import {
   filterSessionsToCwds,
   groupSessionsByProject,
   sortSessionsByRecency,
+  deriveSessionTitle,
 } from './session-parse';
 import type { SessionMetadata } from './session-parse';
+import { loadTitleIndex, getTitle, titleIndexPath } from './session-titles';
+import type { TitleIndex } from './session-titles';
 
 export type { SessionMetadata } from './session-parse';
 
-/** Build a tree leaf for one session. */
-function toSessionItem(s: SessionMetadata): SessionItem {
-  return new SessionItem(s.sessionPath, s.sessionName, s.cwd, s.timestamp, s.messageCount);
+/** Build a tree leaf for one session using the pre-loaded title index. */
+function toSessionItem(s: SessionMetadata, index: TitleIndex): SessionItem {
+  const override = getTitle(index, s.sessionId)?.title;
+  const title = deriveSessionTitle(s, override);
+  return new SessionItem(s.sessionPath, title, s.sessionId, s.sessionName, s.cwd, s.timestamp, s.messageCount);
 }
 
 export class SessionTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
@@ -34,6 +39,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<vscode.TreeI
 
   private _sessionsDir: string;
   private _sessions: SessionMetadata[] = [];
+  private _titleIndex: TitleIndex = { version: 1, titles: {} };
   private _groupByProject = true;
   private _loadingPromise: Promise<void> | undefined;
   private _isLoaded = false;
@@ -84,6 +90,10 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<vscode.TreeI
 
   private async _doLoadSessions(): Promise<void> {
     this._sessions = [];
+
+    // Load the title index once per refresh (best-effort; empty on miss/corrupt).
+    // Derive the path from _sessionsDir so it always matches the directory being scanned.
+    this._titleIndex = await loadTitleIndex(titleIndexPath(this._sessionsDir));
 
     if (!await this._fileExists(this._sessionsDir)) {
       return;
@@ -190,14 +200,14 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<vscode.TreeI
         }
 
         // Flat list, newest first.
-        return sortSessionsByRecency(scoped).map(toSessionItem);
+        return sortSessionsByRecency(scoped).map((s) => toSessionItem(s, this._titleIndex));
       });
     } else if (element instanceof ProjectFolderItem) {
       // Return this project's sessions, newest first.
       const sessions = sortSessionsByRecency(
         this._sessions.filter((s) => s.cwd === element.projectPath),
       );
-      return Promise.resolve(sessions.map(toSessionItem));
+      return Promise.resolve(sessions.map((s) => toSessionItem(s, this._titleIndex)));
     }
 
     return Promise.resolve([]);

@@ -43,4 +43,9 @@ tmp/
 /sample-workspace/*
 !/sample-workspace/README.md
 
+#Kiro
 .kiro/hooks/
+
+
+#semantic-index
+.index/

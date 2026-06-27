@@ -3,11 +3,11 @@
  */
 
 import * as vscode from 'vscode';
-import * as path from 'path';
 import * as os from 'os';
 
 export class SessionItem extends vscode.TreeItem {
   public readonly sessionPath: string;
+  public readonly sessionId: string;
   public readonly sessionName: string;
   public readonly cwd: string;
   public readonly timestamp: string;
@@ -15,47 +15,84 @@ export class SessionItem extends vscode.TreeItem {
 
   constructor(
     sessionPath: string,
+    /** Pre-computed human-readable title (from deriveSessionTitle). */
+    title: string,
+    sessionId: string,
     sessionName: string | undefined,
     cwd: string,
     timestamp: string,
     messageCount: number,
   ) {
-    const label = sessionName ?? path.basename(sessionPath, '.jsonl');
-    super(label, vscode.TreeItemCollapsibleState.None);
+    super(title, vscode.TreeItemCollapsibleState.None);
 
     this.sessionPath = sessionPath;
+    this.sessionId = sessionId;
     this.sessionName = sessionName ?? '';
     this.cwd = cwd;
     this.timestamp = timestamp;
     this.messageCount = messageCount;
 
-    // Show the working directory as description
+    // Description: short date · message count (cwd is shown by the project
+    // group header so it's redundant here).
+    const date = formatShortDate(timestamp);
+    this.description = `${date} · ${messageCount} msgs`;
+
+    // Tooltip: bold title + full disambiguation details.
+    // Escape markdown in untrusted strings (title from user message, paths)
+    // to prevent misleading rendering in the MarkdownString.
     const home = os.homedir();
     const displayCwd = cwd.startsWith(home) ? cwd.replace(home, '~') : cwd;
-    this.description = `${displayCwd} • ${messageCount} msgs`;
-
-    // Format tooltip with full details
+    const safeTitle = escapeMd(title);
+    const createdStr = (() => {
+      const d = new Date(timestamp);
+      return Number.isNaN(d.getTime()) ? timestamp : d.toLocaleString();
+    })();
     this.tooltip = new vscode.MarkdownString(
-      `**${label}**\n\n` +
-      `Path: ${sessionPath}\n` +
-      `Working Directory: ${cwd}\n` +
+      `**${safeTitle}**\n\n` +
+      `Path: \`${escapeBackticks(sessionPath)}\`\n` +
+      `Working Directory: \`${escapeBackticks(displayCwd)}\`\n` +
       `Messages: ${messageCount}\n` +
-      `Created: ${new Date(timestamp).toLocaleString()}`,
+      `Created: ${createdStr}` +
+      (sessionId ? `\nID: \`${escapeBackticks(sessionId)}\`` : ''),
     );
 
-    // Icon based on whether it's the current session
     this.iconPath = new vscode.ThemeIcon('file-code');
 
-    // Command to execute when clicked
     this.command = {
       command: 'sqoweWingman.switchSession',
       title: 'Switch Session',
       arguments: [this],
     };
 
-    // Context value for context menu
     this.contextValue = 'session';
   }
+}
+
+/**
+ * Escape markdown special characters in a string so it renders as plain text
+ * inside a vscode.MarkdownString tooltip.
+ */
+function escapeMd(s: string): string {
+  // Escape characters that have meaning in Markdown: \ ` * _ { } [ ] ( ) # + - . !
+  return s.replace(/[\\`*_{}[\]()#+\-.!]/g, '\\$&');
+}
+
+/** Escape backticks so a string is safe inside a Markdown inline code span. */
+function escapeBackticks(s: string): string {
+  return s.replace(/`/g, '\\`');
+}
+
+/**
+ * Format a timestamp as a short date string, e.g. "27 Jun".
+ * Falls back to the raw timestamp string on parse failure.
+ */
+function formatShortDate(timestamp: string): string {
+  const d = new Date(timestamp);
+  if (Number.isNaN(d.getTime())) return timestamp;
+  return d.toLocaleDateString(undefined, {
+    day: 'numeric',
+    month: 'short',
+  });
 }
 
 /**
