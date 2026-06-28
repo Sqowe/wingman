@@ -4,9 +4,11 @@
  * Manages ~/.pi/agent/sessions/.wingman-titles.json, a single JSON file keyed
  * by session UUID that stores override titles (source: "llm" | "manual").
  *
- * Phase 1 ships the reader + schema; the writer is used by future rename /
- * LLM-title features. Atomic writes (temp file + rename) prevent partial
- * file corruption from concurrent VS Code windows.
+ * Phase 1 shipped the reader + schema + writer; Phase 1.5's manual-rename
+ * command is the first to write the file (source:"manual"). A future LLM
+ * feature (Phase 2) reuses the same writer for source:"llm" entries. Atomic
+ * writes (temp file + rename) prevent partial file corruption from concurrent
+ * VS Code windows.
  */
 
 import * as fs from 'fs/promises';
@@ -166,7 +168,7 @@ export function planRename(
 }
 
 // ---------------------------------------------------------------------------
-// Write (Phase 1.5 / Phase 2 — ships with rename or LLM feature)
+// Write (used by Phase 1.5 manual rename; reused by a future Phase 2 LLM feature)
 // ---------------------------------------------------------------------------
 
 /**
