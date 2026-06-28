@@ -193,34 +193,32 @@ export default function App() {
     vscode.postMessage({ type: 'sendPrompt', text, ...(imageCount > 0 ? { images } : {}) });
   }, [addUserMessage]);
 
-  // Measure the available height for the virtualized list.
+  // Measure the space the flex layout actually allocates to the list. The old
+  // approach computed it by subtracting the composer/banners/padding from the
+  // container, which missed the flex `gap` and dynamic siblings (title / status
+  // strip / widgets) — leaving the list a few px too tall, so react-window's
+  // scroll-to-bottom stopped short and the last line got clipped. Measuring the
+  // dedicated slot directly accounts for all of it, gaps included.
   const containerRef = useRef<HTMLDivElement>(null);
-  const composerRef = useRef<HTMLDivElement>(null);
+  const listSlotRef = useRef<HTMLDivElement>(null);
   const [listHeight, setListHeight] = useState(400);
   const [listWidth, setListWidth] = useState(300);
 
   useEffect(() => {
     const measure = () => {
-      if (!containerRef.current || !composerRef.current) return;
-      const total = containerRef.current.getBoundingClientRect().height;
-      const composerH = composerRef.current.getBoundingClientRect().height;
-      const bannerEls = containerRef.current.querySelectorAll<HTMLElement>('.status-banner');
-      let bannerH = 0;
-      bannerEls.forEach((el) => { bannerH += el.getBoundingClientRect().height; });
-      const w = containerRef.current.getBoundingClientRect().width;
-      setListHeight(Math.max(100, total - composerH - bannerH - 16));
-      // w is the border-box width; subtract .app horizontal padding (2 × 12px),
-      // mirroring the 16px vertical padding subtracted from the height above.
-      // Without this the virtualized list overflows .app's content box and the
-      // right edge gets clipped by overflow:hidden (no right padding).
-      setListWidth(Math.max(100, w - 24));
+      const slot = listSlotRef.current;
+      if (!slot) return;
+      const rect = slot.getBoundingClientRect();
+      setListHeight(Math.max(100, rect.height));
+      setListWidth(Math.max(100, rect.width));
     };
     measure();
+    // Observing the slot alone is enough: when banners/widgets appear or the
+    // composer grows, the flex:1 slot resizes and the observer re-fires.
     const ro = new ResizeObserver(measure);
-    if (containerRef.current) ro.observe(containerRef.current);
-    if (composerRef.current) ro.observe(composerRef.current);
+    if (listSlotRef.current) ro.observe(listSlotRef.current);
     return () => ro.disconnect();
-  }, [piStatus, agentDown]);
+  }, []);
 
   return (
     <div className="app" ref={containerRef}>
@@ -236,7 +234,9 @@ export default function App() {
         </div>
       )}
 
-      <MessageList items={items} height={listHeight} width={listWidth} />
+      <div className="message-list-slot" ref={listSlotRef}>
+        <MessageList items={items} height={listHeight} width={listWidth} />
+      </div>
 
       {/* aboveEditor widgets sit between the message list and the composer input. */}
       {uiWidgets
@@ -255,7 +255,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="composer-dock" ref={composerRef}>
+      <div className="composer-dock">
         <Composer
           isStreaming={isStreaming}
           piStatus={piStatus}
