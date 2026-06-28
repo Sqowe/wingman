@@ -73,7 +73,7 @@ export async function loadTitleIndex(filePath = INDEX_FILE): Promise<TitleIndex>
     // We only access parsed.titles via Object.entries() — never directly —
     // so any __proto__ key in the JSON cannot mutate Object.prototype here.
     const titles: Record<string, TitleEntry> = Object.create(null);
-    for (const [key, entry] of Object.entries(parsed.titles)) {
+    for (const [key, entry] of Object.entries(parsed.titles) as [string, unknown][]) {
       if (
         key === '__proto__' || key === 'constructor' || key === 'prototype'
       ) {

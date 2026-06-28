@@ -24,9 +24,9 @@ const {
 } = vi.hoisted(() => {
   const registry = new Map<string, (...args: unknown[]) => unknown>();
   return {
-    mockShowWarningMessage: vi.fn<[msg: string, ...rest: unknown[]], Promise<string | undefined>>(),
-    mockShowInformationMessage: vi.fn<[msg: string, ...rest: unknown[]], Promise<string | undefined>>(),
-    mockShowQuickPick: vi.fn<[items: unknown[], opts?: unknown], Promise<unknown>>(),
+    mockShowWarningMessage: vi.fn<(msg: string, ...rest: unknown[]) => Promise<string | undefined>>(),
+    mockShowInformationMessage: vi.fn<(msg: string, ...rest: unknown[]) => Promise<string | undefined>>(),
+    mockShowQuickPick: vi.fn<(items: unknown[], opts?: unknown) => Promise<unknown>>(),
     mockRegisterCommand: vi.fn((id: string, handler: (...args: unknown[]) => unknown) => {
       registry.set(id, handler);
       return { dispose() {} };

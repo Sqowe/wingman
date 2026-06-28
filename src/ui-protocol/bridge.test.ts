@@ -29,14 +29,14 @@ const {
   mockShowTextDocument,
   mockExecuteCommand,
 } = vi.hoisted(() => ({
-  mockShowQuickPick: vi.fn<[items: string[], opts?: unknown], Promise<string | undefined>>(),
-  mockShowWarningMessage: vi.fn<[msg: string, ...rest: unknown[]], Promise<string | undefined>>(),
-  mockShowInputBox: vi.fn<[opts?: unknown], Promise<string | undefined>>(),
-  mockShowInformationMessage: vi.fn<[msg: string, ...rest: unknown[]], Promise<string | undefined>>(),
-  mockShowErrorMessage: vi.fn<[msg: string, ...rest: unknown[]], Promise<string | undefined>>(),
-  mockOpenTextDocument: vi.fn<[opts?: unknown], Promise<{ getText: () => string; isClosed: boolean }>>(),
-  mockShowTextDocument: vi.fn<[doc: unknown, opts?: unknown], Promise<{ document: { getText: () => string; isClosed: boolean } }>>(),
-  mockExecuteCommand: vi.fn<[cmd: string, ...args: unknown[]], Promise<unknown>>(),
+  mockShowQuickPick: vi.fn<(items: string[], opts?: unknown) => Promise<string | undefined>>(),
+  mockShowWarningMessage: vi.fn<(msg: string, ...rest: unknown[]) => Promise<string | undefined>>(),
+  mockShowInputBox: vi.fn<(opts?: unknown) => Promise<string | undefined>>(),
+  mockShowInformationMessage: vi.fn<(msg: string, ...rest: unknown[]) => Promise<string | undefined>>(),
+  mockShowErrorMessage: vi.fn<(msg: string, ...rest: unknown[]) => Promise<string | undefined>>(),
+  mockOpenTextDocument: vi.fn<(opts?: unknown) => Promise<{ getText: () => string; isClosed: boolean }>>(),
+  mockShowTextDocument: vi.fn<(doc: unknown, opts?: unknown) => Promise<{ document: { getText: () => string; isClosed: boolean } }>>(),
+  mockExecuteCommand: vi.fn<(cmd: string, ...args: unknown[]) => Promise<unknown>>(),
 }));
 
 vi.mock('vscode', () => ({
@@ -75,7 +75,7 @@ import type { RpcEvent } from '../agent/transport';
 
 function makeOutputChannel() {
   return {
-    appendLine: vi.fn<[string], void>(),
+    appendLine: vi.fn<(line: string) => void>(),
   } as unknown as import('vscode').OutputChannel;
 }
 
@@ -102,10 +102,10 @@ function makeTransport(running = true): MockTransport {
 
 function makeProvider() {
   return {
-    postUiStatus: vi.fn<[string, string | null], void>(),
-    postUiWidget: vi.fn<[string, string[] | null, string], void>(),
-    postUiTitle: vi.fn<[string], void>(),
-    postUiSetEditorText: vi.fn<[string], void>(),
+    postUiStatus: vi.fn<(label: string, value: string | null) => void>(),
+    postUiWidget: vi.fn<(id: string, options: string[] | null, value: string) => void>(),
+    postUiTitle: vi.fn<(title: string) => void>(),
+    postUiSetEditorText: vi.fn<(text: string) => void>(),
   };
 }
 
