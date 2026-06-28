@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Meaningful session titles** — rows in the SESSIONS tree (and the switch-session
+  picker) now show a human-readable title derived from each session's first user message
+  (whitespace-collapsed, capped at ~60 characters on a word boundary) instead of the raw
+  `<timestamp>_<uuid>` filename. The date moves into the row description
+  (`27 Jun · 240 msgs`); the full path, working directory, message count, created date,
+  and session id stay in the tooltip. Titles resolve through override → pi header `name`
+  → first user message → filename, so nothing is ever nameless. Fully offline — no
+  session content leaves the machine. A title-index sidecar
+  (`~/.pi/agent/sessions/.wingman-titles.json`) is defined and read now, ready for a
+  future manual-rename command and LLM-generated titles (Phase 2).
+
 ## [0.1.3] - 2026-06-26
 
 ### Added
