@@ -11,8 +11,11 @@
 
 import * as assert from 'assert';
 import * as vscode from 'vscode';
+import pkg from '../../package.json';
 
-const EXTENSION_ID = 'sqowe.wingman';
+// Derive the extension ID (`publisher.name`) from the manifest so a future
+// rename of either field can't silently leave this test looking for a stale ID.
+const EXTENSION_ID = `${pkg.publisher}.${pkg.name}`;
 
 suite('Sqowe Wingman — activation & contributions', () => {
   test('extension is discoverable in the host', () => {
