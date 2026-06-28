@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`~/.pi/agent/sessions/.wingman-titles.json`) is defined and read now, ready for a
   future manual-rename command and LLM-generated titles (Phase 2).
 
+- **Configurable edit-card action buttons** — the View Diff and Apply buttons on
+  completed `edit` tool cards are now controllable via a new
+  `sqoweWingman.editToolActions` setting: `both` (default), `diffOnly`, `applyOnly`,
+  or `none`. Changes apply live to the running chat: the host pushes the value to the
+  webview as a new `chatConfig` capability message (cached, replayed on webview `ready`,
+  and re-pushed on configuration change), and each button is gated independently on the
+  incoming flags after a normalizer guards the host→webview boundary.
+
 ## [0.1.3] - 2026-06-26
 
 ### Added
