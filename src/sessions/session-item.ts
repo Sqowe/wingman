@@ -9,6 +9,8 @@ export class SessionItem extends vscode.TreeItem {
   public readonly sessionPath: string;
   public readonly sessionId: string;
   public readonly sessionName: string;
+  /** Displayed (derived/override) title — read by the rename command. */
+  public readonly title: string;
   public readonly cwd: string;
   public readonly timestamp: string;
   public readonly messageCount: number;
@@ -28,6 +30,7 @@ export class SessionItem extends vscode.TreeItem {
     this.sessionPath = sessionPath;
     this.sessionId = sessionId;
     this.sessionName = sessionName ?? '';
+    this.title = title;
     this.cwd = cwd;
     this.timestamp = timestamp;
     this.messageCount = messageCount;

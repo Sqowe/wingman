@@ -8,6 +8,25 @@ import * as os from 'os';
 import type { AgentController } from '../agent/controller';
 import { SessionTreeProvider } from './session-tree-provider';
 import { switchSession } from './switch-session';
+import type { SessionItem } from './session-item';
+import { planRename, applyRenamePlan, setTitle, removeTitle } from './session-titles';
+
+/**
+ * Structural guard for a tree-item command argument. Tree-view command args
+ * are live object instances, but a shape check (consistent with
+ * `switchSession`) avoids `instanceof` fragility under bundling or object
+ * revival in test setups. Narrows to `SessionItem` so `title` / `sessionId`
+ * are typed.
+ */
+function isSessionItemArg(arg: unknown): arg is SessionItem {
+  if (!arg || typeof arg !== 'object') return false;
+  const a = arg as Record<string, unknown>;
+  // Validate the *types* of exactly the fields the handler reads
+  // (`item.sessionId`, `item.title`) so a wrong-typed argument can't throw.
+  // `sessionPath` is not read by this command, so we deliberately don't
+  // require it — keeps the guard robust if SessionItem's path type changes.
+  return typeof a.sessionId === 'string' && typeof a.title === 'string';
+}
 
 // Module-level provider for use by other session modules
 let _treeProvider: SessionTreeProvider | undefined;
@@ -56,6 +75,47 @@ export function registerSessions(
     vscode.commands.registerCommand('sqoweWingman.refreshSessions', () => {
       treeProvider.refresh();
     }),
+
+    // Rename Session (Phase 1.5) — context-menu only. Resolves the row,
+    // shows an input box prefilled with the current title (all selected),
+    // then plans set/reset/no-op via the pure `planRename` helper and
+    // persists via the existing title index writer. Empty submit resets to
+    // the derived first-message title; accepting the prefilled value
+    // verbatim is a no-op (does not pin a derived title as manual); Esc cancels.
+    vscode.commands.registerCommand(
+      'sqoweWingman.renameSession',
+      async (arg: unknown) => {
+        if (!isSessionItemArg(arg)) {
+          // The menu's `when: viewItem == session` clause means this is only
+          // reachable from a session row in normal use; a miss here implies a
+          // programmatic/unexpected invocation. Warn (no user popup) so
+          // mis-wiring is diagnosable without noisy dialogs.
+          console.warn(
+            'sqoweWingman.renameSession: invoked without a valid session item; ignoring.',
+          );
+          return;
+        }
+        const item = arg;
+        const valueSelectionEnd = item.title.length;
+        const input = await vscode.window.showInputBox({
+          value: item.title,
+          valueSelection: [0, valueSelectionEnd],
+          prompt: 'Rename session (leave empty to reset to the default title)',
+        });
+        const plan = planRename(input, item.title);
+        // Persist + refresh + surface failures. Orchestrated in a pure,
+        // unit-tested helper (applyRenamePlan) so the vscode-bound handler
+        // stays thin and the wiring — including the error path — is covered.
+        await applyRenamePlan(plan, item.sessionId, {
+          setTitle,
+          removeTitle,
+          onChanged: () => treeProvider.refresh(),
+          onError: (message) => {
+            void vscode.window.showErrorMessage(`Sqowe Wingman: ${message}`);
+          },
+        });
+      },
+    ),
 
     // Refresh the tree when the controller creates/branches a session
     // (new / fork / clone) so new sessions appear without a manual refresh.

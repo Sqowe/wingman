@@ -38,6 +38,7 @@
     "onCommand:sqoweWingman.setThinkingLevel",
     "onCommand:sqoweWingman.cycleThinkingLevel",
     "onCommand:sqoweWingman.showStats",
+    "onCommand:sqoweWingman.renameSession",
     "onView:sqoweWingman.chat",
     "onView:sqoweWingman.sessions"
   ],
@@ -153,6 +154,11 @@
         "command": "sqoweWingman.trustProject",
         "category": "Sqowe Wingman",
         "title": "Trust Project (.pi/ Resources)"
+      },
+      {
+        "command": "sqoweWingman.renameSession",
+        "category": "Sqowe Wingman",
+        "title": "Rename Session…"
       }
     ],
     "keybindings": [
@@ -164,6 +170,12 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "sqoweWingman.renameSession",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
           "command": "sqoweWingman.newSession",
@@ -216,6 +228,11 @@
           "command": "sqoweWingman.switchSession",
           "when": "view == sqoweWingman.sessions && viewItem == session",
           "group": "inline"
+        },
+        {
+          "command": "sqoweWingman.renameSession",
+          "when": "view == sqoweWingman.sessions && viewItem == session",
+          "group": "1_modify@1"
         }
       ]
     },

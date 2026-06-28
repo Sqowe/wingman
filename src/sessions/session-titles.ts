@@ -12,6 +12,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { collapseWhitespace } from './session-parse';
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -103,6 +104,68 @@ export function getTitle(index: TitleIndex, sessionId: string): TitleEntry | und
 }
 
 // ---------------------------------------------------------------------------
+// Rename planning (Phase 1.5 — pure, vscode-free, unit-testable)
+// ---------------------------------------------------------------------------
+
+/**
+ * The set/reset/no-op decision for the Rename Session command.
+ *
+ * - `noop`: the user cancelled the input box (Esc / focus lost) → do nothing.
+ * - `reset`: the input was cleared → removeTitle, falling back to the derived
+ *   first-message title.
+ * - `set`: a non-empty value → store a manual override.
+ */
+export type RenamePlan =
+  | { kind: 'noop' }
+  | { kind: 'reset' }
+  | { kind: 'set'; entry: TitleEntry };
+
+/**
+ * Decide what the Rename Session command should do from the raw input-box
+ * result and the row's current displayed title. Pure and deterministic — the
+ * vscode-bound handler stays thin.
+ *
+ * - `undefined` (cancelled) → `{ kind: 'noop' }`.
+ * - whitespace-collapsed input is empty → `{ kind: 'reset' }`.
+ * - collapsed input equals the collapsed `currentTitle` → `{ kind: 'noop' }`.
+ *   Accepting the prefilled value verbatim must not pin a derived title as a
+ *   manual override (which would freeze it against future derived updates and
+ *   add a redundant index write). Comparing on the collapsed form means an
+ *   incidental whitespace difference also counts as unchanged.
+ * - otherwise → `{ kind: 'set', entry }` where the title is collapsed (but
+ *   *not* truncated — manual titles are kept verbatim; only derived titles
+ *   are capped at 60 chars, §4). `model` and `sourceMsgCount` are omitted
+ *   for manual entries — staleness is irrelevant when the user picked it.
+ *
+ * `now` is injectable so tests get a deterministic timestamp.
+ */
+export function planRename(
+  rawInput: string | undefined,
+  currentTitle: string,
+  now: () => string = () => new Date().toISOString(),
+): RenamePlan {
+  if (rawInput === undefined) {
+    return { kind: 'noop' };
+  }
+  const collapsed = collapseWhitespace(rawInput);
+  if (collapsed === '') {
+    return { kind: 'reset' };
+  }
+  // Unchanged → no-op (see JSDoc).
+  if (collapsed === collapseWhitespace(currentTitle)) {
+    return { kind: 'noop' };
+  }
+  return {
+    kind: 'set',
+    entry: {
+      title: collapsed,
+      source: 'manual',
+      generatedAt: now(),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Write (Phase 1.5 / Phase 2 — ships with rename or LLM feature)
 // ---------------------------------------------------------------------------
 
@@ -121,9 +184,14 @@ export async function setTitle(
   filePath = INDEX_FILE,
 ): Promise<void> {
   if (!isSafeKey(sessionId)) return;
-  const current = await loadTitleIndex(filePath);
-  current.titles[sessionId] = entry;
-  await atomicWrite(filePath, current);
+  // Serialize per-file so concurrent read-modify-write cycles in this
+  // process can't interleave and drop an entry (cross-process is still
+  // last-writer-wins; the atomic rename prevents corruption).
+  return serializedWrite(filePath, async () => {
+    const current = await loadTitleIndex(filePath);
+    current.titles[sessionId] = entry;
+    await atomicWrite(filePath, current);
+  });
 }
 
 /**
@@ -134,15 +202,113 @@ export async function removeTitle(
   filePath = INDEX_FILE,
 ): Promise<void> {
   if (!isSafeKey(sessionId)) return;
-  const current = await loadTitleIndex(filePath);
-  if (!Object.prototype.hasOwnProperty.call(current.titles, sessionId)) return;
-  delete current.titles[sessionId];
-  await atomicWrite(filePath, current);
+  return serializedWrite(filePath, async () => {
+    const current = await loadTitleIndex(filePath);
+    if (!Object.prototype.hasOwnProperty.call(current.titles, sessionId)) return;
+    delete current.titles[sessionId];
+    await atomicWrite(filePath, current);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Rename application (Phase 1.5 — orchestration over setTitle/removeTitle)
+// ---------------------------------------------------------------------------
+
+/**
+ * Effects the Rename Session command needs, injected so `applyRenamePlan` is
+ * unit-testable without vscode or the filesystem. `setTitle` / `removeTitle`
+ * are passed in (rather than called directly) so tests can stub them —
+ * including the failure path.
+ */
+export interface RenameApplyDeps {
+  setTitle: (sessionId: string, entry: TitleEntry) => Promise<void>;
+  removeTitle: (sessionId: string) => Promise<void>;
+  /** Called after a successful set / reset (e.g. refresh the tree). May be async. */
+  onChanged: () => void | Promise<void>;
+  /** Called when persistence fails (e.g. show an error message). */
+  onError: (message: string) => void;
+}
+
+/**
+ * Apply a rename plan: persist via `setTitle` / `removeTitle`, notify on
+ * change, and surface failures. Pure orchestration — every effect is injected
+ * so it is unit-testable without vscode or the real title index. `noop` does
+ * nothing (no write, no refresh).
+ */
+export async function applyRenamePlan(
+  plan: RenamePlan,
+  sessionId: string,
+  deps: RenameApplyDeps,
+): Promise<void> {
+  if (plan.kind === 'noop') return;
+  // Persist first. A failure here means nothing was saved.
+  try {
+    if (plan.kind === 'reset') {
+      await deps.removeTitle(sessionId);
+    } else {
+      await deps.setTitle(sessionId, plan.entry);
+    }
+  } catch (err) {
+    deps.onError(`Failed to rename session — ${describeError(err)}`);
+    return;
+  }
+  // Persisted OK — now refresh. A refresh failure must NOT be reported as a
+  // rename failure: the rename already succeeded on disk, so surface a
+  // distinct, accurate message instead. `onChanged` may be async — awaiting it
+  // here means a rejected refresh promise is caught and reported, not swallowed.
+  try {
+    await deps.onChanged();
+  } catch (err) {
+    deps.onError(
+      `Rename saved, but the session list could not be refreshed — ${describeError(err)}`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+/** Render a thrown value as a concise message (prefer `Error.message`). */
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Per-file write queue. Each value is the (always-settled) promise of the last
+ * scheduled write for that file, so concurrent writes to the SAME file are
+ * serialized within this process — a read-modify-write cycle can't interleave
+ * with another and silently drop an entry. (Writes from other processes still
+ * race; the atomic rename in `atomicWrite` prevents corruption, last wins.)
+ */
+const writeQueues = new Map<string, Promise<void>>();
+
+/**
+ * Run `op` after any previously-serialized op for `filePath` has settled, then
+ * chain the next one behind this. The returned promise forwards `op`'s own
+ * result/error to the caller; the stored queue never rejects, so one failed
+ * write never blocks the next.
+ */
+function serializedWrite<T>(filePath: string, op: () => Promise<T>): Promise<T> {
+  const prev = writeQueues.get(filePath) ?? Promise.resolve();
+  // Run `op` whether `prev` resolved or rejected (second onRejected arg) so a
+  // prior failure doesn't deadlock the queue.
+  const result = prev.then(op, op);
+  const tail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  writeQueues.set(filePath, tail);
+  // Clean up once idle: if no newer op chained behind this one, drop the entry
+  // so one-off paths (e.g. per-test temp files) don't accumulate. Safe because
+  // any newer op would have replaced the stored tail synchronously first.
+  void tail.then(() => {
+    if (writeQueues.get(filePath) === tail) {
+      writeQueues.delete(filePath);
+    }
+  });
+  return result;
+}
 
 function emptyIndex(): TitleIndex {
   return { version: 1, titles: Object.create(null) as Record<string, TitleEntry> };

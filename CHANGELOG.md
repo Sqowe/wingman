@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Rename Session…** — right-click any session row in the SESSIONS tree to override its
+  title with your own text. The override is stored as a `source:"manual"` entry in the
+  existing title index (`~/.pi/agent/sessions/.wingman-titles.json`) and takes top
+  precedence over the derived first-message title. Submitting an empty value resets to the
+  default; accepting the prefilled value unchanged is a no-op; Esc cancels. Fully offline —
+  no LLM, no network. Context-menu only (hidden from the Command Palette). Backed by a pure
+  `planRename` helper and serialized, atomic index writes; refresh failures are reported
+  distinctly from rename failures.
+
 - **Meaningful session titles** — rows in the SESSIONS tree (and the switch-session
   picker) now show a human-readable title derived from each session's first user message
   (whitespace-collapsed, capped at ~60 characters on a word boundary) instead of the raw
