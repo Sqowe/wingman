@@ -57,6 +57,7 @@ beforeEach(() => {
     uiWidgets: [],
     uiTitle: null,
     uiEditorText: null,
+    toolCardExpanded: {},
   });
 });
 
@@ -305,6 +306,36 @@ describe('setDiffError', () => {
     dispatch({ type: 'tool_execution_start', toolCallId: 'a', toolName: 'edit', args: {} });
     expect(() => useChatStore.getState().setDiffError('ghost', 'x')).not.toThrow();
     expect(onlyTool().diffError).toBeNull();
+  });
+});
+
+describe('setToolCardExpanded', () => {
+  const expanded = () => useChatStore.getState().toolCardExpanded;
+
+  it('records a manual expand/collapse override keyed by toolCallId', () => {
+    useChatStore.getState().setToolCardExpanded('a', true);
+    expect(expanded()).toEqual({ a: true });
+    useChatStore.getState().setToolCardExpanded('a', false);
+    expect(expanded()).toEqual({ a: false });
+  });
+
+  it('keeps overrides for other cards independent', () => {
+    useChatStore.getState().setToolCardExpanded('a', true);
+    useChatStore.getState().setToolCardExpanded('b', false);
+    expect(expanded()).toEqual({ a: true, b: false });
+  });
+
+  it('survives a transcript update (the remount-resilience guarantee)', () => {
+    useChatStore.getState().setToolCardExpanded('a', true);
+    dispatch({ type: 'tool_execution_start', toolCallId: 'a', toolName: 'bash', args: {} });
+    // Override is not wiped by event dispatch (it lives outside `items`).
+    expect(expanded()).toEqual({ a: true });
+  });
+
+  it('is cleared when a session is restored via setMessages', () => {
+    useChatStore.getState().setToolCardExpanded('a', true);
+    useChatStore.getState().setMessages([]);
+    expect(expanded()).toEqual({});
   });
 });
 

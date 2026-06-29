@@ -7,7 +7,7 @@
  *   diff editor (read-only preview); "Apply" writes the change as a real
  *   WorkspaceEdit so it appears in Source Control.
  */
-import React, { useState } from 'react';
+import React from 'react';
 import type { ToolRunItem } from '../store';
 import { useChatStore } from '../store';
 import { CopyButton } from './CopyButton';
@@ -58,11 +58,17 @@ function extractPatch(details: Record<string, unknown> | null): string | null {
 export function ToolCard({ item }: Props) {
   const setDiffError = useChatStore((s) => s.setDiffError);
   const editToolActions = useChatStore((s) => s.editToolActions);
-  // `null` = follow the default (expanded while running, collapsed once done);
-  // a boolean = the user's explicit toggle, which then sticks. Deriving the
-  // displayed state this way auto-collapses a card the instant it completes —
-  // keeping the transcript tidy — with no post-completion effect or flash.
-  const [userToggled, setUserToggled] = useState<boolean | null>(null);
+  // `undefined` = follow the default (expanded while running, collapsed once
+  // done); a boolean = the user's explicit toggle, which then sticks. Deriving
+  // the displayed state this way auto-collapses a card the instant it completes
+  // — keeping the transcript tidy — with no post-completion effect or flash.
+  //
+  // The override lives in the store (keyed by toolCallId), not local state, so
+  // it survives the unmount/remount react-window does as cards scroll out of
+  // the viewport during streaming. With local state, auto-scroll would wipe a
+  // manual toggle on the next remount.
+  const userToggled = useChatStore((s) => s.toolCardExpanded[item.toolCallId]);
+  const setToolCardExpanded = useChatStore((s) => s.setToolCardExpanded);
   const displayExpanded = userToggled ?? !item.isComplete;
 
   const output = item.isComplete ? (item.finalOutput ?? '') : item.partialOutput;
@@ -83,7 +89,7 @@ export function ToolCard({ item }: Props) {
 
   // Only completed cards are collapsible; while running the output stays open.
   const toggleExpanded = () => {
-    if (item.isComplete) setUserToggled(!displayExpanded);
+    if (item.isComplete) setToolCardExpanded(item.toolCallId, !displayExpanded);
   };
 
   const handleViewDiff = (e: React.MouseEvent) => {

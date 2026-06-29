@@ -226,6 +226,15 @@ interface ChatState {
   uiTitle: string | null;
   /** Pending pre-fill text from pi's set_editor_text() call. */
   uiEditorText: string | null;
+  /**
+   * Manual expand/collapse overrides for tool cards, keyed by toolCallId.
+   * Absent key = follow the auto default (expanded while running, collapsed
+   * once done). A boolean = the user's explicit toggle, which then sticks.
+   * Held in the store (not local component state) so it survives the
+   * unmount/remount react-window does as cards scroll out of the viewport
+   * during streaming — otherwise auto-scroll would wipe a manual toggle.
+   */
+  toolCardExpanded: Record<string, boolean>;
 }
 
 interface ChatActions {
@@ -235,6 +244,8 @@ interface ChatActions {
   toggleThinking: (itemId: string, blockIndex: number) => void;
   /** Set a diff error on a tool card (from host diffError message). */
   setDiffError: (toolCallId: string, message: string) => void;
+  /** Record a manual expand/collapse override for a tool card (keyed by toolCallId). */
+  setToolCardExpanded: (toolCallId: string, expanded: boolean) => void;
   /** Replace the current slash commands list. */
   setCommands: (commands: PiCommand[]) => void;
   /** Update model capabilities from a modelState host message. */
@@ -529,6 +540,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   uiWidgets: [],
   uiTitle: null,
   uiEditorText: null,
+  toolCardExpanded: {},
 
   addUserMessage: (text, imageCount) =>
     set((state) => ({
@@ -562,6 +574,11 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         if (item.itemKind !== 'tool' || item.toolCallId !== toolCallId) return item;
         return { ...item, diffError: message };
       }),
+    })),
+
+  setToolCardExpanded: (toolCallId: string, expanded: boolean) =>
+    set((state) => ({
+      toolCardExpanded: { ...state.toolCardExpanded, [toolCallId]: expanded },
     })),
 
   setCommands: (commands: PiCommand[]) => set(() => ({ commands })),
@@ -621,6 +638,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
       uiWidgets: [],
       uiTitle: null,
       uiEditorText: null,
+      toolCardExpanded: {},
     })),
 
   setMessages: (messages: unknown[]) =>
@@ -636,6 +654,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         items,
         isStreaming: false,
         _currentAssistantId: null,
+        toolCardExpanded: {},
         // Preserve UI protocol state across session switches.
       };
     }),
