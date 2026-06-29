@@ -36,7 +36,12 @@ export function MessageList({ items, height, width }: Props) {
   const setRowHeight = useCallback((index: number, size: number) => {
     if (rowHeights.current[index] === size) return;
     rowHeights.current[index] = size;
-    listRef.current?.resetAfterIndex(index, false);
+    // forceUpdate=true so rows below reflow immediately when a row's height
+    // changes (e.g. expanding a tool card while idle). With false, react-window
+    // clears cached offsets but doesn't re-render, so the list only repositions
+    // on the next scroll. The height-changed guard above keeps this from firing
+    // on steady-state streaming ticks where the measured height is unchanged.
+    listRef.current?.resetAfterIndex(index, true);
   }, []);
 
   // Scroll to bottom when new items arrive (only when already pinned to bottom).
