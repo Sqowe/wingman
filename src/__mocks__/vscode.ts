@@ -27,6 +27,12 @@ export class EventEmitter<T> {
   }
 }
 
+export const ProgressLocation = {
+  Notification: 15,
+  Window: 10,
+  SourceControl: 1,
+};
+
 export const window = {
   createOutputChannel: (_name: string) => ({
     appendLine: (_line: string) => {},
@@ -35,6 +41,8 @@ export const window = {
   showErrorMessage: (_msg: string, ..._args: string[]) => Promise.resolve(undefined),
   showWarningMessage: (_msg: string, ..._args: string[]) => Promise.resolve(undefined),
   showInformationMessage: (_msg: string, ..._args: string[]) => Promise.resolve(undefined),
+  withProgress: (_opts: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>) =>
+    task({ report: () => {} }, undefined),
 };
 
 /** Backs `workspace.onDidChangeWorkspaceFolders` so tests can fire folder changes. */
@@ -88,5 +96,8 @@ export const Uri = {
 
 export const commands = {
   registerCommand: (_id: string, _handler: (...args: unknown[]) => unknown) => new Disposable(() => {}),
-  executeCommand: (_id: string, ..._args: unknown[]) => Promise.resolve(undefined),
+  // Returns a resolved Promise to match VS Code's real Thenable return type.
+  // Production code using `void executeCommand(...)` is unaffected; tests that
+  // spy on this function get consistent, predictable behaviour.
+  executeCommand: (_id: string, ..._args: unknown[]): Promise<undefined> => Promise.resolve(undefined),
 };

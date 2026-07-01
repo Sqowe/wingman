@@ -114,6 +114,7 @@ function makeController() {
 const tick = (ms = 15) => new Promise((r) => setTimeout(r, ms));
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   FakeTransport.reset();
   (vscode as unknown as { __resetWorkspace: () => void }).__resetWorkspace();
 });
@@ -343,5 +344,225 @@ describe('AgentController active-folder watcher', () => {
     expect(provider.postAgentStatus).toHaveBeenLastCalledWith(
       expect.objectContaining({ running: false }),
     );
+  });
+});
+
+// ─── AgentController.reload ────────────────────────────────────────────────────
+
+describe('AgentController.reload', () => {
+  it('refuses reload mid-turn and shows info message', async () => {
+    const { controller } = makeController();
+    setFolders(['/a']);
+    await controller.start(FOUND);
+
+    // Capture the event callback so we can fire agent_start.
+    let wiredEventCb: ((e: { type: string }) => void) | undefined;
+    vi.spyOn(FakeTransport.prototype, 'onEvent').mockImplementation(function (
+      this: InstanceType<typeof FakeTransport>,
+      cb: unknown,
+    ) {
+      wiredEventCb = cb as (e: { type: string }) => void;
+      return { dispose() {} };
+    });
+    await controller.forceRestart(FOUND);
+
+    // Fire agent_start to set _isStreaming = true.
+    wiredEventCb!({ type: 'agent_start' });
+    expect(controller.isStreaming).toBe(true);
+
+    const infoSpy = vi.spyOn(vscode.window, 'showInformationMessage');
+    const countBefore = FakeTransport.instances.length;
+
+    await controller.reload(FOUND);
+
+    expect(FakeTransport.instances).toHaveLength(countBefore); // no new transport
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('cannot reload'));
+  });
+
+  it('tears down and does not spawn when status is not-found', async () => {
+    const { controller } = makeController();
+    setFolders(['/a']);
+    await controller.start(FOUND);
+    const first = FakeTransport.instances[0];
+
+    await controller.reload({ kind: 'not-found' } as unknown as PiStatus);
+
+    expect(first.disposed).toBe(true);
+    expect(FakeTransport.instances).toHaveLength(1); // no new transport
+  });
+
+  it('spawns a new transport on found status (resume path undefined — pi was down)', async () => {
+    const { controller } = makeController();
+    setFolders(['/a']);
+    // Do NOT start — pi is down, so get_state will not be called.
+    await controller.reload(FOUND);
+
+    expect(FakeTransport.instances).toHaveLength(1);
+    expect(FakeTransport.instances[0].isRunning).toBe(true);
+    // No --session flag since there was no running transport to query.
+    expect(FakeTransport.instances[0].extraArgs).toEqual([]);
+  });
+
+  it('captures sessionFile from get_state and passes --session to the new spawn', async () => {
+    const { controller } = makeController();
+    setFolders(['/a']);
+    await controller.start(FOUND);
+
+    // Make the transport return a sessionFile from get_state.
+    const transport = FakeTransport.instances[0];
+    transport.send = vi.fn(async (cmd: { type: string }) => {
+      if (cmd.type === 'get_state') {
+        return { type: 'response', success: true, data: { sessionFile: '/home/user/.pi/agent/sessions/abc.json' } };
+      }
+      return { type: 'response', success: true, data: {} };
+    }) as unknown as typeof transport.send;
+
+    await controller.reload(FOUND);
+
+    // Old transport disposed, new one spawned.
+    expect(transport.disposed).toBe(true);
+    expect(FakeTransport.instances).toHaveLength(2);
+    expect(FakeTransport.instances[1].extraArgs).toContain('--session');
+    expect(FakeTransport.instances[1].extraArgs).toContain('/home/user/.pi/agent/sessions/abc.json');
+  });
+
+  it('retries without --session and calls postSessionReset when resume spawn fails', async () => {
+    const { controller, provider } = makeController();
+    setFolders(['/a']);
+    await controller.start(FOUND);
+
+    const first = FakeTransport.instances[0];
+    first.send = vi.fn(async (cmd: { type: string }) => {
+      if (cmd.type === 'get_state') {
+        return { type: 'response', success: true, data: { sessionFile: '/gone.json' } };
+      }
+      return { type: 'response', success: true, data: {} };
+    }) as unknown as typeof first.send;
+
+    // Make the second transport (the --session resume attempt) fail:
+    // start() throws, _doStart catches it and leaves the transport not running.
+    // instance[0]'s start() ran before this spy, so the first spied call (count=1)
+    // is the resume attempt (instance[1]).
+    let startCallCount = 0;
+    vi.spyOn(FakeTransport.prototype, 'start').mockImplementation(async function (
+      this: InstanceType<typeof FakeTransport>,
+    ) {
+      startCallCount++;
+      if (startCallCount === 1) {
+        // Simulate a failed resume — don't set isRunning.
+        throw new Error('session file not found');
+      }
+      // Subsequent calls succeed (the fresh-session retry).
+      this.isRunning = true;
+    });
+
+    const errorSpy = vi.spyOn(vscode.window, 'showErrorMessage');
+
+    await controller.reload(FOUND);
+
+    // Three transports: original + failed resume attempt + fresh retry.
+    expect(FakeTransport.instances).toHaveLength(3);
+    expect(FakeTransport.instances[2].extraArgs).not.toContain('--session');
+    expect(FakeTransport.instances[2].isRunning).toBe(true);
+    expect(provider.postSessionReset).toHaveBeenCalled();
+    // The failed resume attempt is `quiet` — reload() owns all messaging, so the
+    // inner "failed to start pi" toast must not fire before the fallback succeeds.
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('failed to start pi'),
+    );
+  });
+
+  it('does not pass --session to plain forceRestart (no regression)', async () => {
+    const { controller } = makeController();
+    setFolders(['/a']);
+    await controller.start(FOUND);
+
+    await controller.forceRestart(FOUND);
+
+    // forceRestart passes no resumeSessionPath.
+    expect(FakeTransport.instances[1].extraArgs).toEqual([]);
+  });
+
+  it('resolves and leaves transport running when post-start refresh fails', async () => {
+    const { controller } = makeController();
+    setFolders(['/a']);
+    // pi is down — no session to capture; reload starts fresh.
+
+    // Make get_messages fail so loadSessionMessages returns false (best-effort).
+    vi.spyOn(FakeTransport.prototype, 'send').mockImplementation(
+      (async function (this: InstanceType<typeof FakeTransport>, cmd: unknown) {
+        if ((cmd as { type: string }).type === 'get_messages') throw new Error('network error');
+        return { type: 'response', success: true, data: {} };
+      }) as unknown as () => Promise<{ type: string; success: boolean; data: Record<string, unknown> }>,
+    );
+
+    // Must not throw — reload() always resolves.
+    await expect(controller.reload(FOUND)).resolves.toBeUndefined();
+
+    // Transport should be running (spawn succeeded despite refresh failure).
+    expect(FakeTransport.instances[0].isRunning).toBe(true);
+  });
+});
+
+// ─── agentBusy context key ───────────────────────────────────────────────────
+
+describe('AgentController agentBusy context key', () => {
+  it('initBusyContextKey sets agentBusy=false once', () => {
+    const { controller } = makeController();
+    const execSpy = vi.spyOn(vscode.commands, 'executeCommand');
+
+    controller.initBusyContextKey();
+
+    expect(execSpy).toHaveBeenCalledWith('setContext', 'sqoweWingman.agentBusy', false);
+  });
+
+  it('initBusyContextKey is idempotent', () => {
+    const { controller } = makeController();
+    const execSpy = vi.spyOn(vscode.commands, 'executeCommand');
+
+    controller.initBusyContextKey();
+    controller.initBusyContextKey();
+    controller.initBusyContextKey();
+
+    // Regardless of how many times it is called, exactly one setContext call
+    // for agentBusy must have been made synchronously.
+    const setCalls = execSpy.mock.calls.filter(
+      (c) => c[0] === 'setContext' && c[1] === 'sqoweWingman.agentBusy',
+    );
+    expect(setCalls).toHaveLength(1);
+  });
+
+  it('sets agentBusy=true on agent_start and false on agent_end', async () => {
+    const { controller } = makeController();
+    setFolders(['/a']);
+
+    // Capture the event callback that _doStart wires onto the transport.
+    let wiredEventCb: ((e: { type: string }) => void) | undefined;
+    vi.spyOn(FakeTransport.prototype, 'onEvent').mockImplementation(function (
+      this: InstanceType<typeof FakeTransport>,
+      cb: unknown,
+    ) {
+      wiredEventCb = cb as (e: { type: string }) => void;
+      return { dispose() {} };
+    });
+
+    await controller.start(FOUND);
+
+    // Must init the key so _setStreaming publishes setContext.
+    controller.initBusyContextKey();
+
+    const execSpy = vi.spyOn(vscode.commands, 'executeCommand');
+
+    // Simulate agent_start via the wired callback.
+    wiredEventCb!({ type: 'agent_start' });
+    await Promise.resolve();
+    expect(execSpy).toHaveBeenCalledWith('setContext', 'sqoweWingman.agentBusy', true);
+
+    execSpy.mockClear();
+
+    // Simulate agent_end.
+    wiredEventCb!({ type: 'agent_end' });
+    await Promise.resolve();
+    expect(execSpy).toHaveBeenCalledWith('setContext', 'sqoweWingman.agentBusy', false);
   });
 });

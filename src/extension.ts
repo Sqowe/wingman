@@ -15,6 +15,7 @@ import { locatePi } from './agent/pi-locator';
 import { DiffService, DIFF_SCHEME } from './diff/diff-service';
 import { WingmanStatusBar, ModelStatusBar } from './status-bar';
 import { registerCommands } from './commands/index';
+import { reloadAgent } from './commands/reload';
 import { registerSessions } from './sessions';
 import { promptForTrust, registerTrustCommands } from './trust/trust-commands';
 import type { PiStatus, EditToolActions } from './shared/messages';
@@ -22,6 +23,40 @@ import type { PiStatus, EditToolActions } from './shared/messages';
 // Module-level controller and piStatus so deactivate() and trust commands can reach them.
 let _controller: AgentController | undefined;
 let _piStatus: PiStatus | undefined;
+
+/**
+ * Apply a freshly located pi status: cache it, push it to the webview provider,
+ * and show the appropriate not-found / version-warning message.
+ * Extracted so both activation and the reload handler share the same logic.
+ */
+function applyPiStatus(status: PiStatus, prov: WingmanViewProvider): void {
+  _piStatus = status;
+  prov.setPiStatus(status);
+
+  if (status.kind === 'not-found') {
+    void vscode.window
+      .showErrorMessage(
+        'Sqowe Wingman: pi coding agent not found. ' +
+          'Install it with: npm install -g @earendil-works/pi-coding-agent',
+        'Open Docs',
+      )
+      .then((selection) => {
+        if (selection === 'Open Docs') {
+          void vscode.env.openExternal(
+            vscode.Uri.parse('https://github.com/earendil-works/pi'),
+          );
+        }
+      });
+    return;
+  }
+
+  if (status.kind === 'version-warning') {
+    void vscode.window.showWarningMessage(
+      `Sqowe Wingman: pi ${status.version} is below the tested minimum ` +
+        `(${status.minimum}). Update pi to avoid compatibility issues.`,
+    );
+  }
+}
 
 /**
  * Read the `sqoweWingman.editToolActions` setting, coercing any unknown value
@@ -112,6 +147,20 @@ export function activate(context: vscode.ExtensionContext): void {
   // ── Trust + folder commands (Phase 8) ────────────────────────────────────
   registerTrustCommands(context, controller, () => _piStatus);
 
+  // ── Reload pi agent ───────────────────────────────────────────────────────
+  // Initialise the agentBusy context key immediately so the menu enablement
+  // expression has a defined value before any event fires.
+  controller.initBusyContextKey();
+  context.subscriptions.push(
+    vscode.commands.registerCommand('sqoweWingman.reloadAgent', () =>
+      reloadAgent(
+        controller,
+        () => locatePi((m) => controller.outputChannel.appendLine(m)),
+        (s) => applyPiStatus(s, provider),
+      ),
+    ),
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('sqoweWingman.focusChat', () => {
       void vscode.commands.executeCommand('sqoweWingman.chat.focus');
@@ -132,35 +181,14 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
 
-    _piStatus = status;
-    provider.setPiStatus(status);
+    applyPiStatus(status, provider);
 
-    if (status.kind === 'not-found') {
-      void vscode.window
-        .showErrorMessage(
-          'Sqowe Wingman: pi coding agent not found. ' +
-            'Install it with: npm install -g @earendil-works/pi-coding-agent',
-          'Open Docs',
-        )
-        .then((selection) => {
-          if (selection === 'Open Docs') {
-            void vscode.env.openExternal(
-              vscode.Uri.parse('https://github.com/earendil-works/pi'),
-            );
-          }
-        });
-      return;
-    }
+    // Stop here if pi is not runnable — trust gate, folder restore, and
+    // transport start must not proceed for non-runnable statuses.
+    // Mirrors the runnable-kind check in AgentController.reload().
+    if (status.kind !== 'found' && status.kind !== 'version-warning') return;
 
-    if (status.kind === 'version-warning') {
-      void vscode.window.showWarningMessage(
-        `Sqowe Wingman: pi ${status.version} is below the tested minimum ` +
-          `(${status.minimum}). Update pi to avoid compatibility issues.`,
-      );
-    }
-
-    // ── Phase 8: restore active folder + run trust gate ──────────────────────
-    //
+    // Phase 8: restore active folder + run trust gate.
     // 1. Restore the user's last-chosen folder from workspace state (multi-root).
     //    Validates it is still among the open folders before applying.
     // 2. Evaluate project trust for the active folder and, if needed, show the

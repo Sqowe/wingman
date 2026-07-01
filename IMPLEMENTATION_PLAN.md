@@ -7,6 +7,7 @@ commands in the chat input, promotes pi's built-in commands to native VS Code UI
 wires pi's `edit` tool into VS Code's real diff editor.
 
 > Status: **Phases 2–8 (core chat + tool cards + native diff + commands + UI protocol + sessions + config/trust) complete** (2026-06-24).
+> Reload pi Agent feature complete (2026-07-01).
 > Phase 9 (packaging) is next.
 > Plan authored 2026-06-21.
 > Brand: a sibling to the **Sqowe Pilot** desktop app — *Pilot* flies solo on the

@@ -7,10 +7,10 @@ extension that is a graphical front-end over the pi coding agent
 (`@earendil-works/pi-coding-agent`). It is the architectural source of truth: what the components
 are, how they connect, and which parts are stable vs. likely to change.
 
-> Status: **Phases 0–8 complete** (2026-06-24). The extension host, webview, pi locator, RPC
+> Status: **Phases 0–8 complete, Reload pi Agent feature complete** (2026-06-24 / 2026-07-01). The extension host, webview, pi locator, RPC
 > transport + event→webview bridge, core chat, tool cards, native diff, native commands, the
-> extension-UI protocol bridge, sessions (list / switch / resume, workspace-scoped), and
-> config / trust are all built and tested; Phase 9 (packaging) is next. The phases follow
+> extension-UI protocol bridge, sessions (list / switch / resume, workspace-scoped), config / trust,
+> and the Reload pi Agent action are all built and tested; Phase 9 (packaging) is next. The phases follow
 > [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md), the authoritative, detailed plan. This file is
 > kept in sync with the code **as-is** as each phase lands — it does not describe unbuilt structure.
 

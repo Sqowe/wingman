@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Reload pi Agent** — restarts the pi sidecar in place via a new
+  `sqoweWingman.reloadAgent` command, available from the chat view-title `⋯`
+  overflow menu and the Command Palette. Re-resolves the pi binary on every
+  reload (picks up `npm i -g` updates, nvm version switches, or a changed
+  `sqoweWingman.piExecutablePath`) and preserves the current conversation by
+  capturing the session file via `get_state` and resuming with
+  `pi --session <path>`. If the session file is gone, falls back to a fresh
+  session and notifies the user. A modal confirmation is required before
+  restart; the command is greyed out while pi is mid-turn via a new
+  `sqoweWingman.agentBusy` VS Code context key (set by `agent_start` /
+  `agent_end` events). No webview changes.
+
 ## [0.1.4] - 2026-06-29
 
 ### Added

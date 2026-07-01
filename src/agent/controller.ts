@@ -60,6 +60,9 @@ export class AgentController implements vscode.Disposable {
   private _trustArg: string | undefined;
   /** True while pi is mid-turn (between agent_start and agent_end). */
   private _isStreaming = false;
+  /** True once the agentBusy context key has been initialised (avoids a
+   * setContext call before the extension is fully activated). */
+  private _busyKeyInitialised = false;
   /** Most-recent session stats (updated after every agent_end). */
   private _lastSessionStats: SessionStats | null = null;
   /** True while a get_session_stats fetch is in flight — prevents races. */
@@ -187,6 +190,137 @@ export class AgentController implements vscode.Disposable {
       return Promise.resolve();
     }
     return this._serializedStart(piStatus, { tearDownFirst: true });
+  }
+
+  /**
+   * Reload the pi sidecar in place.
+   *
+   * Re-spawns the pi process with a freshly located binary (picks up system
+   * updates and reinstalls) while preserving the current conversation by
+   * capturing the session file and resuming it via `--session <path>`.
+   *
+   * This method owns all user-facing notifications and never throws — the
+   * command handler does not need a try/catch around it.
+   *
+   * Sequence:
+   *  1. Update the cached pi status.
+   *  2. If `not-found`, tear down cleanly and return (caller shows the error).
+   *  3. Capture `sessionFile` from `get_state` (best-effort; undefined if pi down).
+   *  4. Attempt a serialized restart, optionally with `--session <path>`.
+   *  5. If the transport is not running after the attempt and a session was
+   *     captured, retry once without `--session` (fresh session fallback).
+   *  6. Perform post-start refresh (transcript repaint or reset, commands, model).
+   */
+  public async reload(status: PiStatus): Promise<void> {
+    // Authoritative busy guard — refuse reload mid-turn regardless of how the
+    // method is invoked (command, palette, or future callers).
+    if (this._isStreaming) {
+      this._outputChannel.appendLine('[AgentController] reload: refused — agent is mid-turn');
+      void vscode.window.showInformationMessage(
+        'Sqowe Wingman: cannot reload while the agent is working.',
+      );
+      return;
+    }
+
+    this._piStatus = status;
+
+    if (status.kind !== 'found' && status.kind !== 'version-warning') {
+      // Not runnable (not-found or any future non-runnable kind) — tear down.
+      this._tearDownTransport();
+      return;
+    }
+
+    const runnableStatus = status;
+
+    // Step 1: capture the current session file (best-effort).
+    let sessionFile: string | undefined;
+    try {
+      if (this._transport?.isRunning) {
+        const resp = await this.sendCommand({ type: 'get_state' });
+        if (resp.success && typeof resp.data === 'object' && resp.data !== null) {
+          const sf = (resp.data as Record<string, unknown>)['sessionFile'];
+          if (typeof sf === 'string' && sf !== '') {
+            sessionFile = sf;
+          }
+        }
+      }
+    } catch {
+      // Best-effort — continue without resume if get_state fails.
+    }
+
+    // Step 2: attempt start (with resume if we have a session file).
+    // Re-check streaming immediately before teardown — a turn may have started
+    // while get_state was in flight.
+    if (this._isStreaming) {
+      this._outputChannel.appendLine('[AgentController] reload: aborted — agent became busy after guard');
+      void vscode.window.showInformationMessage(
+        'Sqowe Wingman: cannot reload while the agent is working.',
+      );
+      return;
+    }
+    await this._serializedStart(runnableStatus, {
+      tearDownFirst: true,
+      resumeSessionPath: sessionFile,
+      quiet: true,
+    });
+
+    // Step 3: if the transport is not running and we tried to resume,
+    // fall back to a fresh session.
+    let usedFreshFallback = false;
+    if (sessionFile && !this._transport?.isRunning) {
+      this._outputChannel.appendLine(
+        '[AgentController] reload: resume failed — retrying with fresh session',
+      );
+      await this._serializedStart(runnableStatus, { tearDownFirst: true, quiet: true });
+      usedFreshFallback = true;
+    }
+
+    // Step 4: if the transport is still not running after all attempts, bail.
+    if (!this._transport?.isRunning) {
+      this._outputChannel.appendLine('[AgentController] reload: failed to start pi');
+      void vscode.window.showErrorMessage(
+        'Sqowe Wingman: reload failed — pi could not be started.',
+      );
+      return;
+    }
+
+    // Step 5: post-start refresh (best-effort — never throws).
+    try {
+      if (usedFreshFallback) {
+        this._provider?.postSessionReset();
+        void vscode.window.showInformationMessage(
+          'Sqowe Wingman: started a fresh session (previous one could not be resumed).',
+        );
+        // Repaint transcript to match the new (empty) session state.
+        await this.loadSessionMessages();
+      } else {
+        // Always sync the transcript — covers both resume (repaint from session)
+        // and fresh start (pi was down; new empty session replaces old stale UI).
+        await this.loadSessionMessages();
+      }
+      void this.getCommands();
+      void this._refreshModelState();
+    } catch (err) {
+      this._outputChannel.appendLine(
+        `[AgentController] reload: post-start refresh failed: ${String(err)}`,
+      );
+      void vscode.window.showErrorMessage(
+        'Sqowe Wingman: agent reloaded but failed to refresh the session view.',
+      );
+    }
+  }
+
+  /**
+   * Initialise the `sqoweWingman.agentBusy` context key to `false`.
+   * Must be called once from `extension.ts` after the controller is created,
+   * so the key exists before any menu `enablement` expression is evaluated.
+   */
+  public initBusyContextKey(): void {
+    if (this._busyKeyInitialised) return;
+    this._busyKeyInitialised = true;
+    // Publish the *current* streaming state so the menu enablement expression
+    // is immediately correct, even if initBusyContextKey is called mid-turn.
+    void vscode.commands.executeCommand('setContext', 'sqoweWingman.agentBusy', this._isStreaming);
   }
 
   /**
@@ -386,7 +520,7 @@ export class AgentController implements vscode.Disposable {
    */
   private _serializedStart(
     piStatus: PiStatus & { kind: 'found' | 'version-warning' },
-    opts: { tearDownFirst: boolean },
+    opts: { tearDownFirst: boolean; resumeSessionPath?: string; quiet?: boolean },
   ): Promise<void> {
     // Each slot attaches to the current chain via .catch(() => {}) so a failure
     // in one slot does not prevent subsequent slots from running. The slot
@@ -401,7 +535,7 @@ export class AgentController implements vscode.Disposable {
           return; // already running — nothing to do
         }
         // Delegate to the existing _doStart which manages the startSeq guard.
-        this._starting = this._doStart(piStatus).finally(() => {
+        this._starting = this._doStart(piStatus, opts.resumeSessionPath, opts.quiet).finally(() => {
           this._starting = undefined;
         });
         await this._starting;
@@ -573,6 +707,8 @@ export class AgentController implements vscode.Disposable {
 
   private async _doStart(
     piStatus: PiStatus & { kind: 'found' | 'version-warning' },
+    resumeSessionPath?: string,
+    quiet = false,
   ): Promise<void> {
     if (this._disposed) return;
 
@@ -586,7 +722,10 @@ export class AgentController implements vscode.Disposable {
 
     this._tearDownTransport();
 
-    const extraArgs = this._trustArg ? [this._trustArg] : [];
+    const extraArgs = [
+      ...(this._trustArg ? [this._trustArg] : []),
+      ...(resumeSessionPath ? ['--session', resumeSessionPath] : []),
+    ];
     const transport = new RpcTransport(piStatus.path, cwd, extraArgs);
     transport.outputChannel = this._outputChannel;
 
@@ -595,10 +734,19 @@ export class AgentController implements vscode.Disposable {
     } catch (err) {
       transport.dispose();
       // Only surface the error if we're still the current start and not disposed.
+      // `quiet` callers (reload's resume + fresh-fallback attempts) own their own
+      // messaging, so the error is logged rather than shown to avoid a misleading
+      // toast before the fallback outcome is known.
       if (!this._disposed && seq === this._startSeq) {
-        void vscode.window.showErrorMessage(
-          `Sqowe Wingman: failed to start pi — ${String(err)}`,
-        );
+        if (quiet) {
+          this._outputChannel.appendLine(
+            `[AgentController] start failed (suppressed): ${String(err)}`,
+          );
+        } else {
+          void vscode.window.showErrorMessage(
+            `Sqowe Wingman: failed to start pi — ${String(err)}`,
+          );
+        }
       }
       return;
     }
@@ -612,7 +760,7 @@ export class AgentController implements vscode.Disposable {
 
     this._transport = transport;
     this._uiBridge.setTransport(transport);
-    this._isStreaming = false;
+    this._setStreaming(false);
     this._eventDisposable = transport.onEvent((event: RpcEvent) => {
       this._trackStreaming(event);
       // UI protocol events are handled natively — do not forward to the webview.
@@ -690,12 +838,25 @@ export class AgentController implements vscode.Disposable {
     );
   }
 
+  /**
+   * Set the streaming flag and publish the `sqoweWingman.agentBusy` VS Code
+   * context key so menu `enablement` expressions react automatically.
+   * The context key is only published after `initBusyContextKey()` has been
+   * called — callers that invoke `start()` before the extension is fully
+   * activated will not trigger unexpected context updates.
+   */
+  private _setStreaming(v: boolean): void {
+    this._isStreaming = v;
+    if (!this._busyKeyInitialised) return;
+    void vscode.commands.executeCommand('setContext', 'sqoweWingman.agentBusy', v);
+  }
+
   /** Tracks pi's turn lifecycle so callers can tell when a prompt would be rejected. */
   private _trackStreaming(event: RpcEvent): void {
     if (event.type === 'agent_start') {
-      this._isStreaming = true;
+      this._setStreaming(true);
     } else if (event.type === 'agent_end') {
-      this._isStreaming = false;
+      this._setStreaming(false);
       // Refresh stats after every completed turn (non-blocking).
       void this._fetchSessionStats();
     }
@@ -741,7 +902,7 @@ export class AgentController implements vscode.Disposable {
   private _handleTransportClose(transport: AgentTransport, reason: string): void {
     // Ignore if a newer transport has already replaced this one.
     if (transport !== this._transport) return;
-    this._isStreaming = false;
+    this._setStreaming(false);
     this._provider?.postAgentStatus({ running: false, reason });
     // pi is gone — the displayed model is no longer authoritative.
     this._lastModelState = null;
@@ -779,7 +940,7 @@ export class AgentController implements vscode.Disposable {
     this._eventDisposable = undefined;
     this._closeDisposable?.dispose();
     this._closeDisposable = undefined;
-    this._isStreaming = false;
+    this._setStreaming(false);
     this._transport?.dispose();
     this._transport = undefined;
     this._currentCwd = undefined;

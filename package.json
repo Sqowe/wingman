@@ -38,6 +38,7 @@
     "onCommand:sqoweWingman.setThinkingLevel",
     "onCommand:sqoweWingman.cycleThinkingLevel",
     "onCommand:sqoweWingman.showStats",
+    "onCommand:sqoweWingman.reloadAgent",
     "onCommand:sqoweWingman.renameSession",
     "onView:sqoweWingman.chat",
     "onView:sqoweWingman.sessions"
@@ -159,6 +160,13 @@
         "command": "sqoweWingman.renameSession",
         "category": "Sqowe Wingman",
         "title": "Rename Session…"
+      },
+      {
+        "command": "sqoweWingman.reloadAgent",
+        "category": "Sqowe Wingman",
+        "title": "Reload pi Agent…",
+        "icon": "$(refresh)",
+        "enablement": "!sqoweWingman.agentBusy"
       }
     ],
     "keybindings": [
@@ -216,6 +224,11 @@
           "command": "sqoweWingman.selectFolder",
           "when": "view == sqoweWingman.chat && workspaceFolderCount > 1",
           "group": "2_folder@1"
+        },
+        {
+          "command": "sqoweWingman.reloadAgent",
+          "when": "view == sqoweWingman.chat",
+          "group": "3_agent@1"
         },
         {
           "command": "sqoweWingman.refreshSessions",
