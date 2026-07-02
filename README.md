@@ -11,7 +11,7 @@ it **reuses pi's own configuration** — the same `~/.pi/agent/` global config a
 `.pi/` resources the pi CLI uses. Wingman is a different front-end over the same brain, not a
 separate tool with its own settings.
 
-> **Status — `0.1.4` preview.** Phases 0–8 are complete: native chat, tool cards, native diff,
+> **Status — `0.1.5` preview.** Phases 0–8 are complete: native chat, tool cards, native diff,
 > commands, the extension-UI protocol bridge, sessions, and config/trust are all built and
 > tested. Phase 9 (packaging / Marketplace) is in progress, so for now you install from source
 > (see below). See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for the roadmap.
@@ -35,6 +35,13 @@ separate tool with its own settings.
   resume and full-fidelity transcript restore.
 - **Project trust & multi-root** — honors pi's project-trust gate before loading project `.pi/`
   resources, with a folder picker for multi-root workspaces.
+- **Instruction file visibility** — the status banner shows how many instruction files pi loaded
+  for the session and opens a popover listing each file with its scope and role (e.g.
+  `AGENTS.md (global)`, `CLAUDE.md (project)`). Data comes from pi itself via a bundled pi
+  extension (`pi-extensions/instruction-report/`) — not a filesystem guess.
+- **Reload pi Agent** — restarts the pi sidecar in place from the chat view-title `⋯` menu or
+  Command Palette. Re-resolves the pi binary on every reload and preserves the current
+  conversation by resuming the saved session file.
 
 ## Prerequisites
 
@@ -79,7 +86,7 @@ overrides, so pi reads exactly the same files as your terminal `pi`:
 | --- | --- | --- |
 | Login / credentials | `~/.pi/agent/` (e.g. `auth.json`) | `pi` → `/login` |
 | Model providers & defaults | `~/.pi/agent/settings.json`, `models.json` | pi config — see pi's `models.md` / `providers.md` |
-| Global skills, extensions, prompt templates, themes | `~/.pi/agent/` | pi config — see pi's `skills.md` / `extensions.md` / `themes.md` |
+| Global skills, extensions, prompt templates, themes | `~/.pi/agent/` | pi config — see pi's `skills.md` / `extensions.md` / `themes.md`. Community pi extensions: [github.com/Sqowe/wingman](https://github.com/Sqowe/wingman) |
 | Global agent instructions | `~/.pi/agent/AGENTS.md` | edit the file |
 | Project-local settings & resources | `<project>/.pi/`, `<project>/AGENTS.md` | edit per project (loaded only once the project is trusted) |
 | Default project-trust behavior | `defaultProjectTrust` in `~/.pi/agent/settings.json` (`"ask"` / `"always"` / `"never"`) | pi config, or `/settings` in the pi TUI |
@@ -131,8 +138,8 @@ instead, point the trailing arg in `.vscode/launch.json` at `${workspaceFolder}`
 ### Option B — Package a VSIX and install it into your daily VS Code
 
 ```sh
-npm run vsce:package                       # produces wingman-0.1.4.vsix
-code --install-extension wingman-0.1.4.vsix
+npm run vsce:package                       # produces wingman-0.1.5.vsix
+code --install-extension wingman-0.1.5.vsix
 ```
 
 Or in VS Code: **Extensions** view ▸ **⋯** menu ▸ *Install from VSIX…* ▸ pick the file, then
