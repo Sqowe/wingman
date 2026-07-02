@@ -206,6 +206,40 @@ export interface ModelStateMessage {
   state: ModelState | null;
 }
 
+// ─── Instruction files ───────────────────────────────────────────────────────
+
+export type InstructionFileRole =
+  | 'context'            // AGENTS.md / CLAUDE.md — additive context injection
+  | 'systemPrompt'       // SYSTEM.md — replaces the default system prompt
+  | 'appendSystemPrompt' // APPEND_SYSTEM.md — appended to the system prompt
+  | 'customPrompt';      // --system-prompt flag or template — no file path
+
+export interface InstructionFileEntry {
+  /**
+   * Absolute path to the file.
+   * null only for the customPrompt/no-file case (e.g. --system-prompt flag).
+   */
+  path: string | null;
+  scope: 'global' | 'project' | null;
+  role: InstructionFileRole;
+}
+
+export interface InstructionFilesInfo {
+  files: InstructionFileEntry[];
+}
+
+/**
+ * Sent after session (re)start once pi's resolved instruction files are known
+ * (or known to be unknowable). `info: null` covers every fallback case —
+ * old pi, extension load failure, command absent, malformed report, or timeout
+ * — and must render distinctly from `files: []` (a real project with no
+ * instruction files configured).
+ */
+export interface InstructionFilesMessage {
+  type: 'instructionFiles';
+  info: InstructionFilesInfo | null;
+}
+
 /** Which action buttons to show on completed `edit` tool cards. */
 export type EditToolActions = 'both' | 'diffOnly' | 'applyOnly' | 'none';
 
@@ -235,7 +269,8 @@ export type HostMessage =
   | UiSetEditorTextMessage
   | SessionMessagesMessage
   | ModelStateMessage
-  | ChatConfigMessage;
+  | ChatConfigMessage
+  | InstructionFilesMessage;
 
 // ─── Webview → Host ──────────────────────────────────────────────────────────
 

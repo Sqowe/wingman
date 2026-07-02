@@ -101,6 +101,7 @@ function makeProvider() {
     postAgentStatus: vi.fn(),
     postSessionReset: vi.fn(),
     postSessionMessages: vi.fn(),
+    postInstructionFiles: vi.fn(),
   };
 }
 

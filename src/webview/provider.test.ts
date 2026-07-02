@@ -672,3 +672,54 @@ describe('WingmanViewProvider — sendPrompt image validation', () => {
     expect(controller.sendPrompt).not.toHaveBeenCalled();
   });
 });
+
+// ─── postInstructionFiles ─────────────────────────────────────────────────────────
+
+describe('WingmanViewProvider — postInstructionFiles', () => {
+  it('posts an instructionFiles message to the webview when ready', () => {
+    const { provider, postMessage } = resolveProvider();
+    provider.postInstructionFiles({ files: [{ path: '/a/AGENTS.md', scope: 'global', role: 'context' }] });
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'instructionFiles',
+      info: { files: [{ path: '/a/AGENTS.md', scope: 'global', role: 'context' }] },
+    });
+  });
+
+  it('posts null info when pi is down', () => {
+    const { provider, postMessage } = resolveProvider();
+    provider.postInstructionFiles(null);
+    expect(postMessage).toHaveBeenCalledWith({ type: 'instructionFiles', info: null });
+  });
+
+  it('replays cached instruction files on webview ready', async () => {
+    const { view: v2, postMessage: pm2, sendMessage: sm2 } = makeWebviewView();
+    const p2 = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    p2.setController(makeController() as unknown as AgentController);
+    p2.resolveWebviewView(
+      v2,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    // Cache before webview is ready.
+    p2.postInstructionFiles({ files: [] });
+    expect(pm2).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'instructionFiles' }));
+    // Signal ready — should replay.
+    sm2({ type: 'ready' });
+    await flushMicrotasks();
+    expect(pm2).toHaveBeenCalledWith({ type: 'instructionFiles', info: { files: [] } });
+  });
+
+  it('does not replay when instruction files were never set (undefined)', async () => {
+    const { view: v3, postMessage: pm3, sendMessage: sm3 } = makeWebviewView();
+    const p3 = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    p3.setController(makeController() as unknown as AgentController);
+    p3.resolveWebviewView(
+      v3,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    sm3({ type: 'ready' });
+    await flushMicrotasks();
+    expect(pm3).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'instructionFiles' }));
+  });
+});

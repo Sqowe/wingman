@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import type { RpcEvent } from '../../../src/agent/transport';
-import type { PiCommand, ModelState, EditToolActions } from '../../../src/shared/messages';
+import type { PiCommand, ModelState, EditToolActions, InstructionFilesInfo } from '../../../src/shared/messages';
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -218,6 +218,12 @@ interface ChatState {
   modelName: string | null;
   /** Which action buttons to show on completed edit tool cards (from chatConfig message). */
   editToolActions: EditToolActions;
+  /**
+   * Resolved instruction files from pi's bundled extension.
+   * null  = info unavailable (old pi, extension load failure, timeout).
+   * undefined = not yet received (initial state before first session start).
+   */
+  instructionFiles: InstructionFilesInfo | null | undefined;
   /** Active status entries from pi's setStatus() calls (keyed by statusKey). */
   uiStatuses: UiStatusEntry[];
   /** Active widget blocks from pi's setWidget() calls (keyed by widgetKey). */
@@ -252,6 +258,8 @@ interface ChatActions {
   setModelState: (state: ModelState | null) => void;
   /** Update the chat UI config (edit tool action buttons) from a chatConfig host message. */
   setChatConfig: (editToolActions: EditToolActions) => void;
+  /** Update resolved instruction files from an instructionFiles host message. */
+  setInstructionFiles: (info: InstructionFilesInfo | null) => void;
   /** Set or clear a status entry (key → text | null). */
   setUiStatus: (key: string, text: string | null) => void;
   /** Set or clear a widget block (key → lines[] | null). */
@@ -541,6 +549,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   uiTitle: null,
   uiEditorText: null,
   toolCardExpanded: {},
+  instructionFiles: undefined,
 
   addUserMessage: (text, imageCount) =>
     set((state) => ({
@@ -590,6 +599,8 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
     })),
 
   setChatConfig: (editToolActions: EditToolActions) => set(() => ({ editToolActions })),
+
+  setInstructionFiles: (info: InstructionFilesInfo | null) => set(() => ({ instructionFiles: info })),
 
   setUiStatus: (key, text) =>
     set((state) => {
@@ -676,6 +687,8 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         supportsImages: state.supportsImages,
         modelName: state.modelName,
         editToolActions: state.editToolActions,
+        instructionFiles: state.instructionFiles,
+        toolCardExpanded: state.toolCardExpanded,
       };
       // Deep-clone items array elements that will be mutated so React
       // detects the change correctly.

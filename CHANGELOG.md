@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Instruction file visibility** — the status banner now shows how many
+  instruction files pi loaded for the current session (`pi 0.80.3 ready · 2 instructions`)
+  and opens a popover on click listing each file annotated with its scope and role:
+  e.g. `AGENTS.md (global)`, `CLAUDE.md (project)`,
+  `SYSTEM.md (project, replaces default)`, `APPEND_SYSTEM.md (project, appended)`.
+  Data comes from pi itself via a bundled pi extension
+  (`pi-extensions/instruction-report/`) that calls `ctx.getSystemPromptOptions()`
+  — not a host-side filesystem guess — so the list reflects exactly what pi
+  actually loaded. The banner collapses from two lines to one; the path and file
+  list move into the absolutely-positioned popover (no document-flow impact,
+  no `ResizeObserver` noise). Graceful degradation: if the command is absent
+  (old pi, extension load failure) or times out, the popover shows an explanatory
+  note; confirmed zero files renders differently from "unknown". Re-fires on every
+  session (re)start, trust change, and Reload pi Agent.
+
 - **Reload pi Agent** — restarts the pi sidecar in place via a new
   `sqoweWingman.reloadAgent` command, available from the chat view-title `⋯`
   overflow menu and the Command Palette. Re-resolves the pi binary on every

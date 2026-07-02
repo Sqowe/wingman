@@ -510,3 +510,90 @@ describe('UiProtocolBridge', () => {
     expect(transport.sentRaw.length).toBe(0);
   });
 });
+
+// ─── Reserved setStatus key (wingman:instructionFiles) ─────────────────────────────
+
+describe('UiProtocolBridge — reserved setStatus key (wingman:instructionFiles)', () => {
+  function makeSetStatusEvent(statusKey: string, statusText?: string) {
+    return {
+      type: 'extension_ui_request',
+      id: 'r1',
+      method: 'setStatus',
+      statusKey,
+      statusText,
+    };
+  }
+
+  it('routes the reserved key to the callback instead of postUiStatus', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = new UiProtocolBridge(
+      { appendLine: () => {} } as unknown as import('vscode').OutputChannel,
+      (info) => received.push(info),
+    );
+    const provider = { postUiStatus: vi.fn() };
+    bridge2.setProvider(provider as never);
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:instructionFiles',
+      JSON.stringify({ files: [{ path: '/a/AGENTS.md', scope: 'global', role: 'context' }] }),
+    ) as never);
+    expect(provider.postUiStatus).not.toHaveBeenCalled();
+    expect(received).toHaveLength(1);
+    expect((received[0] as { files: unknown[] }).files).toHaveLength(1);
+    bridge2.dispose();
+  });
+
+  it('calls callback with null for malformed JSON on the reserved key', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = new UiProtocolBridge(
+      { appendLine: () => {} } as unknown as import('vscode').OutputChannel,
+      (info) => received.push(info),
+    );
+    bridge2.handleEvent(makeSetStatusEvent('wingman:instructionFiles', 'NOT JSON') as never);
+    expect(received).toHaveLength(1);
+    expect(received[0]).toBeNull();
+    bridge2.dispose();
+  });
+
+  it('calls callback with null for unsupported payload', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = new UiProtocolBridge(
+      { appendLine: () => {} } as unknown as import('vscode').OutputChannel,
+      (info) => received.push(info),
+    );
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:instructionFiles',
+      JSON.stringify({ unsupported: true }),
+    ) as never);
+    expect(received).toHaveLength(1);
+    expect(received[0]).toBeNull();
+    bridge2.dispose();
+  });
+
+  it('calls callback with null for error payload', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = new UiProtocolBridge(
+      { appendLine: () => {} } as unknown as import('vscode').OutputChannel,
+      (info) => received.push(info),
+    );
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:instructionFiles',
+      JSON.stringify({ error: 'something went wrong' }),
+    ) as never);
+    expect(received[0]).toBeNull();
+    bridge2.dispose();
+  });
+
+  it('routes every other statusKey through postUiStatus unaffected', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = new UiProtocolBridge(
+      { appendLine: () => {} } as unknown as import('vscode').OutputChannel,
+      (info) => received.push(info),
+    );
+    const provider = { postUiStatus: vi.fn() };
+    bridge2.setProvider(provider as never);
+    bridge2.handleEvent(makeSetStatusEvent('some-other-key', 'hello') as never);
+    expect(provider.postUiStatus).toHaveBeenCalledWith('some-other-key', 'hello');
+    expect(received).toHaveLength(0);
+    bridge2.dispose();
+  });
+});

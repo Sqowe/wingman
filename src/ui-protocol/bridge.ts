@@ -15,6 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AgentTransport, RpcEvent } from '../agent/transport';
+import type { InstructionFilesInfo, InstructionFileEntry } from '../shared/messages';
 import type { WingmanViewProvider } from '../webview/provider';
 
 // ─── Extension UI request shape ───────────────────────────────────────────────
@@ -111,11 +112,16 @@ function asUiRequest(event: RpcEvent): UiRequest | null {
 
 // ─── Bridge ───────────────────────────────────────────────────────────────────
 
+/** Reserved status key — intercepted before reaching the generic status strip. */
+export const INSTRUCTION_FILES_STATUS_KEY = 'wingman:instructionFiles';
+
 export class UiProtocolBridge implements vscode.Disposable {
   private _transport: AgentTransport | undefined;
   private _provider: WingmanViewProvider | undefined;
   private _outputChannel: vscode.OutputChannel;
   private _disposed = false;
+  /** Callback invoked when the reserved instructionFiles status key is received. */
+  private _onInstructionFilesReport?: (info: InstructionFilesInfo | null) => void;
   /**
    * Maps pending blocking-request ids to their client-side timeout handle.
    * When the timer fires, the id value is replaced with `null` (expired) so
@@ -128,8 +134,12 @@ export class UiProtocolBridge implements vscode.Disposable {
    */
   private _requestTimers = new Map<string, ReturnType<typeof setTimeout> | null>();
 
-  constructor(outputChannel: vscode.OutputChannel) {
+  constructor(
+    outputChannel: vscode.OutputChannel,
+    onInstructionFilesReport?: (info: InstructionFilesInfo | null) => void,
+  ) {
     this._outputChannel = outputChannel;
+    this._onInstructionFilesReport = onInstructionFilesReport;
   }
 
   public setTransport(transport: AgentTransport | undefined): void {
@@ -408,6 +418,51 @@ export class UiProtocolBridge implements vscode.Disposable {
   }
 
   private _handleSetStatus(req: SetStatusRequest): void {
+    // Reserved key: parse and route to the instructionFiles callback instead of
+    // the generic status strip, so it never appears in the webview's UI status.
+    if (req.statusKey === INSTRUCTION_FILES_STATUS_KEY) {
+      if (!this._onInstructionFilesReport) return;
+      try {
+        const parsed = JSON.parse(req.statusText ?? 'null') as Record<string, unknown> | null;
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          !parsed['unsupported'] &&
+          !parsed['error'] &&
+          Array.isArray(parsed['files'])
+        ) {
+          const VALID_ROLES = new Set(['context', 'systemPrompt', 'appendSystemPrompt', 'customPrompt']);
+          const VALID_SCOPES = new Set(['global', 'project', null]);
+          const validEntries = (parsed['files'] as unknown[]).filter(
+            (e): e is InstructionFileEntry =>
+              !!e &&
+              typeof e === 'object' &&
+              VALID_ROLES.has((e as Record<string, unknown>)['role'] as string) &&
+              VALID_SCOPES.has((e as Record<string, unknown>)['scope'] as string | null) &&
+              ((e as Record<string, unknown>)['path'] === null ||
+                typeof (e as Record<string, unknown>)['path'] === 'string'),
+          );
+          this._onInstructionFilesReport({ files: validEntries });
+        } else {
+          if (parsed?.['error']) {
+            this._outputChannel.appendLine(
+              `[UiProtocolBridge] instructionFiles extension handler error: ${String(parsed['error'])}`,
+            );
+          } else if (parsed?.['unsupported']) {
+            this._outputChannel.appendLine(
+              '[UiProtocolBridge] instructionFiles: getSystemPromptOptions() not available on this pi version',
+            );
+          }
+          this._onInstructionFilesReport(null);
+        }
+      } catch (err) {
+        this._outputChannel.appendLine(
+          `[UiProtocolBridge] instructionFiles: malformed JSON in setStatus payload: ${String(err)}`,
+        );
+        this._onInstructionFilesReport(null);
+      }
+      return;
+    }
     this._provider?.postUiStatus(req.statusKey, req.statusText ?? null);
   }
 

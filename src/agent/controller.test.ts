@@ -38,6 +38,7 @@ function makeProvider() {
     postAgentEvent: vi.fn(),
     postAgentStatus: vi.fn(),
     postSessionReset: vi.fn(),
+    postInstructionFiles: vi.fn(),
   };
 }
 
@@ -546,5 +547,152 @@ describe('AgentController.sendPrompt — images', () => {
     expect(rpcImgs[0]['fileName']).toBeUndefined();
     expect(rpcImgs[0]['size']).toBeUndefined();
     expect(rpcImgs[0]['type']).toBe('image');
+  });
+});
+
+// ─── _reportInstructionFiles tests ────────────────────────────────────────────────
+
+describe('AgentController._reportInstructionFiles()', () => {
+  function makeControllerForReport(
+    getCommandsResponse: unknown,
+  ) {
+    const controller = new AgentController();
+    const provider = makeProvider();
+    controller.setProvider(provider as unknown as WingmanViewProvider);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ctrl = controller as any;
+    ctrl._transport = makeTransport((cmd: { type: string }) => {
+      if (cmd.type === 'get_commands') return getCommandsResponse;
+      // prompt (fire-and-forget report command) — acknowledge
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    ctrl._isRunning = true;
+    return { controller, provider, ctrl };
+  }
+
+  async function flush(n = 10) {
+    for (let i = 0; i < n; i++) await Promise.resolve();
+  }
+
+  it('fires null and calls postInstructionFiles(null) when command is absent from get_commands', async () => {
+    const { controller, provider } = makeControllerForReport({
+      type: 'response', success: true, command: 'get_commands',
+      data: { commands: [{ name: '/custom', description: 'user cmd' }] },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ctrl = controller as any;
+    const fired: Array<unknown> = [];
+    controller.onInstructionFiles((info) => fired.push(info));
+    await ctrl._reportInstructionFiles();
+    await flush();
+    expect(fired).toHaveLength(1);
+    expect(fired[0]).toBeNull();
+    expect(provider.postInstructionFiles).toHaveBeenCalledWith(null);
+  });
+
+  it('never appends internal command to postCommandsList', async () => {
+    const { controller, provider } = makeControllerForReport({
+      type: 'response', success: true, command: 'get_commands',
+      data: { commands: [
+        { name: 'wingman-instruction-report', description: 'internal' },
+        { name: '/custom', description: 'user cmd' },
+      ] },
+    });
+    await controller.getCommands();
+    const cmds = provider.postCommandsList.mock.calls[0][0] as Array<{ name: string }>;
+    expect(cmds.every((c) => c.name !== '/wingman-instruction-report')).toBe(true);
+    expect(cmds.every((c) => c.name !== 'wingman-instruction-report')).toBe(true);
+    expect(cmds.some((c) => c.name === '/custom')).toBe(true);
+  });
+
+  it('detects slash-prefixed command name in get_commands as present', async () => {
+    const { controller, provider, ctrl } = makeControllerForReport({
+      type: 'response', success: true, command: 'get_commands',
+      data: { commands: [{ name: '/wingman-instruction-report', description: 'internal' }] },
+    });
+    const reportPromise = ctrl._reportInstructionFiles();
+    await flush(5);
+    // Deliver the callback so the promise settles.
+    ctrl._instructionFilesWaiter?.resolve({ files: [] });
+    ctrl._instructionFilesWaiter = undefined;
+    await reportPromise;
+    // Should have been called with real data (not null), proving the command was detected.
+    expect(provider.postInstructionFiles).toHaveBeenCalledWith({ files: [] });
+  });
+
+  it('resolves with the info payload when bridge callback fires', async () => {
+    const { controller, provider, ctrl } = makeControllerForReport({
+      type: 'response', success: true, command: 'get_commands',
+      data: { commands: [{ name: 'wingman-instruction-report', description: 'internal' }] },
+    });
+    const reportPromise = ctrl._reportInstructionFiles();
+    // Simulate the bridge callback arriving with a valid payload.
+    await flush(5);
+    ctrl._instructionFilesWaiter?.resolve({ files: [
+      { path: '/home/.pi/agent/AGENTS.md', scope: 'global', role: 'context' },
+    ] });
+    ctrl._instructionFilesWaiter = undefined;
+    await reportPromise;
+    expect(provider.postInstructionFiles).toHaveBeenCalledWith({
+      files: [{ path: '/home/.pi/agent/AGENTS.md', scope: 'global', role: 'context' }],
+    });
+  });
+
+  it('fires null on transport not running', async () => {
+    const controller = new AgentController();
+    const provider = makeProvider();
+    controller.setProvider(provider as unknown as WingmanViewProvider);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ctrl = controller as any;
+    // No transport injected — isRunning will be false.
+    await ctrl._reportInstructionFiles();
+    await flush();
+    expect(provider.postInstructionFiles).toHaveBeenCalledWith(null);
+  });
+
+  it('second call supersedes first: stale callback does not resolve second waiter', async () => {
+    const { controller, provider, ctrl } = makeControllerForReport({
+      type: 'response', success: true, command: 'get_commands',
+      data: { commands: [{ name: 'wingman-instruction-report', description: 'internal' }] },
+    });
+
+    // Start first report — let it reach the waiter stage.
+    const firstPromise = ctrl._reportInstructionFiles();
+    await flush(5);
+
+    // Capture first waiter before starting second call.
+    const firstWaiter = ctrl._instructionFilesWaiter;
+
+    // Start second report — it should cancel the first.
+    const secondPromise = ctrl._reportInstructionFiles();
+    await flush(5);
+
+    // Deliver first call's callback (stale — nonce won't match second).
+    if (firstWaiter) {
+      firstWaiter.resolve({ files: [
+        { path: '/stale/AGENTS.md', scope: 'global', role: 'context' },
+      ] });
+    }
+
+    // Deliver second call's callback with correct data.
+    ctrl._instructionFilesWaiter?.resolve({ files: [
+      { path: '/current/CLAUDE.md', scope: 'project', role: 'context' },
+    ] });
+    ctrl._instructionFilesWaiter = undefined;
+
+    await firstPromise;
+    await secondPromise;
+    await flush();
+
+    // Only the second result should have been posted (not the stale first).
+    const calls = provider.postInstructionFiles.mock.calls as Array<[unknown]>;
+    // The last call must be the second (current) result.
+    const lastCall = calls[calls.length - 1][0] as { files: Array<{ path: string }> } | null;
+    expect(lastCall?.files?.[0]?.path).toBe('/current/CLAUDE.md');
+    // The stale path must never appear.
+    expect(calls.every((c) => {
+      const info = c[0] as { files?: Array<{ path: string }> } | null;
+      return !info?.files?.some((f) => f.path === '/stale/AGENTS.md');
+    })).toBe(true);
   });
 });

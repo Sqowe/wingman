@@ -74,6 +74,93 @@ body {
   white-space: nowrap;
 }
 
+.status-banner--clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.status-banner--clickable:hover {
+  filter: brightness(1.05);
+}
+
+.status-banner__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.status-banner__chevron {
+  flex-shrink: 0;
+  font-size: 9px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ── Instruction files popover ────────────────────────────────────────────── */
+
+.instruction-files-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, var(--vscode-panel-border)));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0,0,0,0.3));
+  font-size: 11px;
+  overflow: hidden;
+}
+
+.instruction-files-popover__path {
+  padding: 5px 10px 4px;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+}
+
+.instruction-files-popover__body {
+  padding: 6px 10px;
+}
+
+.instruction-files-popover__unavailable {
+  margin: 0;
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+}
+
+.instruction-files-popover__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.instruction-files-popover__entry {
+  display: flex;
+  align-items: baseline;
+}
+
+.instruction-files-popover__label {
+  color: var(--vscode-foreground);
+}
+
+.instruction-files-popover__basename {
+  font-family: var(--vscode-editor-font-family);
+  font-weight: 600;
+}
+
+.instruction-files-popover__annotation {
+  color: var(--vscode-descriptionForeground);
+}
+
 /* ── Message list ─────────────────────────────────────────────────────────── */
 
 /* The slot soaks up exactly the leftover flex space (gaps, title, status strip,

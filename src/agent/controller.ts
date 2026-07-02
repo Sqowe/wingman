@@ -12,7 +12,7 @@ import * as vscode from 'vscode';
 import { RpcTransport } from './rpc-transport';
 import type { AgentTransport, RpcEvent } from './transport';
 import type { WingmanViewProvider } from '../webview/provider';
-import type { PiStatus, PiCommand, SessionStats, ModelState, AttachedImage } from '../shared/messages';
+import type { PiStatus, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo } from '../shared/messages';
 import { UiProtocolBridge } from '../ui-protocol/bridge';
 import type { TrustDecision } from '../trust/project-trust';
 
@@ -21,6 +21,17 @@ import type { TrustDecision } from '../trust/project-trust';
  * switching/branching the session). A successful one triggers a get_state
  * refresh so the model status bar reflects the new value.
  */
+/**
+ * Pending resolver for _reportInstructionFiles(), with a nonce for
+ * correlation. Defined as a named interface (not an inline object type)
+ * to prevent TypeScript's control-flow analysis from narrowing the
+ * private field to 'never' after assignments across await boundaries.
+ */
+interface InstructionFilesWaiter {
+  resolve: (info: InstructionFilesInfo | null) => void;
+  nonce: number;
+}
+
 const MODEL_AFFECTING_COMMANDS = new Set<string>([
   'set_model',
   'cycle_model',
@@ -71,6 +82,10 @@ export class AgentController implements vscode.Disposable {
   private _commands: PiCommand[] = [];
   /** In-flight getCommands promise — coalesces concurrent fetches into one RPC call. */
   private _commandsFetch: Promise<void> | undefined;
+  /** Raw (unfiltered) command names from the last successful get_commands response.
+   * Stored so _reportInstructionFiles() can check for internal commands without
+   * issuing a second RPC round-trip. */
+  private _rawCommandNames: Set<string> = new Set();
   /** In-flight start promise — prevents concurrent spawns. */
   private _starting: Promise<void> | undefined;
   private _disposed = false;
@@ -94,10 +109,32 @@ export class AgentController implements vscode.Disposable {
   private _lastModelState: ModelState | null = null;
   /** Sequence guard for concurrent get_state fetches. */
   private _modelStateSeq = 0;
+  /** Fires after session (re)start with resolved instruction file info (null = unavailable). */
+  private readonly _onInstructionFiles = new vscode.EventEmitter<InstructionFilesInfo | null>();
+  public readonly onInstructionFiles: vscode.Event<InstructionFilesInfo | null> = this._onInstructionFiles.event;
+  /**
+   * Holds the pending _reportInstructionFiles() resolver + its nonce.
+   * Using a named interface (not an inline object literal) prevents TypeScript's
+   * control-flow narrowing from inferring 'never' across await boundaries.
+   * The nonce guards against stale callbacks from superseded requests.
+   */
+  private _instructionFilesWaiter: InstructionFilesWaiter | undefined;
+  private _instructionFilesNonce = 0;
 
-  constructor() {
+  constructor(private readonly _bundledExtensionPath?: string) {
     this._outputChannel = vscode.window.createOutputChannel('Sqowe Wingman');
-    this._uiBridge = new UiProtocolBridge(this._outputChannel);
+    this._uiBridge = new UiProtocolBridge(
+      this._outputChannel,
+      (info) => {
+        // Bridge callback: resolve the pending _reportInstructionFiles() promise
+        // only if the nonce still matches (prevents stale cross-call delivery).
+        const waiter = this._instructionFilesWaiter as InstructionFilesWaiter | undefined;
+        if (waiter && waiter.nonce === this._instructionFilesNonce) {
+          this._instructionFilesWaiter = undefined;
+          waiter.resolve(info);
+        }
+      },
+    );
   }
 
   // ─── Public API ───────────────────────────────────────────────────────────
@@ -300,6 +337,8 @@ export class AgentController implements vscode.Disposable {
       }
       void this.getCommands();
       void this._refreshModelState();
+      // Report resolved instruction files after reload (non-blocking).
+      void this._reportInstructionFiles();
     } catch (err) {
       this._outputChannel.appendLine(
         `[AgentController] reload: post-start refresh failed: ${String(err)}`,
@@ -435,18 +474,28 @@ export class AgentController implements vscode.Disposable {
         (c): c is { name: string; description?: unknown } =>
           !!c && typeof c === 'object' && typeof (c as Record<string, unknown>)['name'] === 'string',
       );
+      // Cache raw (unfiltered) normalized names so _reportInstructionFiles() can
+      // check for internal commands without a second RPC round-trip.
+      this._rawCommandNames = new Set(
+        valid.map((c) => c.name.replace(/^\//, '')),
+      );
       // Filter out built-in TUI commands that are inert over RPC.
       const BUILTIN_INERT = new Set([
         'settings', 'model', 'new', 'resume', 'fork', 'clone',
         'export', 'thinking', 'login', 'logout', 'compact',
       ]);
       const filtered: string[] = [];
+      // Internal Wingman command — never shown in the autocomplete.
+      const INTERNAL_WINGMAN = new Set(['wingman-instruction-report']);
       this._commands = valid
         .filter((c) => {
           const stripped = c.name.replace(/^\//, '');
           if (BUILTIN_INERT.has(stripped)) {
             filtered.push(c.name);
             return false;
+          }
+          if (INTERNAL_WINGMAN.has(stripped)) {
+            return false; // silently excluded — never user-facing
           }
           return true;
         })
@@ -464,6 +513,126 @@ export class AgentController implements vscode.Disposable {
     } catch (err) {
       this._outputChannel.appendLine(`[AgentController] get_commands error: ${String(err)}`);
     }
+  }
+
+  /**
+   * Query pi's bundled extension for the resolved instruction files and push
+   * the result to the webview banner.
+   *
+   * Flow:
+   *   1. Check get_commands result for 'wingman-instruction-report'.
+   *      - Absent (extension not loaded / old pi) → fire null immediately.
+   *   2. Send '/wingman-instruction-report' as a prompt (silent — no chat bubble).
+   *   3. Await the reserved setStatus callback from UiProtocolBridge (3s timeout).
+   *   4. Fire the result via _onInstructionFiles and push to the provider.
+   *
+   * Never throws; never blocks the caller; all failures degrade to null.
+   */
+  private async _reportInstructionFiles(): Promise<void> {
+    const COMMAND = 'wingman-instruction-report';
+    const TIMEOUT_MS = 3_000;
+
+    // Concurrency guard: cancel any in-flight report before starting a new one.
+    if (this._instructionFilesWaiter) {
+      this._instructionFilesWaiter.resolve(null);
+      this._instructionFilesWaiter = undefined;
+    }
+
+    // Assign a nonce so a stale bridge callback from a superseded call is ignored.
+    const nonce = ++this._instructionFilesNonce;
+
+    if (!this._transport?.isRunning) {
+      this._onInstructionFiles.fire(null);
+      this._provider?.postInstructionFiles(null);
+      return;
+    }
+
+    // Check whether our command is present using the cached raw command list
+    // populated by the most recent getCommands() call. This avoids a second
+    // RPC round-trip and ensures we see the same response as getCommands().
+    // Fall back to a live RPC call only when the cache is empty (e.g. report
+    // fires before getCommands() has completed on a fresh session).
+    let commandPresent = this._rawCommandNames.has(COMMAND);
+
+    if (!commandPresent && this._rawCommandNames.size === 0) {
+      // Cache not yet populated — fetch once.
+      try {
+        const response = await this.sendCommand({ type: 'get_commands' });
+        if (response.success) {
+          const data = response.data as { commands?: unknown[] } | null;
+          const raw = Array.isArray(data?.commands) ? data!.commands : [];
+          commandPresent = raw.some(
+            (c) => {
+              if (!c || typeof c !== 'object') return false;
+              const name = String((c as Record<string, unknown>)['name'] ?? '');
+              return name.replace(/^\//, '') === COMMAND;
+            },
+          );
+        }
+      } catch {
+        // Best-effort — treat as absent.
+      }
+    }
+
+    // Guard: if superseded while awaiting get_commands fallback, bail out.
+    if (nonce !== this._instructionFilesNonce) return;
+
+    if (!commandPresent) {
+      this._outputChannel.appendLine(
+        `[AgentController] ${COMMAND} not found in get_commands — no instruction-file info available (extension not loaded or pi too old)`,
+      );
+      this._onInstructionFiles.fire(null);
+      this._provider?.postInstructionFiles(null);
+      return;
+    }
+
+    // Set up the promise that will be resolved by the bridge callback.
+    const infoPromise = new Promise<InstructionFilesInfo | null>((resolve) => {
+      this._instructionFilesWaiter = { resolve, nonce };
+    });
+
+    // Send the command silently (it is a /prompt, not an LLM turn).
+    try {
+      await this.sendCommand({ type: 'prompt', message: `/${COMMAND}` });
+    } catch (err) {
+      this._outputChannel.appendLine(
+        `[AgentController] _reportInstructionFiles: sendCommand error: ${String(err)}`,
+      );
+      const w = this._instructionFilesWaiter as InstructionFilesWaiter | undefined;
+      if (w?.nonce === nonce) {
+        w.resolve(null);
+        this._instructionFilesWaiter = undefined;
+      }
+    }
+
+    // Guard: if superseded while awaiting sendCommand, bail out.
+    if (nonce !== this._instructionFilesNonce) return;
+
+    // Race the bridge callback against a defensive timeout.
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timeoutHandle = setTimeout(() => resolve(null), TIMEOUT_MS);
+    });
+    const info = await Promise.race([infoPromise, timeoutPromise]);
+
+    // Clear the timeout if the bridge callback won the race.
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+
+    // Guard: if superseded while awaiting the race, bail out.
+    if (nonce !== this._instructionFilesNonce) return;
+
+    // Clean up any still-pending waiter (timeout path).
+    const w2 = this._instructionFilesWaiter as InstructionFilesWaiter | undefined;
+    if (w2?.nonce === nonce) {
+      this._instructionFilesWaiter = undefined;
+      w2.resolve(null); // resolve so the promise doesn't dangle
+      this._outputChannel.appendLine(
+        `[AgentController] _reportInstructionFiles: timed out after ${TIMEOUT_MS}ms — falling back to null`,
+      );
+    }
+
+    this._onInstructionFiles.fire(info);
+    this._provider?.postInstructionFiles(info);
   }
 
   /**
@@ -487,6 +656,8 @@ export class AgentController implements vscode.Disposable {
     this._onSessionsChanged.fire();
     // Refresh commands for the new session (non-blocking).
     void this.getCommands();
+    // Report instruction files for the new session (non-blocking).
+    void this._reportInstructionFiles();
   }
 
   /**
@@ -700,6 +871,10 @@ export class AgentController implements vscode.Disposable {
     this._onSessionsChanged.dispose();
     this._onActiveFolderChanged.dispose();
     this._onModelState.dispose();
+    this._onInstructionFiles.dispose();
+    // Reject any pending instruction-files wait so it doesn't dangle.
+    this._instructionFilesWaiter?.resolve(null);
+    this._instructionFilesWaiter = undefined;
     this._outputChannel.dispose();
   }
 
@@ -725,6 +900,7 @@ export class AgentController implements vscode.Disposable {
     const extraArgs = [
       ...(this._trustArg ? [this._trustArg] : []),
       ...(resumeSessionPath ? ['--session', resumeSessionPath] : []),
+      ...(this._bundledExtensionPath ? ['-e', this._bundledExtensionPath] : []),
     ];
     const transport = new RpcTransport(piStatus.path, cwd, extraArgs);
     transport.outputChannel = this._outputChannel;
@@ -780,6 +956,8 @@ export class AgentController implements vscode.Disposable {
 
     // Populate the model status bar with the freshly-started session's state.
     void this._refreshModelState();
+    // Report resolved instruction files to the webview banner (non-blocking).
+    void this._reportInstructionFiles();
 
     // Install (or replace) the persistent active-folder watcher now that the
     // transport is live. This watches for workspace-folder changes that affect

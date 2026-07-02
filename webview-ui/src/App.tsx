@@ -7,7 +7,7 @@
  *  - rAF-coalesced dispatch of streaming deltas (never re-renders per delta).
  */
 import React, { useEffect, useRef, useCallback, useState } from 'react';
-import type { HostMessage, PiStatus, AttachedImage } from '@shared/messages';
+import type { HostMessage, PiStatus, AttachedImage, InstructionFileEntry, InstructionFilesInfo } from '@shared/messages';
 import { vscode } from './vscodeApi';
 import { useChatStore, normalizeEditToolActions } from './store';
 import type { UiWidget } from './store';
@@ -53,6 +53,8 @@ export default function App() {
   const setMessages = useChatStore((s) => s.setMessages);
   const setModelState = useChatStore((s) => s.setModelState);
   const setChatConfig = useChatStore((s) => s.setChatConfig);
+  const instructionFiles = useChatStore((s) => s.instructionFiles);
+  const setInstructionFiles = useChatStore((s) => s.setInstructionFiles);
 
   // rAF coalescer: buffer incoming agentEvent messages and flush per frame.
   const pendingEvents = useRef<RpcEvent[]>([]);
@@ -163,6 +165,10 @@ export default function App() {
         case 'chatConfig':
           setChatConfig(normalizeEditToolActions(msg.editToolActions));
           break;
+
+        case 'instructionFiles':
+          setInstructionFiles(msg.info);
+          break;
       }
     };
 
@@ -222,7 +228,7 @@ export default function App() {
 
   return (
     <div className="app" ref={containerRef}>
-      <PiStatusBanner status={piStatus} />
+      <PiStatusBanner status={piStatus} instructionFiles={instructionFiles} />
 
       {uiTitle && (
         <div className="ui-title" aria-label="Session title">{uiTitle}</div>
@@ -279,7 +285,33 @@ export default function App() {
   );
 }
 
-function PiStatusBanner({ status }: { status: PiStatus | null }) {
+function PiStatusBanner({
+  status,
+  instructionFiles,
+}: {
+  status: PiStatus | null;
+  instructionFiles: InstructionFilesInfo | null | undefined;
+}) {
+  const [popoverOpen, setPopoverOpen] = React.useState(false);
+  const bannerRef = React.useRef<HTMLDivElement>(null);
+
+  // Close popover on outside click or Escape.
+  React.useEffect(() => {
+    if (!popoverOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPopoverOpen(false); };
+    const onClick = (e: MouseEvent) => {
+      if (bannerRef.current && !bannerRef.current.contains(e.target as Node)) {
+        setPopoverOpen(false);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onClick);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onClick);
+    };
+  }, [popoverOpen]);
+
   if (status === null) {
     return <div className="status-banner status-banner--idle">Locating pi…</div>;
   }
@@ -292,20 +324,111 @@ function PiStatusBanner({ status }: { status: PiStatus | null }) {
       </div>
     );
   }
-  if (status.kind === 'version-warning') {
-    return (
-      <div className="status-banner status-banner--warning">
-        <strong>pi {status.version}</strong> — below tested minimum ({status.minimum}).
-        Consider updating.
-        <div className="status-banner__path" title={status.path}>{status.path}</div>
-      </div>
-    );
-  }
+
+  // For both 'found' and 'version-warning': one-line banner + optional popover.
+  const fileCount = instructionFiles?.files.length;
+  const showCount = instructionFiles !== undefined && instructionFiles !== null && fileCount !== undefined;
+  const countSuffix = showCount && fileCount! > 0 ? ` · ${fileCount} instruction${fileCount === 1 ? '' : 's'}` : '';
+
+  const canOpenPopover = status.kind === 'found' || status.kind === 'version-warning';
+
+  const bannerClass =
+    status.kind === 'version-warning'
+      ? 'status-banner status-banner--warning status-banner--clickable'
+      : 'status-banner status-banner--ok status-banner--clickable';
+
+  const handleClick = () => { if (canOpenPopover) setPopoverOpen((o) => !o); };
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(); }
+  };
+
   return (
-    <div className="status-banner status-banner--ok">
-      <strong>pi {status.version}</strong> ready
-      <div className="status-banner__path" title={status.path}>{status.path}</div>
+    <div className={bannerClass} ref={bannerRef} style={{ position: 'relative' }}>
+      <div
+        className="status-banner__summary"
+        role="button"
+        tabIndex={0}
+        aria-expanded={popoverOpen}
+        aria-label={`pi ${status.version} status${countSuffix}`}
+        onClick={handleClick}
+        onKeyDown={handleKeyDown}
+      >
+        {status.kind === 'version-warning' ? (
+          <span>
+            <strong>pi {status.version}</strong>
+            {' '}— below tested minimum ({status.minimum}). Consider updating.{countSuffix}
+          </span>
+        ) : (
+          <span><strong>pi {status.version}</strong> ready{countSuffix}</span>
+        )}
+        <span className="status-banner__chevron" aria-hidden="true">{popoverOpen ? '▾' : '▸'}</span>
+      </div>
+
+      {popoverOpen && (
+        <InstructionFilesPopover
+          path={status.path}
+          instructionFiles={instructionFiles}
+        />
+      )}
     </div>
+  );
+}
+
+function InstructionFilesPopover({
+  path,
+  instructionFiles,
+}: {
+  path: string;
+  instructionFiles: InstructionFilesInfo | null | undefined;
+}) {
+  return (
+    <div className="instruction-files-popover" role="tooltip">
+      <div className="instruction-files-popover__path" title={path}>{path}</div>
+      <div className="instruction-files-popover__body">
+        {instructionFiles === undefined ? (
+          <p className="instruction-files-popover__unavailable">Loading instruction file info…</p>
+        ) : instructionFiles === null ? (
+          <p className="instruction-files-popover__unavailable">
+            Instruction file info unavailable — check the pi version or extension
+            load (see Sqowe Wingman output channel).
+          </p>
+        ) : instructionFiles.files.length === 0 ? (
+          <p className="instruction-files-popover__unavailable">No instruction files configured.</p>
+        ) : (
+          <ul className="instruction-files-popover__list">
+            {instructionFiles.files.map((entry, i) => (
+              <li key={i} className="instruction-files-popover__entry">
+                <InstructionFileLabel entry={entry} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InstructionFileLabel({ entry }: { entry: InstructionFileEntry }) {
+  // Split on both / and \ so Windows paths work correctly.
+  const baseName = entry.path ? entry.path.split(/[\/\\]/).pop() ?? entry.path : null;
+
+  let annotation = entry.scope ?? '';
+  if (entry.role === 'systemPrompt') annotation += ', replaces default';
+  else if (entry.role === 'appendSystemPrompt') annotation += ', appended';
+
+  if (entry.role === 'customPrompt') {
+    return <span className="instruction-files-popover__label">custom prompt (CLI flag, replaces default)</span>;
+  }
+
+  return (
+    <span className="instruction-files-popover__label">
+      <span className="instruction-files-popover__basename" title={entry.path ?? undefined}>
+        {baseName ?? '(unknown)'}
+      </span>
+      {annotation && (
+        <span className="instruction-files-popover__annotation"> ({annotation})</span>
+      )}
+    </span>
   );
 }
 

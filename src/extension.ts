@@ -8,6 +8,7 @@
  *  - onSessionStats callback links controller → status bar.
  */
 
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { WingmanViewProvider } from './webview/provider';
 import { AgentController } from './agent/controller';
@@ -71,8 +72,18 @@ function readEditToolActions(): EditToolActions {
 
 export function activate(context: vscode.ExtensionContext): void {
   // ── Controller ────────────────────────────────────────────────────────────
-  const controller = new AgentController();
+  const bundledExtensionPath = context.asAbsolutePath('pi-extensions/instruction-report/index.js');
+  // Only pass -e if the bundled extension file actually exists (guards against
+  // packaging errors and development environments where the file may be absent).
+  const bundledExtensionArg = fs.existsSync(bundledExtensionPath) ? bundledExtensionPath : undefined;
+  const controller = new AgentController(bundledExtensionArg);
   _controller = controller;
+  if (!bundledExtensionArg) {
+    // Log to the output channel so users can diagnose "instruction file info unavailable".
+    controller.outputChannel.appendLine(
+      `[extension] bundled pi extension not found at ${bundledExtensionPath} — instruction file visibility unavailable`,
+    );
+  }
   // Push into subscriptions so VS Code cleans it up if deactivate() is not
   // called (e.g., reload, test harness). AgentController.dispose() is
   // idempotent, so the explicit deactivate() call is safe too.
