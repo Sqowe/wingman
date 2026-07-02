@@ -38,6 +38,8 @@ body {
 /* ── Status banner ────────────────────────────────────────────────────────── */
 
 .status-banner {
+  position: relative;
+  z-index: 1;
   flex-shrink: 0;
   padding: 6px 10px;
   border-radius: 4px;
