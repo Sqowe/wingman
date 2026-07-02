@@ -644,6 +644,11 @@ export class AgentController implements vscode.Disposable {
    * existing history, so their transcript stays valid and must not be cleared.
    */
   public onNewSession(opts?: { clearTranscript?: boolean }): void {
+    // A new/forked/cloned session can never legitimately be "mid-turn" — any
+    // busy state carried over from the previous session's abandoned turn
+    // (e.g. one that never reached a clean agent_end) is now stale and would
+    // otherwise permanently block prompts in the new session.
+    this._setStreaming(false);
     this._lastSessionStats = null;
     this._commands = [];
     this._provider?.postCommandsList([]);
@@ -802,6 +807,10 @@ export class AgentController implements vscode.Disposable {
       if (data?.cancelled) {
         return false; // Cancelled, not an error
       }
+
+      // The switched-to session can never legitimately be "mid-turn" — any
+      // busy state carried over from the previous session is now stale.
+      this._setStreaming(false);
 
       // Load the messages from the new session
       await this.loadSessionMessages();
