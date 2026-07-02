@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-07-02
+
+### Fixed
+
+- **Busy flag stuck after session switch** — a turn abandoned without a clean
+  `agent_end` (e.g. superseded by a new or switched-to session) left the
+  streaming flag stuck `true`, permanently rejecting prompts in the new
+  session with a stale "busy" error.
+- **Instruction files popover hidden behind messages** — the popover relied
+  on an incidental hover-triggered `filter` to get its own stacking context,
+  so it rendered behind the message list until the mouse moved over it. The
+  status banner now establishes a stacking context unconditionally.
+
 ## [0.1.5] - 2026-07-02
 
 ### Added
@@ -146,7 +159,8 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/sqowe/sqowe-wingman/compare/v0.1.2...v0.1.3
