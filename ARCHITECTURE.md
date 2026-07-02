@@ -55,6 +55,9 @@ Target layout (see [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) §3 for deta
   `diff/`, `ui-protocol/`, `sessions/`, `trust/`, and `status-bar.ts`.
 - `/webview-ui` — React app (Vite): `components/`, `store/`, `main.tsx`.
 - `/media` — activity-bar icon and static assets.
+- `/pi-extensions` — bundled pi extensions the host always loads via `-e` when spawning pi; one
+  subfolder per extension (e.g. `pi-extensions/instruction-report/`), each with its own `README.md`.
+  Coding rules: [AI_EXTENSION_HOST.md](AI_EXTENSION_HOST.md).
 - `/docs` — design docs; `docs/chats/` holds prior implementation conversations.
 - Root — `package.json` (manifest + `contributes.*`), `esbuild.mjs`, `IMPLEMENTATION_PLAN.md`,
   `CLAUDE.md`, the `AI_*.md` rule files, and licensing / third-party notices.

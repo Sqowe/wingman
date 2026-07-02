@@ -35,6 +35,19 @@ sits; this file is the coding contract. RPC protocol rules live in [AI_PI_RPC.md
   `pi --version` check and **warn without blocking** when below the declared minimum; show a clear
   install prompt when nothing resolves. One pi process per active workspace folder.
 
+## Bundled pi extensions
+
+- Each bundled pi extension lives in its own folder at the repo root: `pi-extensions/<name>/`
+  (sibling to `src/`, `webview-ui/`, `media/` — not nested under any of them). One extension per
+  folder.
+- Every extension folder has its own `README.md` — what it does, the command/status-key names it
+  uses, and why it exists.
+- Plain JavaScript, not TypeScript — no build step; `esbuild.mjs` never touches `pi-extensions/`.
+  `.vscodeignore` does not exclude the folder, so it ships in the VSIX unchanged.
+- Always loaded via `-e <path>` when spawning `pi --mode rpc`, alongside the existing trust/session
+  args — never rely on the user installing it separately. Resolve the runtime path with
+  `context.asAbsolutePath('pi-extensions/<name>/index.js')` and thread it into the transport args.
+
 ## Diff service
 
 - On `tool_execution_end` for the `edit` tool, drive VS Code's native diff from
