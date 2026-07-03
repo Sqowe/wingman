@@ -860,6 +860,10 @@ body {
   font-size: var(--vscode-font-size);
   outline: none;
   line-height: 1.5;
+  /* 3 lines min, 6 lines max — grows automatically via JS auto-resize */
+  min-height: calc(1.5em * 3);
+  max-height: calc(1.5em * 6);
+  overflow-y: auto;
 }
 
 .composer__input::placeholder {

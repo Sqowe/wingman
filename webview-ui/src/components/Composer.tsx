@@ -49,6 +49,14 @@ export function Composer({
   onSend,
 }: Props) {
   const textRef = useRef<HTMLTextAreaElement>(null);
+
+  // Auto-resize the textarea to fit its content, clamped by CSS min/max-height.
+  const autoResize = useCallback(() => {
+    const el = textRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, []);
   const menuRef = useRef<HTMLUListElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -269,7 +277,7 @@ export function Composer({
     }
     const sendImages = isCmd ? undefined : (images.length > 0 ? images : undefined);
     onSend(text, sendImages);
-    if (textRef.current) textRef.current.value = '';
+    if (textRef.current) { textRef.current.value = ''; autoResize(); }
     // Only clear attachments after a regular (non-slash) send.
     if (!isCmd) {
       attachGenRef.current += 1;
@@ -350,7 +358,8 @@ export function Composer({
 
   const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     updateSlashFilter(e.target.value);
-  }, [updateSlashFilter]);
+    autoResize();
+  }, [updateSlashFilter, autoResize]);
 
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = e.clipboardData?.items;
@@ -410,6 +419,7 @@ export function Composer({
     textRef.current.dispatchEvent(new Event('input', { bubbles: true }));
     textRef.current.focus();
     updateSlashFilter(prefillText);
+    autoResize();
     onPrefillConsumed?.();
   }, [prefillText, onPrefillConsumed, updateSlashFilter]);
 
@@ -539,7 +549,6 @@ export function Composer({
                 ? ''
                 : 'Send a prompt… (/ for commands, add args, then Enter)'
             }
-            rows={3}
             disabled={disabled || isStreaming}
             onKeyDown={handleKeyDown}
             onChange={handleChange}
