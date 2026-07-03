@@ -984,6 +984,18 @@ body {
   flex-shrink: 0;
 }
 
+/* Argument hint, e.g. "<PR-URL>" or "[instructions]", from prompt-template
+   argument-hint frontmatter. Sits between the command name and description.
+   The parent .composer__slash-item already has gap:8px so no extra margin
+   is needed on this element — but flex-shrink:0 prevents it from being
+   squeezed away when the description truncates. */
+.composer__slash-hint {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  color: var(--vscode-input-placeholderForeground);
+  flex-shrink: 0;
+}
+
 .composer__slash-desc {
   color: var(--vscode-descriptionForeground);
   font-size: 11px;

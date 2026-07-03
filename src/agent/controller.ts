@@ -471,7 +471,7 @@ export class AgentController implements vscode.Disposable {
       const raw = Array.isArray(data?.commands) ? data!.commands : [];
       // Validate each entry — skip malformed ones defensively.
       const valid = raw.filter(
-        (c): c is { name: string; description?: unknown } =>
+        (c): c is { name: string; description?: unknown; 'argument-hint'?: unknown } =>
           !!c && typeof c === 'object' && typeof (c as Record<string, unknown>)['name'] === 'string',
       );
       // Cache raw (unfiltered) normalized names so _reportInstructionFiles() can
@@ -503,6 +503,10 @@ export class AgentController implements vscode.Disposable {
           // Normalise: ensure every command name starts with '/'
           name: c.name.startsWith('/') ? c.name : `/${c.name}`,
           description: typeof c.description === 'string' ? c.description : '',
+          // argument-hint is an optional frontmatter field in prompt templates.
+          ...(typeof c['argument-hint'] === 'string' && c['argument-hint'].length > 0
+            ? { argumentHint: c['argument-hint'] }
+            : {}),
         }));
       if (filtered.length > 0) {
         this._outputChannel.appendLine(

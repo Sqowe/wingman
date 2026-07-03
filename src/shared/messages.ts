@@ -21,6 +21,13 @@ import type { AllowedImageMimeType } from './limits';
 export interface PiCommand {
   name: string;
   description: string;
+  /**
+   * Optional hint for expected arguments, sourced from `argument-hint` frontmatter in prompt
+   * templates. Rendered in the slash menu to tell the user what to type after the command name.
+   * Uses `<angle brackets>` for required args and `[square brackets]` for optional ones,
+   * e.g. `"<PR-URL>"` or `"[instructions]"`. Not present for skills or extension commands.
+   */
+  argumentHint?: string;
   /** True for built-in TUI commands that are inert over RPC (not shown in the slash menu). */
   builtIn?: boolean;
 }

@@ -5,16 +5,21 @@
  * - Enter sends, Shift+Enter inserts newline.
  * - When isStreaming is true, shows an Abort button instead of Send.
  * - Typing `/` (or `/prefix`) opens an autocomplete dropdown from the
- *   commands list; Enter or click injects the command and sends it.
+ *   commands list. Selecting a command (Enter, Tab, or click) inserts
+ *   `/name ` into the input and parks the cursor after it — it does NOT
+ *   send immediately. Type any arguments or free-text instructions, then
+ *   press Enter or Send to execute.
  * - Disabled when pi is not found.
  * - Image attachment is gated on `supportsImages`; when the active model
  *   does not accept images the ＋ button is disabled and pasted/dropped
- *   images are ignored with an inline note.
+ *   images are ignored with an inline note. Images are always stripped
+ *   when sending a slash command (text starting with `/`).
  */
 import React, { useRef, useState, useCallback, useEffect, useReducer } from 'react';
 import type { PiStatus, PiCommand, AttachedImage } from '@shared/messages';
 import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_PROMPT, MAX_TOTAL_IMAGE_BYTES, ALLOWED_IMAGE_MIME_TYPES } from '@shared/limits';
 import { vscode } from '../vscodeApi';
+import { slashFilterFromValue, filterCommands, buildInsertedText, isSlashCommand } from '../lib/slash-commands';
 
 interface Props {
   isStreaming: boolean;
@@ -113,19 +118,18 @@ export function Composer({
   const [menuIndex, setMenuIndex] = useState(0);
 
   // Filtered command list derived from the current input prefix.
-  const filteredCommands: PiCommand[] = slashFilter === null
-    ? []
-    : commands.filter((c) =>
-        c.name.toLowerCase().startsWith(slashFilter.toLowerCase()),
-      );
+  const filteredCommands: PiCommand[] = filterCommands(commands, slashFilter);
 
   const isMenuOpen = filteredCommands.length > 0;
 
   // Recompute slash filter from textarea value.
+  // Only open the menu when the entire input is a bare slash-prefix (no trailing
+  // space or argument text yet). Once the user selects a command and starts
+  // typing arguments, the input is e.g. "/name arg" and the menu stays closed.
   const updateSlashFilter = useCallback((value: string) => {
-    const match = /^(\/\S*)$/.exec(value);
-    if (match) {
-      setSlashFilter(match[1]);
+    const next = slashFilterFromValue(value);
+    if (next !== null) {
+      setSlashFilter(next);
       setMenuIndex(0);
     } else {
       setSlashFilter(null);
@@ -251,27 +255,59 @@ export function Composer({
   const handleSend = useCallback(() => {
     const text = textRef.current?.value.trim() ?? '';
     if ((!text && images.length === 0) || disabled) return;
-    onSend(text, images.length > 0 ? images : undefined);
+    // Known slash commands never carry image attachments — the command text is
+    // expanded by pi before the LLM sees it, and images would be misleading.
+    // isSlashCommand() returns true only for commands present in the known
+    // commands list (non-builtIn); unknown slash tokens and absolute paths
+    // are not treated as commands and images are sent normally with them.
+    // If images are currently attached and a slash command is being sent,
+    // show a brief note but keep the attachments so the user can send them
+    // with their next regular prompt (no silent data loss).
+    const isCmd = isSlashCommand(text, commands);
+    if (isCmd && images.length > 0) {
+      showImageNote('Images are not sent with slash commands — attachments kept for your next prompt.');
+    }
+    const sendImages = isCmd ? undefined : (images.length > 0 ? images : undefined);
+    onSend(text, sendImages);
     if (textRef.current) textRef.current.value = '';
-    attachGenRef.current += 1;
-    attachDispatch({ type: 'clear' });
+    // Only clear attachments after a regular (non-slash) send.
+    if (!isCmd) {
+      attachGenRef.current += 1;
+      attachDispatch({ type: 'clear' });
+    }
     setSlashFilter(null);
-  }, [disabled, images, onSend]);
+  }, [commands, disabled, images, onSend, showImageNote]);
 
   const handleAbort = useCallback(() => {
     vscode.postMessage({ type: 'abortTurn' });
   }, []);
 
-  /** Insert the chosen command name into the textarea and send. */
+  /**
+   * Insert the chosen command name into the textarea and leave the cursor
+   * after it so the user can append arguments or free-text instructions
+   * before pressing Enter/Send.
+   *
+   * Skills accept any trailing text as `User: <args>`.
+   * Prompt templates substitute positional args ($1, $@, $ARGUMENTS).
+   * In both cases the user can write a comment here; for templates it reaches
+   * the LLM only when the template body references $@ / $ARGUMENTS.
+   */
   const selectCommand = useCallback((cmd: PiCommand) => {
     if (!textRef.current) return;
-    textRef.current.value = cmd.name;
+    // Insert "/name " with a trailing space so the cursor lands ready to type.
+    const inserted = buildInsertedText(cmd);
+    textRef.current.value = inserted;
     textRef.current.focus();
+    // Place cursor at the end.
+    textRef.current.setSelectionRange(inserted.length, inserted.length);
+    // Close the menu — the slash prefix is now part of a longer string, so
+    // updateSlashFilter will keep it closed as the user types more.
     setSlashFilter(null);
-    // Slash commands are sent without images.
-    onSend(cmd.name);
-    textRef.current.value = '';
-  }, [onSend]);
+    // Empty deps are intentional: this callback only touches the uncontrolled
+    // textarea ref and stable React state setters (setSlashFilter), plus
+    // module-level imports (buildInsertedText). None of these change identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (isMenuOpen) {
@@ -299,11 +335,9 @@ export function Composer({
       if (e.key === 'Tab') {
         e.preventDefault();
         const chosen = filteredCommands[menuIndex];
-        if (chosen && textRef.current) {
-          textRef.current.value = chosen.name;
-          setSlashFilter(chosen.name);
-          setMenuIndex(0);
-        }
+        // Use selectCommand so Tab has the same insert-and-stay behavior as
+        // Enter: inserts "/name " with trailing space, parks cursor, closes menu.
+        if (chosen) selectCommand(chosen);
         return;
       }
     }
@@ -467,6 +501,11 @@ export function Composer({
               onMouseEnter={() => setMenuIndex(i)}
             >
               <span className="composer__slash-name">{cmd.name}</span>
+              {cmd.argumentHint && (
+                <span className="composer__slash-hint" aria-label={`Arguments: ${cmd.argumentHint}`}>
+                  {cmd.argumentHint}
+                </span>
+              )}
               {cmd.description && (
                 <span className="composer__slash-desc">{cmd.description}</span>
               )}
@@ -498,7 +537,7 @@ export function Composer({
             placeholder={
               isStreaming
                 ? ''
-                : 'Send a prompt… (/ for commands, Enter to send)'
+                : 'Send a prompt… (/ for commands, add args, then Enter)'
             }
             rows={3}
             disabled={disabled || isStreaming}

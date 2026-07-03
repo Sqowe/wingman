@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Slash command / skill selection no longer fires immediately** — picking an
+  entry from the `/` autocomplete menu now inserts `/name ` into the composer
+  and parks the cursor after it, so you can type arguments or free-text
+  instructions for the LLM before pressing Enter/Send. The menu stays closed
+  once a space or argument text follows the command name, preventing it from
+  reopening while you type.
+
+### Added
+
+- **Argument hints in the slash menu** — prompt templates that declare an
+  `argument-hint` in their frontmatter (e.g. `<PR-URL>` or `[instructions]`)
+  now show that hint between the command name and description in the autocomplete
+  dropdown. The hint is surfaced from pi's `get_commands` RPC response and passed
+  through the host→webview message contract (`PiCommand.argumentHint`). Skills
+  and extension commands (which do not use frontmatter argument-hints) are
+  unaffected.
+
 ## [0.1.6] - 2026-07-02
 
 ### Fixed
