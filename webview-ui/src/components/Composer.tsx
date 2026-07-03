@@ -51,10 +51,12 @@ export function Composer({
   const textRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-resize the textarea to fit its content, clamped by CSS min/max-height.
+  // Reset to '' (not 'auto') so the CSS min-height stays as the floor, then
+  // only set an explicit height when scrollHeight exceeds that floor.
   const autoResize = useCallback(() => {
     const el = textRef.current;
     if (!el) return;
-    el.style.height = 'auto';
+    el.style.height = '';
     el.style.height = `${el.scrollHeight}px`;
   }, []);
   const menuRef = useRef<HTMLUListElement>(null);
