@@ -49,3 +49,5 @@ tmp/
 
 #semantic-index
 .index/
+
+.firecrawl-*
