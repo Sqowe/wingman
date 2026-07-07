@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-07-07
+
+### Added
+
+- **Context-window indicator in the session-stats status bar** — the status bar
+  item now shows your current context-window usage as
+  `tokens used / window · percent · message count` (e.g.
+  `12.4k tok / 200k tok · 6 · 85 msg`). The denominator updates immediately
+  on model switch, and pi's documented post-compaction transient renders as
+  a `— / window · — · messages` placeholder so you still see the model
+  window size while waiting for the next assistant response. Hover for a
+  two-line tooltip (`Context: ... · Messages: N`); click to open the Show
+  Stats popup. Powered by `pi.get_session_stats().contextUsage` — see the
+  design note in [`docs/design/context-window-indicator.md`](docs/design/context-window-indicator.md).
+
+### Changed
+
+- **Session-stats status bar dropped the `cost` slot** — cost is rarely useful
+  in practice and competed for space with the new context-window reading.
+  Cost is also dropped from the Show Stats popup for the same reason.
+
+### Fixed
+
+- **Status-bar tokens / cost always rendered as `0 tok` / `$0.0000`** — the
+  controller's `_fetchSessionStats` parser read `data.totalTokens` and
+  `data.totalCost`, but pi's `get_session_stats` response nests totals under
+  `data.tokens.total` and exposes cost at top-level `data.cost`. The status
+  bar now reports the actual values. (Existing unit tests passed only
+  because their mock fixtures mirrored the wrong field names; both are now
+  corrected to use pi's real payload shape.)
+- **`formatTokens(null)` / `formatCost(null)` rendered as `0 tok` / `$0.0000`**
+  — `Number(null) === 0` coerced the missing values into `0`. They now
+  render as the em-dash placeholder `—`.
+- **`formatTokens(200000)` rendered as `200.0k tok`** — round thousands now
+  drop the trailing `.0` (`200k tok`), matching conventional k / M notation.
+
 ## [0.1.7] - 2026-07-03
 
 ### Changed
