@@ -198,7 +198,8 @@ describe('AgentController stats normalization', () => {
       if (cmd.type === 'get_session_stats') {
         return {
           type: 'response', success: true, command: 'get_session_stats',
-          data: { totalTokens: 500, totalCost: 0.0025, totalMessages: 4 },
+          // pi's actual response shape: totals live under `tokens.total`, cost is top-level `cost`.
+          data: { tokens: { total: 500 }, cost: 0.0025, totalMessages: 4 },
         };
       }
       return { type: 'response', success: true, command: cmd.type };
@@ -211,12 +212,14 @@ describe('AgentController stats normalization', () => {
     expect(stats.totalMessages).toBe(4);
   });
 
-  it('normalizes snake_case stats fields correctly', async () => {
+  it('normalizes snake_case totalMessages fallback', async () => {
     const { ctrl, provider } = makeControllerForStats((cmd) => {
       if (cmd.type === 'get_session_stats') {
         return {
           type: 'response', success: true, command: 'get_session_stats',
-          data: { total_tokens: 1000, total_cost: 0.005, total_messages: 8 },
+          // Defensive parity: tolerate snake_case `total_messages` even though
+          // the upstream pi RPC uses camelCase `totalMessages`.
+          data: { tokens: { total: 1000 }, cost: 0.005, total_messages: 8 },
         };
       }
       return { type: 'response', success: true, command: cmd.type };
@@ -235,7 +238,7 @@ describe('AgentController stats normalization', () => {
         return {
           type: 'response', success: true, command: 'get_session_stats',
           // null, undefined, and '' must all remain null — not become 0.
-          data: { totalTokens: null, totalCost: undefined, totalMessages: '' },
+          data: { tokens: { total: null }, cost: undefined, totalMessages: '' },
         };
       }
       return { type: 'response', success: true, command: cmd.type };
@@ -253,7 +256,7 @@ describe('AgentController stats normalization', () => {
       if (cmd.type === 'get_session_stats') {
         return {
           type: 'response', success: true, command: 'get_session_stats',
-          data: { totalTokens: 'N/A', totalCost: null, totalMessages: undefined },
+          data: { tokens: { total: 'N/A' }, cost: null, totalMessages: undefined },
         };
       }
       return { type: 'response', success: true, command: cmd.type };
@@ -276,6 +279,121 @@ describe('AgentController stats normalization', () => {
     ctrl._trackStreaming({ type: 'agent_end' });
     await flush();
     expect(provider.postSessionStats).not.toHaveBeenCalled();
+  });
+
+  // ── contextUsage parsing (see docs/design/context-window-indicator.md §7.1) ──
+
+  it('parses contextUsage (camelCase) when present', async () => {
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type === 'get_session_stats') {
+        return {
+          type: 'response', success: true, command: 'get_session_stats',
+          data: {
+            tokens: { total: 500 },
+            cost: 0.001,
+            totalMessages: 4,
+            contextUsage: { tokens: 60000, contextWindow: 200000, percent: 30 },
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    ctrl._trackStreaming({ type: 'agent_end' });
+    await flush();
+    const stats: SessionStats = provider.postSessionStats.mock.calls[0][0];
+    expect(stats.contextUsage).toEqual({ tokens: 60000, contextWindow: 200000, percent: 30 });
+  });
+
+  it('leaves contextUsage undefined when absent (no model / no context window)', async () => {
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type === 'get_session_stats') {
+        return {
+          type: 'response', success: true, command: 'get_session_stats',
+          data: { tokens: { total: 100 }, cost: 0.001, totalMessages: 2 },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    ctrl._trackStreaming({ type: 'agent_end' });
+    await flush();
+    const stats: SessionStats = provider.postSessionStats.mock.calls[0][0];
+    expect(stats.contextUsage).toBeUndefined();
+  });
+
+  it('preserves contextWindow through the post-compaction transient (tokens & percent null)', async () => {
+    // Documented in rpc.md: contextUsage.tokens and .percent are null immediately
+    // after compaction; .contextWindow (the denominator) survives.
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type === 'get_session_stats') {
+        return {
+          type: 'response', success: true, command: 'get_session_stats',
+          data: {
+            tokens: { total: 50000 },
+            cost: 0.05,
+            totalMessages: 20,
+            contextUsage: { tokens: null, contextWindow: 200000, percent: null },
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    ctrl._trackStreaming({ type: 'agent_end' });
+    await flush();
+    const stats: SessionStats = provider.postSessionStats.mock.calls[0][0];
+    expect(stats.contextUsage).toEqual({ tokens: null, contextWindow: 200000, percent: null });
+  });
+
+  it('tolerates snake_case sub-field names in contextUsage', async () => {
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type === 'get_session_stats') {
+        return {
+          type: 'response', success: true, command: 'get_session_stats',
+          data: {
+            tokens: { total: 500 },
+            cost: 0.001,
+            totalMessages: 4,
+            contextUsage: { tokens_used: 5000, context_window: 200000, percent_used: 2 },
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    ctrl._trackStreaming({ type: 'agent_end' });
+    await flush();
+    const stats: SessionStats = provider.postSessionStats.mock.calls[0][0];
+    expect(stats.contextUsage).toEqual({ tokens: 5000, contextWindow: 200000, percent: 2 });
+  });
+
+  it('triggers _fetchSessionStats on compaction_end (clears the post-compaction transient)', async () => {
+    const sendCalls: string[] = [];
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      sendCalls.push(cmd.type as string);
+      if (cmd.type === 'get_session_stats') {
+        return {
+          type: 'response', success: true, command: 'get_session_stats',
+          data: {
+            tokens: { total: 100 },
+            cost: 0,
+            totalMessages: 5,
+            contextUsage: { tokens: 1000, contextWindow: 200000, percent: 1 },
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    // compaction_end must trigger a stats fetch without waiting for agent_end.
+    ctrl._trackStreaming({
+      type: 'compaction_end',
+      reason: 'manual',
+      result: null,
+      aborted: false,
+      willRetry: false,
+    });
+    await flush();
+    expect(sendCalls).toContain('get_session_stats');
+    expect(provider.postSessionStats).toHaveBeenCalledTimes(1);
+    const stats: SessionStats = provider.postSessionStats.mock.calls[0][0];
+    expect(stats.contextUsage?.tokens).toBe(1000);
   });
 });
 

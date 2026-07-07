@@ -38,6 +38,11 @@ export const window = {
     appendLine: (_line: string) => {},
     dispose: () => {},
   }),
+  createStatusBarItem: (
+    _id: string,
+    _alignment?: number,
+    _priority?: number,
+  ): StatusBarItem => new StatusBarItem(),
   showErrorMessage: (_msg: string, ..._args: string[]) => Promise.resolve(undefined),
   showWarningMessage: (_msg: string, ..._args: string[]) => Promise.resolve(undefined),
   showInformationMessage: (_msg: string, ..._args: string[]) => Promise.resolve(undefined),
@@ -101,3 +106,29 @@ export const commands = {
   // spy on this function get consistent, predictable behaviour.
   executeCommand: (_id: string, ..._args: unknown[]): Promise<undefined> => Promise.resolve(undefined),
 };
+
+/** Minimal MarkdownString — records the Markdown body so tests can inspect it. */
+export class MarkdownString {
+  public readonly value: string;
+  public isTrusted = false;
+  public supportThemeIcons = false;
+  constructor(value: string) { this.value = value; }
+}
+
+/** Minimal StatusBarItem — exposes the assigned text/tooltip/command for inspection. */
+export class StatusBarItem {
+  public text = '';
+  public tooltip: string | MarkdownString = '';
+  public command: string | undefined;
+  public name: string | undefined;
+  public alignment: number = 0;
+  public priority: number = 0;
+  public show(): void { /* no-op */ }
+  public hide(): void { /* no-op */ }
+  public dispose(): void { /* no-op */ }
+}
+
+export const StatusBarAlignment = {
+  Left: 0,
+  Right: 1,
+} as const;

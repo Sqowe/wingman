@@ -1,16 +1,18 @@
 /**
  * WingmanStatusBar — always-visible status bar item showing session stats.
  *
- * Displays: tokens used · estimated cost · total messages
+ * Displays: context-window fraction + percent · total messages
  * Updated after every agent turn via AgentController.
+ *
+ * Model / thinking level intentionally NOT shown here — they live on the
+ * adjacent ModelStatusBar (priority 91, see below) so duplication is avoided.
  */
 
 import * as vscode from 'vscode';
 import type { SessionStats, ModelState } from './shared/messages';
 import {
-  formatTokens,
-  formatCost,
-  formatMessages,
+  formatContextText,
+  formatContextTooltipBody,
   formatModelStatus,
 } from './shared/stats-format';
 
@@ -33,20 +35,15 @@ export class WingmanStatusBar implements vscode.Disposable {
 
   /**
    * Update the status bar with fresh session statistics.
-   * All fields are optional — show a dash when pi does not report them.
+   * The 1-line text always has three slots (context / cost-fallback / messages)
+   * per formatContextText; the tooltip shows the same context info without
+   * duplicating the model (which lives on the adjacent Model status bar item).
    */
   public update(stats: SessionStats): void {
-    const tokens = formatTokens(stats.totalTokens);
-    const cost = formatCost(stats.totalCost);
-    const messages = formatMessages(stats.totalMessages);
-
-    this._item.text = `$(hubot) ${tokens} · ${cost} · ${messages} msg`;
+    this._item.text = `$(hubot) ${formatContextText(stats)}`;
     this._item.tooltip = new vscode.MarkdownString(
       `**Sqowe Wingman**\n\n` +
-      `| | |\n|---|---|\n` +
-      `| Tokens | ${tokens} |\n` +
-      `| Cost | ${cost} |\n` +
-      `| Messages | ${messages} |`,
+      formatContextTooltipBody(stats),
     );
   }
 

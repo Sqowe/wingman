@@ -43,6 +43,32 @@ const MODEL_AFFECTING_COMMANDS = new Set<string>([
   'clone',
 ]);
 
+/**
+ * Coerce the raw `data.contextUsage` sub-object from pi's `get_session_stats` response into
+ * the typed `SessionStats['contextUsage']` shape. Returns `undefined` when the field is
+ * absent (no model / no context window), preserving the documented transient state where
+ * `tokens` / `percent` may be `null` (post-compaction). Accepts both camelCase and
+ * snake_case sub-field names as a defensive parity with the rest of the parser.
+ *
+ * Exported for unit testing — the controller-side integration is exercised via
+ * `_fetchSessionStats` in the existing controller.test.ts stats block.
+ */
+export function parseContextUsage(
+  raw: unknown,
+  toFiniteOrNull: (v: unknown) => number | null,
+): SessionStats['contextUsage'] {
+  if (raw === null || raw === undefined) return undefined;
+  if (typeof raw !== 'object') return undefined;
+  const obj = raw as Record<string, unknown>;
+  // Tolerate the entire object being null (some RPC wrappers return
+  // `contextUsage: null` instead of omitting the key entirely).
+  return {
+    tokens:        toFiniteOrNull(obj['tokens']        ?? obj['tokens_used']),
+    contextWindow: toFiniteOrNull(obj['contextWindow'] ?? obj['context_window']),
+    percent:       toFiniteOrNull(obj['percent']       ?? obj['percent_used']),
+  };
+}
+
 export class AgentController implements vscode.Disposable {
   private _transport: AgentTransport | undefined;
   private _eventDisposable: vscode.Disposable | undefined;
@@ -437,6 +463,12 @@ export class AgentController implements vscode.Disposable {
       };
       this._lastModelState = state;
       this._onModelState.fire(state);
+      // The active model's contextWindow is part of contextUsage (not exposed
+      // on get_state directly). Re-fetch session stats so the status-bar
+      // denominator updates to the new model without waiting for the next
+      // agent_end. Sequence-guard inside _fetchSessionStats keeps this safe
+      // against concurrent fetches.
+      void this._fetchSessionStats();
     } catch {
       // Best-effort — leave the last known state in place.
     }
@@ -1050,6 +1082,12 @@ export class AgentController implements vscode.Disposable {
       this._setStreaming(false);
       // Refresh stats after every completed turn (non-blocking).
       void this._fetchSessionStats();
+    } else if (event.type === 'compaction_end') {
+      // Compaction leaves contextUsage.tokens/percent as null until the next
+      // post-compaction assistant response. Re-fetch stats immediately so the
+      // status bar clears the "compacting…" placeholder as soon as possible
+      // rather than waiting for the next agent_end.
+      void this._fetchSessionStats();
     }
   }
 
@@ -1074,9 +1112,12 @@ export class AgentController implements vscode.Disposable {
         return Number.isFinite(n) ? n : null;
       };
       const stats: SessionStats = {
-        totalTokens:   toFiniteOrNull(data['totalTokens']   ?? data['total_tokens']),
-        totalCost:     toFiniteOrNull(data['totalCost']     ?? data['total_cost']),
+        // FIX: pi returns totals nested under `tokens`, not as top-level `totalTokens`.
+        totalTokens:   toFiniteOrNull((data['tokens'] as Record<string, unknown> | undefined)?.['total']),
+        // FIX: pi returns cost at top-level `cost`, not `totalCost`.
+        totalCost:     toFiniteOrNull(data['cost']),
         totalMessages: toFiniteOrNull(data['totalMessages'] ?? data['total_messages']),
+        contextUsage:  parseContextUsage(data['contextUsage'], toFiniteOrNull),
       };
       this._lastSessionStats = stats;
       this._provider?.postSessionStats(stats);

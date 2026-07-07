@@ -32,11 +32,27 @@ export interface PiCommand {
   builtIn?: boolean;
 }
 
-/** Session statistics returned by pi's get_session_stats RPC call. */
+/** Session statistics returned by pi's get_session_stats RPC call.
+ *
+ * `contextUsage` is the per-turn, current-context-window estimate that pi itself uses for
+ * compaction and footer display (see rpc.md §"get_session_stats"). It is **undefined** when
+ * pi reports no model / no context window, and the inner `tokens`/`percent` are **null**
+ * during the documented post-compaction transient until the next post-compaction assistant
+ * response lands. `contextWindow` (the denominator) is unaffected by the transient and can
+ * be used to render a partial "— / 200k" placeholder. */
 export interface SessionStats {
   totalTokens: number | null;
   totalCost: number | null;
   totalMessages: number | null;
+  contextUsage?: {
+    /** Current tokens used in the active model's context window. `null` during the
+     *  post-compaction transient; `undefined`-parent when pi reports no context. */
+    tokens: number | null;
+    /** The active model's context-window size (denominator). */
+    contextWindow: number | null;
+    /** Percentage 0-100. `null` during the post-compaction transient. */
+    percent: number | null;
+  };
 }
 
 /** The session's active model + thinking level, from pi's get_state. */

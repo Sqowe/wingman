@@ -13,8 +13,9 @@ import { newSession } from './new-session';
 import { forkSession } from './fork';
 import { cloneSession } from './clone';
 import { exportHtml } from './export-html';
+import { showStats } from './show-stats';
 import { setThinkingLevel, cycleThinkingLevel } from './thinking-level';
-import { formatTokens, formatCost, formatMessages } from '../shared/stats-format';
+// showStats uses the format helpers internally — no shared imports needed here.
 
 export function registerCommands(
   context: vscode.ExtensionContext,
@@ -58,18 +59,6 @@ export function registerCommands(
     ),
 
     // Show a stats summary in an information message (status bar item's command).
-    vscode.commands.registerCommand('sqoweWingman.showStats', () => {
-      const stats = controller.lastSessionStats;
-      if (!stats) {
-        void vscode.window.showInformationMessage('Sqowe Wingman: no session stats yet.');
-        return;
-      }
-      const tokens = formatTokens(stats.totalTokens);
-      const cost = formatCost(stats.totalCost);
-      const messages = formatMessages(stats.totalMessages);
-      void vscode.window.showInformationMessage(
-        `Sqowe Wingman — Tokens: ${tokens}  Cost: ${cost}  Messages: ${messages}`,
-      );
-    }),
+    vscode.commands.registerCommand('sqoweWingman.showStats', () => showStats(controller)),
   );
 }
