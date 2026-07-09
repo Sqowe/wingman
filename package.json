@@ -258,22 +258,10 @@
           "markdownDescription": "Path to the `pi` executable (a leading `~` is expanded to your home directory). Leave empty to auto-detect from `PATH` and common install locations (npm global, Homebrew, Volta).",
           "scope": "window"
         },
-        "sqoweWingman.editToolActions": {
-          "type": "string",
-          "enum": [
-            "both",
-            "diffOnly",
-            "applyOnly",
-            "none"
-          ],
-          "enumDescriptions": [
-            "Show both View Diff and Apply buttons.",
-            "Show only View Diff; hide Apply.",
-            "Show only Apply; hide View Diff.",
-            "Hide both action buttons."
-          ],
-          "default": "both",
-          "markdownDescription": "Action buttons shown on completed `edit` tool cards. `both` = View Diff + Apply; `diffOnly` = hide Apply; `applyOnly` = hide View Diff; `none` = hide both. Changing this updates the running chat immediately.",
+        "sqoweWingman.showViewDiffButton": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Show the **View Diff** button on completed `edit` tool cards. The diff editor is a read-only before↔after preview — pi has already written the change to disk, so there is no separate Apply step. Changing this updates the running chat immediately.",
           "scope": "window"
         }
       }

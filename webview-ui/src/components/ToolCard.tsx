@@ -4,8 +4,8 @@
  * - Collapsed by default when complete; expanded while running.
  * - Copy button copies the clean output source string.
  * - For completed `edit` tool cards with a patch: "View Diff" opens VS Code's
- *   diff editor (read-only preview); "Apply" writes the change as a real
- *   WorkspaceEdit so it appears in Source Control.
+ *   diff editor (read-only before↔after preview). pi has already written the
+ *   change to disk, so there is no Apply button.
  */
 import React from 'react';
 import type { ToolRunItem } from '../store';
@@ -57,7 +57,7 @@ function extractPatch(details: Record<string, unknown> | null): string | null {
 
 export function ToolCard({ item }: Props) {
   const setDiffError = useChatStore((s) => s.setDiffError);
-  const editToolActions = useChatStore((s) => s.editToolActions);
+  const showViewDiffButton = useChatStore((s) => s.showViewDiffButton);
   // `undefined` = follow the default (expanded while running, collapsed once
   // done); a boolean = the user's explicit toggle, which then sticks. Deriving
   // the displayed state this way auto-collapses a card the instant it completes
@@ -76,11 +76,6 @@ export function ToolCard({ item }: Props) {
   const label = toolLabel(item.toolName);
   const patch = item.isComplete && item.toolName === 'edit' ? extractPatch(item.details) : null;
 
-  // Config-driven visibility for the edit-card action buttons
-  // (`sqoweWingman.editToolActions` → chatConfig message).
-  const showDiff  = editToolActions === 'both' || editToolActions === 'diffOnly';
-  const showApply = editToolActions === 'both' || editToolActions === 'applyOnly';
-
   const statusClass = item.isComplete
     ? item.isError
       ? 'tool-card--error'
@@ -98,14 +93,6 @@ export function ToolCard({ item }: Props) {
     // Clear any previous diff error before retrying.
     if (item.diffError) setDiffError(item.toolCallId, '');
     vscode.postMessage({ type: 'openDiff', patch, toolCallId: item.toolCallId });
-  };
-
-  const handleApply = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!patch) return;
-    // Clear any previous diff error before retrying.
-    if (item.diffError) setDiffError(item.toolCallId, '');
-    vscode.postMessage({ type: 'applyEdit', patch, toolCallId: item.toolCallId });
   };
 
   return (
@@ -163,33 +150,21 @@ export function ToolCard({ item }: Props) {
         </pre>
       )}
 
-      {/* ── Diff actions (edit tool only) ── */}
-      {patch !== null && (showDiff || showApply) && (
+      {/* ── Diff action (edit tool only) ── */}
+      {patch !== null && showViewDiffButton && (
         <div className="tool-card__diff-actions">
-          {showDiff && (
-            <button
-              type="button"
-              className="tool-card__diff-btn"
-              onClick={handleViewDiff}
-              title="Open VS Code diff editor (read-only preview)"
-            >
-              View Diff
-            </button>
-          )}
-          {showApply && (
-            <button
-              type="button"
-              className="tool-card__diff-btn tool-card__diff-btn--apply"
-              onClick={handleApply}
-              title="Apply this edit to the file (appears in Source Control)"
-            >
-              Apply
-            </button>
-          )}
+          <button
+            type="button"
+            className="tool-card__diff-btn"
+            onClick={handleViewDiff}
+            title="Open VS Code diff editor (read-only preview)"
+          >
+            View Diff
+          </button>
         </div>
       )}
 
-      {/* ── Diff error (inline feedback when View Diff / Apply failed) ──
+      {/* ── Diff error (inline feedback when View Diff failed) ──
           Truthy guard (not `!== null`) so a cleared error ('') hides the
           banner instead of leaving a lone ⚠️ icon. */}
       {item.diffError && (

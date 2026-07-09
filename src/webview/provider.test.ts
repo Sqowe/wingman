@@ -499,8 +499,8 @@ describe('WingmanViewProvider — postModelState', () => {
 describe('WingmanViewProvider — postChatConfig', () => {
   it('posts a chatConfig message to the webview when ready', () => {
     const { provider, postMessage } = resolveProvider();
-    provider.postChatConfig('diffOnly');
-    expect(postMessage).toHaveBeenCalledWith({ type: 'chatConfig', editToolActions: 'diffOnly' });
+    provider.postChatConfig(false);
+    expect(postMessage).toHaveBeenCalledWith({ type: 'chatConfig', showViewDiffButton: false });
   });
 
   it('does not post before the webview signals ready, then replays on ready', async () => {
@@ -513,12 +513,12 @@ describe('WingmanViewProvider — postChatConfig', () => {
       { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
     );
     // Cache chat config before webview is ready.
-    p2.postChatConfig('none');
+    p2.postChatConfig(false);
     expect(pm2).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'chatConfig' }));
     // Signal ready — should replay.
     sm2({ type: 'ready' });
     await flushMicrotasks();
-    expect(pm2).toHaveBeenCalledWith({ type: 'chatConfig', editToolActions: 'none' });
+    expect(pm2).toHaveBeenCalledWith({ type: 'chatConfig', showViewDiffButton: false });
   });
 
   it('re-posts chatConfig when pushed again while the webview is already ready', () => {
@@ -526,11 +526,11 @@ describe('WingmanViewProvider — postChatConfig', () => {
     // webview is up, a setting change calls postChatConfig again and the new
     // value must be delivered immediately (not buffered or dropped).
     const { provider, postMessage } = resolveProvider();
-    provider.postChatConfig('diffOnly');
-    expect(postMessage).toHaveBeenCalledWith({ type: 'chatConfig', editToolActions: 'diffOnly' });
+    provider.postChatConfig(true);
+    expect(postMessage).toHaveBeenCalledWith({ type: 'chatConfig', showViewDiffButton: true });
     // Simulate the user changing the setting while running.
-    provider.postChatConfig('none');
-    expect(postMessage).toHaveBeenLastCalledWith({ type: 'chatConfig', editToolActions: 'none' });
+    provider.postChatConfig(false);
+    expect(postMessage).toHaveBeenLastCalledWith({ type: 'chatConfig', showViewDiffButton: false });
   });
 });
 

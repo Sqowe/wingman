@@ -9,7 +9,7 @@
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 import type { HostMessage, PiStatus, AttachedImage, InstructionFileEntry, InstructionFilesInfo } from '@shared/messages';
 import { vscode } from './vscodeApi';
-import { useChatStore, normalizeEditToolActions } from './store';
+import { useChatStore, normalizeShowViewDiffButton } from './store';
 import type { UiWidget } from './store';
 import { MessageList } from './components/MessageList';
 import { Composer } from './components/Composer';
@@ -163,7 +163,7 @@ export default function App() {
           break;
 
         case 'chatConfig':
-          setChatConfig(normalizeEditToolActions(msg.editToolActions));
+          setChatConfig(normalizeShowViewDiffButton(msg.showViewDiffButton));
           break;
 
         case 'instructionFiles':

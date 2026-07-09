@@ -22,9 +22,9 @@ separate tool with its own settings.
   with safe link handling.
 - **Tool cards** — a collapsible card for every tool call, with live output and copy buttons
   that yield clean source text (not a screen scrape).
-- **Native diff** — `edit` results open in VS Code's real diff editor (*View Diff*) or apply as
-  pending Source Control changes (*Apply*), with syntax highlighting and side-by-side toggle for
-  free.
+- **Native diff** — `edit` results open in VS Code's real diff editor (*View Diff*) as a read-only
+  before↔after preview, with syntax highlighting and side-by-side toggle for free. (pi's `edit`
+  tool has already written the change to disk, so there's no separate apply step.)
 - **Slash + native commands** — pi's user slash commands appear as `/` autocomplete in the
   composer; pi's built-ins (model, thinking level, compact, new / fork / clone, export, session
   stats) are surfaced as native VS Code commands, menu items, and an always-visible status bar
@@ -75,7 +75,7 @@ The extension exposes only Wingman-side GUI settings; everything else belongs to
 | Setting | Default | Description |
 | --- | --- | --- |
 | `sqoweWingman.piExecutablePath` | `""` | Path to the `pi` executable (a leading `~` is expanded). Empty = auto-detect from `PATH`, npm-global, Homebrew, and Volta. |
-| `sqoweWingman.editToolActions` | `"both"` | Action buttons shown on completed `edit` tool cards: `both` = View Diff + Apply, `diffOnly` = hide Apply, `applyOnly` = hide View Diff, `none` = hide both. Changes apply to the running chat immediately. |
+| `sqoweWingman.showViewDiffButton` | `true` | Show the *View Diff* button on completed `edit` tool cards (read-only before↔after preview). Set to `false` to hide it. Changes apply to the running chat immediately. |
 
 ### pi's configuration (shared with the CLI)
 
@@ -150,7 +150,8 @@ reload when prompted.
 Open a workspace folder and click the **Sqowe Wingman** icon in the activity bar. Two views
 appear: **Chat** (composer + transcript) and **Sessions** (your pi sessions for this workspace).
 Type a prompt and press **Enter** (**Shift+Enter** for a newline); type `/` to browse commands.
-When pi changes a file, use **View Diff** / **Apply** on the tool card.
+When pi changes a file, use **View Diff** on the tool card to see a read-only before↔after
+preview (pi has already written the change to disk).
 
 ### Attaching images
 

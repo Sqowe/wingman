@@ -1,17 +1,17 @@
 /**
  * Unit tests for DiffService:
  *  - applyUnifiedPatch: pure function
+ *  - invertPatch: pure function (after → before reconstruction)
+ *  - previewDiff: reconstructs "before" from the current on-disk "after"
+ *    (pi's edit tool has already written the file)
  *  - DiffService workspace-boundary validation (symlink-resolved paths)
- *  - All I/O uses the validated real path (TOCTOU guard)
  *  - Multi-file patch rejection
- *  - New-file patch (createFile + insert)
- *  - Deletion patch rejection in both preview and apply
- *  - Missing-file applyPatch policy
+ *  - Deletion patch rejection in preview
  *  - Timestamp stripping in patch headers
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { applyUnifiedPatch, DiffService } from './diff-service';
+import { applyUnifiedPatch, invertPatch, DiffService } from './diff-service';
 
 // ─── applyUnifiedPatch pure-function tests ────────────────────────────────────
 
@@ -166,6 +166,49 @@ describe('applyUnifiedPatch', () => {
   });
 });
 
+// ─── invertPatch pure-function tests ──────────────────────────────────────────
+
+describe('invertPatch', () => {
+  it('swaps +/- lines and the hunk ranges', () => {
+    const patch = [
+      '--- a/file.ts', '+++ b/file.ts',
+      '@@ -1,1 +1,1 @@', '-const x = 1;', '+const x = 2;',
+    ].join('\n');
+    expect(invertPatch(patch)).toBe([
+      '--- a/file.ts', '+++ b/file.ts',
+      '@@ -1,1 +1,1 @@', '+const x = 1;', '-const x = 2;',
+    ].join('\n'));
+  });
+
+  it('leaves file headers and context lines untouched', () => {
+    const patch = [
+      '--- a/file.ts', '+++ b/file.ts',
+      '@@ -1,3 +1,3 @@', ' a', '-b', '+B', ' c',
+    ].join('\n');
+    expect(invertPatch(patch)).toBe([
+      '--- a/file.ts', '+++ b/file.ts',
+      '@@ -1,3 +1,3 @@', ' a', '+b', '-B', ' c',
+    ].join('\n'));
+  });
+
+  it('is an involution — applying the after→before patch reproduces the before', () => {
+    const before = ['a', 'b', 'c'].join('\n');
+    const patch = [
+      '--- a/f', '+++ b/f', '@@ -2,1 +2,1 @@', '-b', '+B',
+    ].join('\n');
+    const after = applyUnifiedPatch(before, patch);            // a,B,c
+    expect(applyUnifiedPatch(after, invertPatch(patch))).toBe(before);
+  });
+
+  it('reconstructs an empty "before" for an all-addition (new-file) patch', () => {
+    const after = 'export const y = 42;\n';
+    const patch = [
+      '--- /dev/null', '+++ b/src/new.ts', '@@ -0,0 +1,1 @@', '+export const y = 42;',
+    ].join('\n');
+    expect(applyUnifiedPatch(after, invertPatch(patch))).toBe('');
+  });
+});
+
 // ─── DiffService integration tests ───────────────────────────────────────────
 
 vi.mock('vscode', async () => {
@@ -240,15 +283,6 @@ function clearWorkspaceFolders() {
 function realpathIdentity() {
   vi.mocked(fs.promises.realpath).mockImplementation((p) => Promise.resolve(p as string));
 }
-async function captureApplyEdit(fn: () => Promise<void>) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let captured: any = null;
-  vi.mocked(vscode.workspace.applyEdit).mockImplementation((edit) => {
-    captured = edit; return Promise.resolve(true);
-  });
-  await fn();
-  return captured;
-}
 
 const WORKSPACE = '/home/user/project';
 
@@ -280,8 +314,10 @@ describe('DiffService', () => {
     setWorkspaceFolders([WORKSPACE]);
     realpathIdentity();
 
+    // pi's edit tool has already written the file, so the on-disk content is
+    // the "after". SIMPLE_PATCH turns `const x = 1;` into `const x = 2;`.
     vi.mocked(vscode.workspace.fs.readFile).mockResolvedValue(
-      Buffer.from('const x = 1;') as unknown as Uint8Array,
+      Buffer.from('const x = 2;') as unknown as Uint8Array,
     );
     vi.mocked(vscode.workspace.openTextDocument).mockResolvedValue({
       lineCount: 1,
@@ -355,16 +391,14 @@ describe('DiffService', () => {
       );
     });
 
-    it('aborts on TOCTOU re-validation detecting path changed outside workspace', async () => {
-      let callCount = 0;
-      vi.mocked(fs.promises.realpath).mockImplementation((p) => {
-        const ps = p as string;
-        callCount++;
-        if (ps.includes('foo.ts') && callCount > 2) return Promise.resolve('/etc/passwd');
-        return Promise.resolve(ps);
-      });
+    it('throws a clear error when the file changed after pi applied the edit', async () => {
+      // Disk no longer contains the patch's "after" side, so the before cannot
+      // be reconstructed by inverting the patch.
+      vi.mocked(vscode.workspace.fs.readFile).mockResolvedValue(
+        Buffer.from('const x = 999;') as unknown as Uint8Array,
+      );
       await expect(service.previewDiff(SIMPLE_PATCH, WORKSPACE)).rejects.toThrow(
-        /outside all workspace folders/,
+        /cannot reconstruct the pre-edit content/,
       );
     });
 
@@ -397,11 +431,16 @@ describe('DiffService', () => {
       );
     });
 
-    it('treats missing file as empty (new-file patch)', async () => {
-      vi.mocked(vscode.workspace.fs.readFile).mockRejectedValue(new Error('not found'));
+    it('shows the created content as "after" and an empty "before" for a new-file patch', async () => {
+      // pi created the file, so it exists on disk with the full new content.
+      vi.mocked(vscode.workspace.fs.readFile).mockResolvedValue(
+        Buffer.from('export const y = 42;\n') as unknown as Uint8Array,
+      );
       await service.previewDiff(NEW_FILE_PATCH, WORKSPACE);
       expect(service.provideTextDocumentContent({ path: '/after/src/new.ts' } as vscode.Uri))
         .toBe('export const y = 42;\n');
+      expect(service.provideTextDocumentContent({ path: '/before/src/new.ts' } as vscode.Uri))
+        .toBe('');
     });
 
     it('rejects symlink traversal outside workspace', async () => {
@@ -426,127 +465,11 @@ describe('DiffService', () => {
     });
   });
 
-  describe('applyPatch', () => {
-    it('calls workspace.applyEdit', async () => {
-      await service.applyPatch(SIMPLE_PATCH, WORKSPACE);
-      expect(vscode.workspace.applyEdit).toHaveBeenCalledOnce();
-    });
-
-    it('uses the validated real path for openTextDocument (not re-joined)', async () => {
-      await service.applyPatch(SIMPLE_PATCH, WORKSPACE);
-      const callArg = vi.mocked(vscode.workspace.openTextDocument).mock.calls[0][0] as { fsPath: string };
-      expect(callArg.fsPath).toBe(`${WORKSPACE}/src/foo.ts`);
-    });
-
-    it('uses the realpath for openTextDocument when symlink differs', async () => {
-      const realPath = `${WORKSPACE}/src/foo.ts`;
-      vi.mocked(fs.promises.realpath).mockImplementation((p) =>
-        Promise.resolve(p === realPath ? realPath : (p as string)),
-      );
-      await service.applyPatch(SIMPLE_PATCH, WORKSPACE);
-      const callArg = vi.mocked(vscode.workspace.openTextDocument).mock.calls[0][0] as { fsPath: string };
-      expect(callArg.fsPath).toBe(realPath);
-    });
-
-    it('rejects patch exceeding MAX_PATCH_BYTES', async () => {
-      const hugePatch = 'x'.repeat(1_048_577);
-      await expect(service.applyPatch(hugePatch, WORKSPACE)).rejects.toThrow(
-        /exceeds maximum allowed size/,
-      );
-    });
-
-    it('rejects new-file patch when parent directory does not exist', async () => {
-      vi.mocked(fs.promises.realpath).mockRejectedValue(new Error('ENOENT'));
-      await expect(service.applyPatch(NEW_FILE_PATCH, WORKSPACE)).rejects.toThrow(
-        /parent directory does not exist/,
-      );
-    });
-
-    it('rejects new-file patch when parent resolves outside workspace', async () => {
-      vi.mocked(fs.promises.realpath).mockImplementation((p) => {
-        const ps = p as string;
-        if (ps === `${WORKSPACE}/src/new.ts`) return Promise.reject(new Error('ENOENT'));
-        if (ps === `${WORKSPACE}/src`) return Promise.resolve('/etc');
-        return Promise.resolve(ps);
-      });
-      await expect(service.applyPatch(NEW_FILE_PATCH, WORKSPACE)).rejects.toThrow(
-        /outside all workspace folders/,
-      );
-    });
-
-    it('aborts on TOCTOU re-validation detecting path changed outside workspace', async () => {
-      let callCount = 0;
-      vi.mocked(fs.promises.realpath).mockImplementation((p) => {
-        const ps = p as string;
-        callCount++;
-        if (ps.includes('foo.ts') && callCount > 2) return Promise.resolve('/etc/passwd');
-        return Promise.resolve(ps);
-      });
-      await expect(service.applyPatch(SIMPLE_PATCH, WORKSPACE)).rejects.toThrow(
-        /outside all workspace folders/,
-      );
-    });
-
-    it('throws when no workspace folder is open (applyPatch)', async () => {
-      clearWorkspaceFolders();
-      await expect(service.applyPatch(SIMPLE_PATCH, WORKSPACE)).rejects.toThrow(
-        /no workspace folder/,
-      );
-    });
-
-    it('throws when resolved path is outside workspace', async () => {
-      const outsidePatch = [
-        '--- a/../../secret.txt', '+++ b/../../secret.txt',
-        '@@ -1,1 +1,1 @@', '-secret', '+hacked',
-      ].join('\n');
-      await expect(service.applyPatch(outsidePatch, WORKSPACE)).rejects.toThrow(
-        /outside all workspace folders/,
-      );
-    });
-
-    it('throws when workspace.applyEdit returns false', async () => {
-      vi.mocked(vscode.workspace.applyEdit).mockResolvedValue(false);
-      await expect(service.applyPatch(SIMPLE_PATCH, WORKSPACE)).rejects.toThrow(
-        /applyEdit rejected/,
-      );
-    });
-
-    it('rejects multi-file patches', async () => {
-      await expect(service.applyPatch(MULTI_FILE_PATCH, WORKSPACE)).rejects.toThrow(
-        /multi-file patches are not supported/,
-      );
-    });
-
-    it('rejects deletion patches with a clear message', async () => {
-      await expect(service.applyPatch(DELETION_PATCH, WORKSPACE)).rejects.toThrow(
-        /file-deletion patches are not supported/,
-      );
-    });
-
-    it('uses createFile + insert for new-file patches (not openTextDocument)', async () => {
+  describe('previewDiff — missing-file policy', () => {
+    it('throws when the target file is missing and the patch is not a new-file patch', async () => {
       vi.mocked(vscode.workspace.fs.readFile).mockRejectedValue(new Error('not found'));
-      const edit = await captureApplyEdit(() => service.applyPatch(NEW_FILE_PATCH, WORKSPACE));
-      expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled();
-      expect(edit._creates).toHaveLength(1);
-      expect(edit._inserts).toHaveLength(1);
-      expect(edit._replaces).toHaveLength(0);
-    });
-
-    it('throws when file is missing but patch is not a new-file patch', async () => {
-      vi.mocked(vscode.workspace.fs.readFile).mockRejectedValue(new Error('not found'));
-      await expect(service.applyPatch(SIMPLE_PATCH, WORKSPACE)).rejects.toThrow(
-        /target file does not exist/,
-      );
-    });
-
-    it('rejects symlink traversal outside workspace', async () => {
-      vi.mocked(fs.promises.realpath).mockImplementation((p) => {
-        const ps = p as string;
-        if (ps.includes('src/foo.ts')) return Promise.resolve('/etc/passwd');
-        return Promise.resolve(ps);
-      });
-      await expect(service.applyPatch(SIMPLE_PATCH, WORKSPACE)).rejects.toThrow(
-        /outside all workspace folders/,
+      await expect(service.previewDiff(SIMPLE_PATCH, WORKSPACE)).rejects.toThrow(
+        /target file no longer exists/,
       );
     });
   });

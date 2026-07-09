@@ -52,7 +52,9 @@ sits; this file is the coding contract. RPC protocol rules live in [AI_PI_RPC.md
 
 - On `tool_execution_end` for the `edit` tool, drive VS Code's native diff from
   `result.details.patch` (a unified diff). Preview via a `TextDocumentContentProvider` + virtual
-  URIs + `vscode.diff`; apply via `WorkspaceEdit` + `workspace.applyEdit`.
+  URIs + `vscode.diff`. pi's `edit` tool has **already written the file to disk**, so the patch is
+  a record (`baseContent → newContent`), not pending work: the on-disk file is the "after", and
+  the "before" is reconstructed by inverting the patch (`invertPatch`). There is no apply step.
 - Don't re-implement diff rendering in the host — VS Code owns it.
 
 ## Security & robustness

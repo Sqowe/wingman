@@ -10,7 +10,7 @@
  *   - tool `result.details` (incl. `patch`) is preserved for the Phase 4 diff
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useChatStore, normalizeEditToolActions } from './index';
+import { useChatStore, normalizeShowViewDiffButton } from './index';
 import type {
   AssistantItem,
   ChatItem,
@@ -716,53 +716,50 @@ describe('store.setModelState', () => {
 describe('store.setChatConfig', () => {
   beforeEach(() => {
     useChatStore.getState().resetSession();
-    useChatStore.setState({ editToolActions: 'both' });
+    useChatStore.setState({ showViewDiffButton: true });
   });
 
-  it('defaults to “both”', () => {
-    expect(useChatStore.getState().editToolActions).toBe('both');
+  it('defaults to true', () => {
+    expect(useChatStore.getState().showViewDiffButton).toBe(true);
   });
 
-  it('sets each of the four modes', () => {
-    for (const mode of ['diffOnly', 'applyOnly', 'none', 'both'] as const) {
-      useChatStore.getState().setChatConfig(mode);
-      expect(useChatStore.getState().editToolActions).toBe(mode);
-    }
+  it('sets both boolean values', () => {
+    useChatStore.getState().setChatConfig(false);
+    expect(useChatStore.getState().showViewDiffButton).toBe(false);
+    useChatStore.getState().setChatConfig(true);
+    expect(useChatStore.getState().showViewDiffButton).toBe(true);
   });
 
   it('is preserved across dispatchEvents (config not clobbered by agent events)', () => {
-    useChatStore.getState().setChatConfig('diffOnly');
+    useChatStore.getState().setChatConfig(false);
     useChatStore.getState().dispatchEvents([{ type: 'agent_start' }]);
-    expect(useChatStore.getState().editToolActions).toBe('diffOnly');
+    expect(useChatStore.getState().showViewDiffButton).toBe(false);
   });
 
   it('is preserved across resetSession (config is not session-scoped)', () => {
-    useChatStore.getState().setChatConfig('none');
+    useChatStore.getState().setChatConfig(false);
     useChatStore.getState().resetSession();
-    expect(useChatStore.getState().editToolActions).toBe('none');
+    expect(useChatStore.getState().showViewDiffButton).toBe(false);
   });
 });
 
-// ─── normalizeEditToolActions ────────────────────────────────────────────────
+// ─── normalizeShowViewDiffButton ──────────────────────────────────────────────
 
-describe('store.normalizeEditToolActions', () => {
-  it.each(['both', 'diffOnly', 'applyOnly', 'none'] as const)(
-    'passes through each valid value (%s)',
-    (mode) => {
-      expect(normalizeEditToolActions(mode)).toBe(mode);
-    },
-  );
+describe('store.normalizeShowViewDiffButton', () => {
+  it('passes through explicit booleans', () => {
+    expect(normalizeShowViewDiffButton(true)).toBe(true);
+    expect(normalizeShowViewDiffButton(false)).toBe(false);
+  });
 
   it.each([
     undefined,
     null,
     '',
-    'BOTH',
-    'both ',
-    'apply',
+    'false',
+    0,
     42,
-    { actions: 'both' },
-  ])('coerces unknown / malformed values to "both" (%j)', (raw) => {
-    expect(normalizeEditToolActions(raw)).toBe('both');
+    { show: false },
+  ])('coerces non-false / malformed values to true (%j)', (raw) => {
+    expect(normalizeShowViewDiffButton(raw)).toBe(true);
   });
 });

@@ -10,7 +10,7 @@
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 import type { AgentController } from '../agent/controller';
-import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage, EditToolActions, InstructionFilesInfo } from '../shared/messages';
+import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo } from '../shared/messages';
 import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES, MAX_PATCH_BYTES, MAX_IMAGE_BYTES, MAX_IMAGES_PER_PROMPT, MAX_TOTAL_IMAGE_BYTES, ALLOWED_IMAGE_MIME_TYPES, type AllowedImageMimeType } from '../shared/limits';
 import type { RpcEvent } from '../agent/transport';
 import type { DiffService } from '../diff/diff-service';
@@ -52,7 +52,7 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   /** Last model state — replayed on webview (re)ready so the composer knows image support immediately. */
   private _lastModelState: ModelState | null | undefined;
   /** Last chat UI config — replayed on webview (re)ready so edit cards show the right buttons immediately. */
-  private _lastChatConfig: EditToolActions | undefined;
+  private _lastChatConfig: boolean | undefined;
   /** Last instruction files info — replayed on webview (re)ready. undefined = never set. */
   private _lastInstructionFiles: InstructionFilesInfo | null | undefined;
   /** Timestamp of the last accepted sendPrompt — for basic rate-limiting. */
@@ -154,7 +154,7 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
             }
             // Replay chat UI config so edit cards show the right buttons immediately.
             if (this._lastChatConfig !== undefined) {
-              this._postMessage({ type: 'chatConfig', editToolActions: this._lastChatConfig });
+              this._postMessage({ type: 'chatConfig', showViewDiffButton: this._lastChatConfig });
             }
             // Replay instruction files so the banner popover is accurate immediately.
             if (this._lastInstructionFiles !== undefined) {
@@ -190,10 +190,6 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
             // The webview forwards the new-session shortcut (keybindings don't
             // reach the iframe). Run the same native command the palette uses.
             void vscode.commands.executeCommand('sqoweWingman.newSession');
-            break;
-
-          case 'applyEdit':
-            void this._handleApplyEdit(message.patch, message.toolCallId);
             break;
         }
       }),
@@ -313,9 +309,8 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
         return { type: 'openExternal', url: parsed.href };
       }
 
-      case 'openDiff':
-      case 'applyEdit': {
-        const kind = msg['type'] as 'openDiff' | 'applyEdit';
+      case 'openDiff': {
+        const kind = 'openDiff';
         if (typeof msg['patch'] !== 'string') {
           this._controller?.outputChannel?.appendLine(
             `[WingmanViewProvider] dropped ${kind}: missing/invalid patch field`,
@@ -602,10 +597,10 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Push the chat UI config to the webview (and cache for replay on ready). */
-  public postChatConfig(editToolActions: EditToolActions): void {
-    this._lastChatConfig = editToolActions;
+  public postChatConfig(showViewDiffButton: boolean): void {
+    this._lastChatConfig = showViewDiffButton;
     if (this._webviewReady) {
-      this._postMessage({ type: 'chatConfig', editToolActions });
+      this._postMessage({ type: 'chatConfig', showViewDiffButton });
     }
   }
 
@@ -717,30 +712,6 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
       );
       void vscode.window.showErrorMessage(`Sqowe Wingman: could not open diff — ${message}`);
       this._postMessage({ type: 'diffError', toolCallId, reason: 'open-failed', message });
-    }
-  }
-
-  private async _handleApplyEdit(patch: string, toolCallId: string): Promise<void> {
-    if (!this._diffService) {
-      this._controller?.outputChannel?.appendLine(
-        '[WingmanViewProvider] applyEdit: DiffService not available',
-      );
-      return;
-    }
-    const cwd = this._resolveCwd();
-    if (!cwd) {
-      void vscode.window.showErrorMessage('Sqowe Wingman: no workspace folder open.');
-      return;
-    }
-    try {
-      await this._diffService.applyPatch(patch, cwd);
-    } catch (err) {
-      const message = String(err);
-      this._controller?.outputChannel?.appendLine(
-        `[WingmanViewProvider] applyEdit failed: ${message}`,
-      );
-      void vscode.window.showErrorMessage(`Sqowe Wingman: could not apply edit — ${message}`);
-      this._postMessage({ type: 'diffError', toolCallId, reason: 'apply-failed', message });
     }
   }
 

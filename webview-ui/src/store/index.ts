@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import type { RpcEvent } from '../../../src/agent/transport';
-import type { PiCommand, ModelState, EditToolActions, InstructionFilesInfo } from '../../../src/shared/messages';
+import type { PiCommand, ModelState, InstructionFilesInfo } from '../../../src/shared/messages';
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -216,8 +216,8 @@ interface ChatState {
   supportsImages: boolean;
   /** Human-readable name of the active model (for UI messaging). */
   modelName: string | null;
-  /** Which action buttons to show on completed edit tool cards (from chatConfig message). */
-  editToolActions: EditToolActions;
+  /** Whether to show the View Diff button on completed edit tool cards (from chatConfig message). */
+  showViewDiffButton: boolean;
   /**
    * Resolved instruction files from pi's bundled extension.
    * null  = info unavailable (old pi, extension load failure, timeout).
@@ -256,8 +256,8 @@ interface ChatActions {
   setCommands: (commands: PiCommand[]) => void;
   /** Update model capabilities from a modelState host message. */
   setModelState: (state: ModelState | null) => void;
-  /** Update the chat UI config (edit tool action buttons) from a chatConfig host message. */
-  setChatConfig: (editToolActions: EditToolActions) => void;
+  /** Update the chat UI config (View Diff button visibility) from a chatConfig host message. */
+  setChatConfig: (showViewDiffButton: boolean) => void;
   /** Update resolved instruction files from an instructionFiles host message. */
   setInstructionFiles: (info: InstructionFilesInfo | null) => void;
   /** Set or clear a status entry (key → text | null). */
@@ -289,13 +289,13 @@ interface ChatActions {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Coerce an untrusted `editToolActions` value (from the host message stream)
- * to a valid `EditToolActions`, defaulting to `'both'` for anything unknown.
- * Defends against contract drift / malformed messages so the UI never hides
- * both buttons unintentionally.
+ * Coerce an untrusted `showViewDiffButton` value (from the host message stream)
+ * to a boolean, defaulting to `true` for anything that isn't an explicit
+ * `false`. Defends against contract drift / malformed messages so the UI never
+ * hides the View Diff button unintentionally.
  */
-export function normalizeEditToolActions(raw: unknown): EditToolActions {
-  return raw === 'diffOnly' || raw === 'applyOnly' || raw === 'none' ? raw : 'both';
+export function normalizeShowViewDiffButton(raw: unknown): boolean {
+  return raw === false ? false : true;
 }
 
 let _idCounter = 0;
@@ -543,7 +543,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   commands: [],
   supportsImages: false,
   modelName: null,
-  editToolActions: 'both',
+  showViewDiffButton: true,
   uiStatuses: [],
   uiWidgets: [],
   uiTitle: null,
@@ -598,7 +598,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
       modelName: state?.modelName ?? null,
     })),
 
-  setChatConfig: (editToolActions: EditToolActions) => set(() => ({ editToolActions })),
+  setChatConfig: (showViewDiffButton: boolean) => set(() => ({ showViewDiffButton })),
 
   setInstructionFiles: (info: InstructionFilesInfo | null) => set(() => ({ instructionFiles: info })),
 
@@ -637,7 +637,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   resetSession: () =>
     set((state) => ({
       // Carry over extension-scoped state (commands, model capabilities, and
-      // the editToolActions setting) — only session-scoped transcript + UI
+      // the showViewDiffButton setting) — only session-scoped transcript + UI
       // protocol state is cleared. Spreading `state` makes this preservation
       // explicit rather than relying on Zustand's partial-merge default.
       ...state,
@@ -686,7 +686,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         uiEditorText: state.uiEditorText,
         supportsImages: state.supportsImages,
         modelName: state.modelName,
-        editToolActions: state.editToolActions,
+        showViewDiffButton: state.showViewDiffButton,
         instructionFiles: state.instructionFiles,
         toolCardExpanded: state.toolCardExpanded,
       };

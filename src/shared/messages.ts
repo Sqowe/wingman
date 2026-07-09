@@ -135,16 +135,16 @@ export interface AgentStatusMessage {
 }
 
 /**
- * Sent by the host when a diff operation (openDiff / applyEdit) fails.
+ * Sent by the host when opening the diff preview (openDiff) fails.
  * The webview can surface this as inline feedback on the tool card.
  *
- * - `open-failed`  — the diff editor could not be opened (e.g. patch parse error).
- * - `apply-failed` — workspace.applyEdit was rejected or threw.
+ * - `open-failed` — the diff editor could not be opened (e.g. the file changed
+ *   after pi's edit so the patch no longer reconstructs, or a parse error).
  */
 export interface DiffErrorMessage {
   type: 'diffError';
   toolCallId: string;
-  reason: 'open-failed' | 'apply-failed';
+  reason: 'open-failed';
   message: string;
 }
 
@@ -263,18 +263,16 @@ export interface InstructionFilesMessage {
   info: InstructionFilesInfo | null;
 }
 
-/** Which action buttons to show on completed `edit` tool cards. */
-export type EditToolActions = 'both' | 'diffOnly' | 'applyOnly' | 'none';
-
 /**
- * Sent by the host with the chat UI configuration (which action buttons to
- * show on completed `edit` tool cards), per the `sqoweWingman.editToolActions`
- * setting. Pushed once on startup, replayed on webview `ready`, and re-pushed
- * whenever the setting changes while the extension is running.
+ * Sent by the host with the chat UI configuration (whether to show the "View
+ * Diff" button on completed `edit` tool cards), per the
+ * `sqoweWingman.showViewDiffButton` setting. Pushed once on startup, replayed on
+ * webview `ready`, and re-pushed whenever the setting changes while the
+ * extension is running.
  */
 export interface ChatConfigMessage {
   type: 'chatConfig';
-  editToolActions: EditToolActions;
+  showViewDiffButton: boolean;
 }
 
 /** Union of every message the host can send to the webview. */
@@ -358,19 +356,6 @@ export interface OpenDiffMessage {
 }
 
 /**
- * Sent by the webview when the user clicks "Apply" on a completed edit card.
- * The host applies the patch as a real WorkspaceEdit so the change appears in
- * Source Control with Accept / Discard affordances.
- *
- * Note: no `cwd` field — see OpenDiffMessage.
- */
-export interface ApplyEditMessage {
-  type: 'applyEdit';
-  patch: string;
-  toolCallId: string;
-}
-
-/**
  * Sent by the webview to request a fresh commands list from the host
  * (e.g. after a new session or project switch).
  */
@@ -396,7 +381,6 @@ export type WebviewMessage =
   | AbortTurnMessage
   | OpenExternalMessage
   | OpenDiffMessage
-  | ApplyEditMessage
   | RequestCommandsMessage
   | RequestNewSessionMessage;
 

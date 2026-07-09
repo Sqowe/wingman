@@ -19,7 +19,7 @@ import { registerCommands } from './commands/index';
 import { reloadAgent } from './commands/reload';
 import { registerSessions } from './sessions';
 import { promptForTrust, registerTrustCommands } from './trust/trust-commands';
-import type { PiStatus, EditToolActions } from './shared/messages';
+import type { PiStatus } from './shared/messages';
 
 // Module-level controller and piStatus so deactivate() and trust commands can reach them.
 let _controller: AgentController | undefined;
@@ -60,14 +60,13 @@ function applyPiStatus(status: PiStatus, prov: WingmanViewProvider): void {
 }
 
 /**
- * Read the `sqoweWingman.editToolActions` setting, coercing any unknown value
- * to the default. Drives which action buttons appear on completed `edit` cards.
+ * Read the `sqoweWingman.showViewDiffButton` setting (defaults to `true`).
+ * Drives whether the "View Diff" button appears on completed `edit` cards.
  */
-function readEditToolActions(): EditToolActions {
-  const raw = vscode.workspace
+function readShowViewDiffButton(): boolean {
+  return vscode.workspace
     .getConfiguration('sqoweWingman')
-    .get<string>('editToolActions', 'both');
-  return raw === 'diffOnly' || raw === 'applyOnly' || raw === 'none' ? raw : 'both';
+    .get<boolean>('showViewDiffButton', true);
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -129,14 +128,14 @@ export function activate(context: vscode.ExtensionContext): void {
   // defaults supportsImages=false which is the safe/correct initial state.
   provider.postModelState(controller.lastModelState);
 
-  // Seed the webview with the chat UI config (which action buttons to show on
-  // completed `edit` tool cards) and keep it in sync if the user changes the
-  // setting while the extension is running.
-  provider.postChatConfig(readEditToolActions());
+  // Seed the webview with the chat UI config (whether to show the View Diff
+  // button on completed `edit` tool cards) and keep it in sync if the user
+  // changes the setting while the extension is running.
+  provider.postChatConfig(readShowViewDiffButton());
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('sqoweWingman.editToolActions')) {
-        provider.postChatConfig(readEditToolActions());
+      if (e.affectsConfiguration('sqoweWingman.showViewDiffButton')) {
+        provider.postChatConfig(readShowViewDiffButton());
       }
     }),
   );

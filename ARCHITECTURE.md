@@ -91,7 +91,7 @@ request/response, an `onEvent` render stream, and an `onClose` signal for unexpe
 2. Host sends a `prompt` (or other command) as JSONL to the pi child process.
 3. pi streams events (`message_update`, `tool_execution_*`, …) back over stdout.
 4. Host forwards events to the webview, which renders them; `edit` patches are routed to the diff
-   service for a native diff / `WorkspaceEdit`.
+   service for a read-only native diff preview (pi has already written the file to disk).
 5. Blocking `extension_ui_request` events become native quick-picks / inputs; the reply goes back as
    `extension_ui_response`.
 

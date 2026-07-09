@@ -611,15 +611,6 @@ body {
   outline-offset: 1px;
 }
 
-.tool-card__diff-btn--apply {
-  background: var(--vscode-button-background);
-  color: var(--vscode-button-foreground);
-}
-
-.tool-card__diff-btn--apply:hover {
-  background: var(--vscode-button-hoverBackground);
-}
-
 .tool-card__diff-error {
   display: flex;
   align-items: flex-start;
