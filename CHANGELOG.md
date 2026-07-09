@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   assistant's reply out of view. Short messages are unaffected; the collapse
   decision is measured from the rendered height, not a fixed character count.
 
+### Changed
+
+- **Minimum tested pi version raised to `0.80.0`** — `PI_MINIMUM_VERSION` in the
+  pi locator now expects pi `0.80.0` or newer. Older versions still run but
+  trigger the non-blocking below-minimum warning. Wingman's newer features are
+  developed against and verified on the pi 0.80.x line.
+
 ## [0.1.8] - 2026-07-07
 
 ### Added
