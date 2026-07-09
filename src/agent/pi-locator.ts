@@ -29,7 +29,7 @@ import type { PiStatus } from '../shared/messages';
 const execFileAsync = promisify(execFile);
 
 /** Minimum pi version that has been tested with this extension. */
-export const PI_MINIMUM_VERSION = '0.79.9';
+export const PI_MINIMUM_VERSION = '0.80.0';
 
 /** Optional diagnostics sink (wired to the extension's output channel). */
 export type LocatorLog = (message: string) => void;
