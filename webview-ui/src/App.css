@@ -208,7 +208,7 @@ body {
 }
 
 .user-message__text {
-  max-width: 85%;
+  max-width: 100%; /* wrapper .collapsible-text owns max-width */
   margin: 0;
   padding: 8px 12px;
   background: var(--vscode-button-background);
@@ -232,6 +232,82 @@ body {
   font-family: var(--vscode-font-family);
   font-size: calc(var(--vscode-font-size) * 0.9);
   opacity: 0.9;
+}
+
+/* ── Collapsible long user text ─────────────────────────────────────────────── */
+
+/* Outer flex column, right-aligned as a unit within the turn via align-self.
+   align-items: stretch so the bubble and toggle button both fill the width. */
+.collapsible-text {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  align-self: flex-end;  /* right-aligns the whole collapsible within .user-message */
+  max-width: 85%;        /* was on .user-message__text; now owned by the wrapper */
+}
+
+/* Bubble container: position:relative so the fade is anchored to the <pre>,
+   not to the outer flex column that also contains the toggle button. */
+.collapsible-text__bubble {
+  position: relative;
+}
+
+.user-message__text--collapsed {
+  overflow: hidden;
+  /* No padding-bottom here — padding lives on .collapsible-text__bubble--collapsed
+     so the <pre>'s scrollHeight stays clean for resize rechecks. */
+}
+
+/* padding-bottom on the bubble wrapper (not the <pre>) reserves space for the
+   fade gradient without affecting the <pre>'s scrollHeight measurement. */
+.collapsible-text__bubble--collapsed {
+  padding-bottom: 48px;
+}
+
+/* Gradient fade anchored to the bottom of the bubble wrapper (position:relative).
+   bottom:0 is the bottom of the <pre>, not the toggle — correct placement. */
+.collapsible-text__fade {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 48px;
+  pointer-events: none;
+  border-radius: 0 0 2px 12px; /* match the bubble's bottom corners */
+  background: linear-gradient(
+    to top,
+    var(--vscode-button-background) 0%,
+    transparent 100%
+  );
+}
+
+.collapsible-text__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  font-family: var(--vscode-font-family);
+  font-size: calc(var(--vscode-font-size) * 0.9);
+}
+
+.collapsible-text__toggle:hover {
+  color: var(--vscode-textLink-activeForeground);
+  background: var(--vscode-list-hoverBackground);
+}
+
+.collapsible-text__chevron {
+  font-size: 10px;
+  transition: transform 0.15s;
+}
+
+.collapsible-text__chevron--open {
+  transform: rotate(180deg);
 }
 
 /* ── Skill block (collapsed pi skill expansion inside a user message) ───────── */

@@ -11,6 +11,7 @@ import type { ChatItem, UserItem } from '../store';
 import { AssistantBlock } from './AssistantBlock';
 import { ToolCard } from './ToolCard';
 import { splitUserMessage } from '../lib/skill-blocks';
+import { CollapsibleText } from './CollapsibleText';
 
 // ─── Default row height estimates ────────────────────────────────────────────
 // react-window needs a size estimate up-front; we remeasure after render via a
@@ -190,7 +191,7 @@ function UserMessage({ item }: { item: UserItem }) {
       {hasText &&
         segments.map((seg, i) =>
           seg.kind === 'text' ? (
-            <pre key={i} className="user-message__text">{seg.text}</pre>
+            <CollapsibleText key={i} text={seg.text} />
           ) : (
             <SkillBlock key={i} name={seg.name} body={seg.body} />
           ),

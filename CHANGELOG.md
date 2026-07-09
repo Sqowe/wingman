@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Collapsible long user messages** — a long prompt in the chat window now
+  collapses to a bounded height with a soft gradient fade and a
+  "Show more / Show less" toggle, so a wall-of-text prompt no longer pushes the
+  assistant's reply out of view. Short messages are unaffected; the collapse
+  decision is measured from the rendered height, not a fixed character count.
+
 ## [0.1.8] - 2026-07-07
 
 ### Added
