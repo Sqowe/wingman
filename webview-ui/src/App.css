@@ -237,11 +237,12 @@ body {
 /* ── Collapsible long user text ─────────────────────────────────────────────── */
 
 /* Outer flex column, right-aligned as a unit within the turn via align-self.
-   align-items: stretch so the bubble and toggle button both fill the width. */
+   align-items: flex-end so the bubble sizes to its content and the toggle
+   collapses to a compact pill hugging its label — not a full-width bar. */
 .collapsible-text {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
+  align-items: flex-end;
   align-self: flex-end;  /* right-aligns the whole collapsible within .user-message */
   max-width: 85%;        /* was on .user-message__text; now owned by the wrapper */
 }
@@ -254,18 +255,12 @@ body {
 
 .user-message__text--collapsed {
   overflow: hidden;
-  /* No padding-bottom here — padding lives on .collapsible-text__bubble--collapsed
-     so the <pre>'s scrollHeight stays clean for resize rechecks. */
 }
 
-/* padding-bottom on the bubble wrapper (not the <pre>) reserves space for the
-   fade gradient without affecting the <pre>'s scrollHeight measurement. */
-.collapsible-text__bubble--collapsed {
-  padding-bottom: 48px;
-}
-
-/* Gradient fade anchored to the bottom of the bubble wrapper (position:relative).
-   bottom:0 is the bottom of the <pre>, not the toggle — correct placement. */
+/* Gradient fade overlaying the last visible lines of the clamped <pre>.
+   Anchored to bottom:0 of the bubble wrapper (position:relative), which is the
+   bottom of the clamped <pre> — so the gradient fades out real text rather than
+   painting over empty background below the bubble. */
 .collapsible-text__fade {
   position: absolute;
   left: 0;

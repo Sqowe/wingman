@@ -10,9 +10,8 @@
  * forwards to react-window automatically. No new size-reporting channel needed.
  *
  * Measurement invariant: scrollHeight is always read on the <pre> with collapsed
- * styles stripped (no maxHeight, no extra padding-bottom). The padding-bottom for
- * the fade lives on .collapsible-text__bubble (the wrapper), NOT on the <pre>,
- * so scrollHeight stays clean across resize rechecks.
+ * styles stripped (no maxHeight). scrollHeight reports the full content height
+ * regardless of the CSS max-height clamp, so it stays stable across toggles.
  */
 import { useState, useRef, useLayoutEffect, useCallback } from 'react';
 import { mightOverflow, shouldCollapse, COLLAPSED_MAX_HEIGHT } from '../lib/collapsible';
@@ -84,11 +83,9 @@ export function CollapsibleText({ text }: Props) {
 
   return (
     <div className="collapsible-text">
-      {/* Bubble wrapper: position:relative so the fade anchors to the pre,
-          not to the outer flex column that also contains the toggle button.
-          padding-bottom for the fade lives HERE (not on the <pre>) so the
-          <pre>'s scrollHeight remains the natural content height. */}
-      <div className={`collapsible-text__bubble${collapsed ? ' collapsible-text__bubble--collapsed' : ''}`}>
+      {/* Bubble wrapper: position:relative so the fade anchors to the <pre>,
+          not to the outer flex column that also contains the toggle button. */}
+      <div className="collapsible-text__bubble">
         <pre
           ref={ref}
           className={`user-message__text${collapsed ? ' user-message__text--collapsed' : ''}`}
