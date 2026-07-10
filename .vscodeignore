@@ -47,6 +47,15 @@ test/
 .agents/
 .vscode/
 
+# Semantic-index skill artifacts — local dev index, not for end users (~80 MB)
+.index/
+
+# Firecrawl skill scratch output — not part of the extension
+.firecrawl-*
+
+# Sample workspace — dev-only fixture
+sample-workspace/
+
 # OS noise
 .DS_Store
 Thumbs.db
