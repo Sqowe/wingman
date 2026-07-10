@@ -23,7 +23,8 @@ session file — so you don't lose where you were.
 2. Run Reload pi Agent — from the Chat view's `⋯` menu, or the Command Palette.
 3. Wingman restarts the sidecar and resumes your session; keep chatting.
 
-> ⚠️ TODO (human): screenshot of the Reload pi Agent action in the `⋯` menu.
+![Reload PI 1](../assets/reload-pi-1.png)
+![Reload PI 2](../assets/reload-pi-2.png)
 
 ## Commands & settings
 

@@ -28,7 +28,7 @@ your own text.
 For duplicating or branching a conversation, see Fork Session and Clone Session in
 [Commands](commands.md).
 
-> ⚠️ TODO (human): screenshot of the Sessions tree with switch/rename.
+![Sessions List](../assets/seesions-list.png)
 
 ## Commands & settings
 

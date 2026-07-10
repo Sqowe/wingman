@@ -26,7 +26,7 @@ the fuller breakdown.
 If usage is getting high, use Compact Session (see [Commands](commands.md)) to shrink the
 context.
 
-> ⚠️ TODO (human): screenshot of the status bar item and the Show Stats popup.
+![Session Stats](../assets/session-stats.png)
 
 ## Commands & settings
 

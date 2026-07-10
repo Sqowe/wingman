@@ -28,7 +28,7 @@ into your working copy.
 You can control which buttons appear with the `sqoweWingman.editToolActions` setting — handy
 if you always want to skip straight to Apply, or only ever want to look via View Diff.
 
-> ⚠️ TODO (human): screenshot of an edit tool card and the resulting diff editor.
+![Diff Service](../assets/diff-service.png)
 
 ## Commands & settings
 

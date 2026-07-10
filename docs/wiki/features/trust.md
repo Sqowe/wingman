@@ -25,7 +25,7 @@ Workspace Folder to choose which one.
 3. In a multi-root workspace, run Select Workspace Folder (also in the Chat `⋯` menu when
    more than one folder is open) to pick the agent's working folder.
 
-> ⚠️ TODO (human): screenshot of the Trust / Don't Trust prompt.
+![Trust prompt](../assets/trust-workspace.png)
 
 ## Commands & settings
 
