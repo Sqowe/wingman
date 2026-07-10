@@ -11,7 +11,7 @@ it **reuses pi's own configuration** — the same `~/.pi/agent/` global config a
 `.pi/` resources the pi CLI uses. Wingman is a different front-end over the same brain, not a
 separate tool with its own settings.
 
-> **Status — `0.1.8` preview.** Phases 0–8 are complete: native chat, tool cards, native diff,
+> **Status — `0.1.9` preview.** Phases 0–8 are complete: native chat, tool cards, native diff,
 > commands, the extension-UI protocol bridge, sessions, and config/trust are all built and
 > tested. Phase 9 (packaging / Marketplace) is in progress, so for now you install from source
 > (see below). See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for the roadmap and
@@ -47,6 +47,9 @@ separate tool with its own settings.
 - **Reload pi Agent** — restarts the pi sidecar in place from the chat view-title `⋯` menu or
   Command Palette. Re-resolves the pi binary on every reload and preserves the current
   conversation by resuming the saved session file.
+- **Collapsible long prompts** — long user messages in the transcript collapse to a bounded
+  height with a soft fade and a *Show more / Show less* toggle, so a wall-of-text prompt no
+  longer pushes the assistant's reply out of view. Short messages are unaffected.
 
 ## Prerequisites
 
@@ -143,8 +146,8 @@ instead, point the trailing arg in `.vscode/launch.json` at `${workspaceFolder}`
 ### Option B — Package a VSIX and install it into your daily VS Code
 
 ```sh
-npm run vsce:package                       # produces sqowe-wingman-0.1.8.vsix
-code --install-extension sqowe-wingman-0.1.8.vsix
+npm run vsce:package                       # produces sqowe-wingman-0.1.9.vsix
+code --install-extension sqowe-wingman-0.1.9.vsix
 ```
 
 Or in VS Code: **Extensions** view ▸ **⋯** menu ▸ *Install from VSIX…* ▸ pick the file, then
