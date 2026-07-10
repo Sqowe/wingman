@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sqowe/sqowe-wingman.git"
+    "url": "https://github.com/sqowe/wingman.git"
   },
   "icon": "media/icon.png",
   "engines": {

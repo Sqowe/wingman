@@ -31,7 +31,7 @@ Wingman isn't on the Marketplace yet, so install it from source. You need Node 2
 pi already installed.
 
 ```sh
-git clone https://github.com/sqowe/sqowe-wingman.git
+git clone https://github.com/sqowe/wingman.git
 cd sqowe-wingman
 npm run install:all   # install host + webview dependencies
 npm run build         # bundle host (esbuild) + webview (Vite) into dist/

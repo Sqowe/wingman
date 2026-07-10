@@ -14,8 +14,8 @@ separate tool with its own settings.
 > **Status — `0.1.9` preview.** Phases 0–8 are complete: native chat, tool cards, native diff,
 > commands, the extension-UI protocol bridge, sessions, and config/trust are all built and
 > tested. Phase 9 (packaging / Marketplace) is in progress, so for now you install from source
-> (see below). See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for the roadmap and
-> [CHANGELOG.md](CHANGELOG.md) for what's new in each release.
+> (see below). See [CHANGELOG.md](CHANGELOG.md) for what's new in each release, and the
+> [user docs](https://github.com/sqowe/wingman/blob/main/docs/wiki/index.md) for end-user guides.
 
 ## Features
 
@@ -124,7 +124,7 @@ Wingman isn't on the Marketplace yet, so install it from this repo. You need **N
 **npm**, and [pi installed](#prerequisites).
 
 ```sh
-git clone https://github.com/sqowe/sqowe-wingman.git
+git clone https://github.com/sqowe/wingman.git
 cd sqowe-wingman
 npm run install:all   # install host + webview dependencies
 npm run build         # bundle host (esbuild) + webview (Vite) into dist/
