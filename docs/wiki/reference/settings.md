@@ -14,7 +14,7 @@ Settings → search "Sqowe Wingman".
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `sqoweWingman.piExecutablePath` | `""` | Path to the `pi` executable (a leading `~` is expanded to your home directory). Leave empty to auto-detect from `PATH` and common install locations (npm global, Homebrew, Volta). |
-| `sqoweWingman.editToolActions` | `"both"` | Action buttons shown on completed `edit` tool cards. `both` = View Diff + Apply; `diffOnly` = hide Apply; `applyOnly` = hide View Diff; `none` = hide both. Changing this updates the running chat immediately. |
+| `sqoweWingman.showViewDiffButton` | `true` | Show the **View Diff** button on completed `edit` tool cards. The diff editor is a read-only before↔after preview — pi has already written the change to disk, so there is no separate Apply step. Changing this updates the running chat immediately. |
 
 ---
 [← All docs](../index.md)
