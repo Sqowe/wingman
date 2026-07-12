@@ -39,6 +39,7 @@ function makeProvider() {
     postAgentStatus: vi.fn(),
     postSessionReset: vi.fn(),
     postInstructionFiles: vi.fn(),
+    postClaudeMemory: vi.fn(),
   };
 }
 
@@ -822,5 +823,51 @@ describe('AgentController — bundled extension paths', () => {
 
   it('is constructed cleanly with a list of extension paths', () => {
     expect(() => new AgentController(['/ext/a/index.js', '/ext/b/index.js'])).not.toThrow();
+  });
+});
+
+describe('AgentController — claudeMemory bridge report', () => {
+  it('forwards a claudeMemory report from the bridge to provider.postClaudeMemory', () => {
+    const controller = new AgentController();
+    const provider = makeProvider();
+    controller.setProvider(provider as unknown as WingmanViewProvider);
+
+    // The controller wires the bridge's claudeMemory callback to
+    // provider.postClaudeMemory. Drive it by feeding a reserved-key setStatus
+    // event through the (private) bridge the controller constructed.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bridge = (controller as any)._uiBridge;
+    bridge.handleEvent({
+      type: 'extension_ui_request',
+      id: 'm1',
+      method: 'setStatus',
+      statusKey: 'wingman:claudeMemory',
+      statusText: JSON.stringify({
+        dir: '/mem',
+        count: 1,
+        files: [{ path: '/mem/a.md', title: 'Alpha' }],
+      }),
+    });
+
+    expect(provider.postClaudeMemory).toHaveBeenCalledTimes(1);
+    const info = provider.postClaudeMemory.mock.calls[0][0] as { dir: string; files: unknown[] };
+    expect(info.dir).toBe('/mem');
+    expect(info.files).toHaveLength(1);
+  });
+
+  it('forwards null to provider.postClaudeMemory on a malformed report', () => {
+    const controller = new AgentController();
+    const provider = makeProvider();
+    controller.setProvider(provider as unknown as WingmanViewProvider);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bridge = (controller as any)._uiBridge;
+    bridge.handleEvent({
+      type: 'extension_ui_request',
+      id: 'm2',
+      method: 'setStatus',
+      statusKey: 'wingman:claudeMemory',
+      statusText: 'NOT JSON',
+    });
+    expect(provider.postClaudeMemory).toHaveBeenCalledWith(null);
   });
 });

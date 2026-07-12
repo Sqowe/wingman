@@ -96,6 +96,7 @@ export const env = {
 
 export const Uri = {
   parse: (str: string) => ({ toString: () => str }),
+  file: (p: string) => ({ fsPath: p, scheme: 'file', toString: () => `file://${p.replace(/\\/g, '/')}` }),
   joinPath: (_base: unknown, ..._parts: string[]) => ({}),
 };
 

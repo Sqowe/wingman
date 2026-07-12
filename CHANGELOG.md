@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session and appended byte-identically each turn for KV-cache stability, bounded
   by a char budget (`WINGMAN_CLAUDE_MEMORY_MAX_CHARS`, default 12 000) with
   overflow files listed by name. Disable with `WINGMAN_CLAUDE_MEMORY=off`.
+  Shared memories are surfaced in the pi status banner as a read-only "Project
+  memory" group: the banner shows a `· N memories` count and the popover lists
+  each fact (capped at 8, with a "+N more" row that opens the memory folder).
+  Clicking a row opens that memory file in the editor — the host guards every
+  open to the reported memory folder so an arbitrary path can never be opened.
 
 ## [0.1.9] - 2026-07-10
 

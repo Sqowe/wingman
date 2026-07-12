@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import type { RpcEvent } from '../../../src/agent/transport';
-import type { PiCommand, ModelState, InstructionFilesInfo } from '../../../src/shared/messages';
+import type { PiCommand, ModelState, InstructionFilesInfo, ClaudeMemoryInfo } from '../../../src/shared/messages';
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -224,6 +224,11 @@ interface ChatState {
    * undefined = not yet received (initial state before first session start).
    */
   instructionFiles: InstructionFilesInfo | null | undefined;
+  /**
+   * Claude Code project memory shared into pi (read-only). null = no memory
+   * folder / unreadable; undefined = not yet received.
+   */
+  claudeMemory: ClaudeMemoryInfo | null | undefined;
   /** Active status entries from pi's setStatus() calls (keyed by statusKey). */
   uiStatuses: UiStatusEntry[];
   /** Active widget blocks from pi's setWidget() calls (keyed by widgetKey). */
@@ -260,6 +265,8 @@ interface ChatActions {
   setChatConfig: (showViewDiffButton: boolean) => void;
   /** Update resolved instruction files from an instructionFiles host message. */
   setInstructionFiles: (info: InstructionFilesInfo | null) => void;
+  /** Update shared Claude Code memory from a claudeMemory host message. */
+  setClaudeMemory: (info: ClaudeMemoryInfo | null) => void;
   /** Set or clear a status entry (key → text | null). */
   setUiStatus: (key: string, text: string | null) => void;
   /** Set or clear a widget block (key → lines[] | null). */
@@ -550,6 +557,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   uiEditorText: null,
   toolCardExpanded: {},
   instructionFiles: undefined,
+  claudeMemory: undefined,
 
   addUserMessage: (text, imageCount) =>
     set((state) => ({
@@ -601,6 +609,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   setChatConfig: (showViewDiffButton: boolean) => set(() => ({ showViewDiffButton })),
 
   setInstructionFiles: (info: InstructionFilesInfo | null) => set(() => ({ instructionFiles: info })),
+  setClaudeMemory: (info: ClaudeMemoryInfo | null) => set(() => ({ claudeMemory: info })),
 
   setUiStatus: (key, text) =>
     set((state) => {
@@ -688,6 +697,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         modelName: state.modelName,
         showViewDiffButton: state.showViewDiffButton,
         instructionFiles: state.instructionFiles,
+        claudeMemory: state.claudeMemory,
         toolCardExpanded: state.toolCardExpanded,
       };
       // Deep-clone items array elements that will be mutated so React

@@ -7,7 +7,7 @@
  *  - rAF-coalesced dispatch of streaming deltas (never re-renders per delta).
  */
 import React, { useEffect, useRef, useCallback, useState } from 'react';
-import type { HostMessage, PiStatus, AttachedImage, InstructionFileEntry, InstructionFilesInfo } from '@shared/messages';
+import type { HostMessage, PiStatus, AttachedImage, InstructionFileEntry, InstructionFilesInfo, ClaudeMemoryInfo } from '@shared/messages';
 import { vscode } from './vscodeApi';
 import { useChatStore, normalizeShowViewDiffButton } from './store';
 import type { UiWidget } from './store';
@@ -55,6 +55,8 @@ export default function App() {
   const setChatConfig = useChatStore((s) => s.setChatConfig);
   const instructionFiles = useChatStore((s) => s.instructionFiles);
   const setInstructionFiles = useChatStore((s) => s.setInstructionFiles);
+  const claudeMemory = useChatStore((s) => s.claudeMemory);
+  const setClaudeMemory = useChatStore((s) => s.setClaudeMemory);
 
   // rAF coalescer: buffer incoming agentEvent messages and flush per frame.
   const pendingEvents = useRef<RpcEvent[]>([]);
@@ -169,6 +171,10 @@ export default function App() {
         case 'instructionFiles':
           setInstructionFiles(msg.info);
           break;
+
+        case 'claudeMemory':
+          setClaudeMemory(msg.info);
+          break;
       }
     };
 
@@ -228,7 +234,7 @@ export default function App() {
 
   return (
     <div className="app" ref={containerRef}>
-      <PiStatusBanner status={piStatus} instructionFiles={instructionFiles} />
+      <PiStatusBanner status={piStatus} instructionFiles={instructionFiles} claudeMemory={claudeMemory} />
 
       {uiTitle && (
         <div className="ui-title" aria-label="Session title">{uiTitle}</div>
@@ -288,9 +294,11 @@ export default function App() {
 function PiStatusBanner({
   status,
   instructionFiles,
+  claudeMemory,
 }: {
   status: PiStatus | null;
   instructionFiles: InstructionFilesInfo | null | undefined;
+  claudeMemory: ClaudeMemoryInfo | null | undefined;
 }) {
   const [popoverOpen, setPopoverOpen] = React.useState(false);
   const bannerRef = React.useRef<HTMLDivElement>(null);
@@ -328,7 +336,13 @@ function PiStatusBanner({
   // For both 'found' and 'version-warning': one-line banner + optional popover.
   const fileCount = instructionFiles?.files.length;
   const showCount = instructionFiles !== undefined && instructionFiles !== null && fileCount !== undefined;
-  const countSuffix = showCount && fileCount! > 0 ? ` · ${fileCount} instruction${fileCount === 1 ? '' : 's'}` : '';
+  const instructionSuffix = showCount && fileCount! > 0 ? ` · ${fileCount} instruction${fileCount === 1 ? '' : 's'}` : '';
+  const memoryCount = claudeMemory?.count;
+  const memorySuffix =
+    claudeMemory != null && memoryCount !== undefined && memoryCount > 0
+      ? ` · ${memoryCount} ${memoryCount === 1 ? 'memory' : 'memories'}`
+      : '';
+  const countSuffix = `${instructionSuffix}${memorySuffix}`;
 
   const canOpenPopover = status.kind === 'found' || status.kind === 'version-warning';
 
@@ -368,6 +382,7 @@ function PiStatusBanner({
         <InstructionFilesPopover
           path={status.path}
           instructionFiles={instructionFiles}
+          claudeMemory={claudeMemory}
         />
       )}
     </div>
@@ -377,9 +392,11 @@ function PiStatusBanner({
 function InstructionFilesPopover({
   path,
   instructionFiles,
+  claudeMemory,
 }: {
   path: string;
   instructionFiles: InstructionFilesInfo | null | undefined;
+  claudeMemory: ClaudeMemoryInfo | null | undefined;
 }) {
   return (
     <div className="instruction-files-popover" role="tooltip">
@@ -404,6 +421,63 @@ function InstructionFilesPopover({
           </ul>
         )}
       </div>
+      {claudeMemory != null && claudeMemory.count > 0 && (
+        <ClaudeMemoryGroup memory={claudeMemory} />
+      )}
+    </div>
+  );
+}
+
+/** Popover cap: render at most this many memory rows, then a "+N more" escape row. */
+const MEMORY_ROW_CAP = 8;
+
+function ClaudeMemoryGroup({ memory }: { memory: ClaudeMemoryInfo }) {
+  const openFile = (filePath: string) => vscode.postMessage({ type: 'openFile', path: filePath });
+  const openFolder = (folderPath: string) => vscode.postMessage({ type: 'openFolder', path: folderPath });
+  const shown = memory.files.slice(0, MEMORY_ROW_CAP);
+  const extra = memory.count - shown.length;
+
+  return (
+    <div className="memory-group">
+      <div className="memory-group__header">
+        <span className="memory-group__title">Project memory · {memory.count}</span>
+        <span className="memory-group__badge">from Claude Code · read-only</span>
+      </div>
+      <ul className="memory-group__list">
+        {shown.map((entry) => (
+          <li key={entry.path} className="memory-group__entry">
+            <button
+              type="button"
+              className="memory-group__row"
+              title={entry.path}
+              onClick={() => openFile(entry.path)}
+            >
+              <span className="memory-group__icon" aria-hidden="true">🔖</span>
+              <span className="memory-group__label">{entry.title}</span>
+            </button>
+          </li>
+        ))}
+        {extra > 0 && (
+          <li className="memory-group__entry">
+            <button
+              type="button"
+              className="memory-group__row memory-group__row--more"
+              title={memory.dir}
+              onClick={() => openFolder(memory.dir)}
+            >
+              +{extra} more — open memory folder
+            </button>
+          </li>
+        )}
+      </ul>
+      <button
+        type="button"
+        className="memory-group__dir"
+        title={memory.dir}
+        onClick={() => openFolder(memory.dir)}
+      >
+        {memory.dir}
+      </button>
     </div>
   );
 }

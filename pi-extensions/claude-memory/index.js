@@ -20,15 +20,20 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
-// Generic status-strip key (NOT the reserved wingman:instructionFiles key), so
-// it renders in the webview's status strip as "Memory: N …". A future Level-2
-// change may move this into the PiStatusBanner instead.
-const STATUS_KEY = 'Memory';
+// Reserved status key intercepted by the Wingman host bridge (never shown in
+// the generic status strip). The host parses the JSON payload and renders a
+// "Project memory" group in the status banner. Mirrors wingman:instructionFiles.
+const CLAUDE_MEMORY_STATUS_KEY = 'wingman:claudeMemory';
 
 // Char budget for how much memory is eagerly inlined into the system prompt.
 // Whole files are included until the budget is reached; the remainder is listed
 // by name for the agent to read on demand. Overridable via env.
 const DEFAULT_MAX_CHARS = 12000;
+
+// Cap on how many fact entries are transmitted in the status report (paths +
+// titles) to keep RPC payloads bounded on large memory folders. The banner
+// popover only renders a handful anyway; `count` still carries the true total.
+const MAX_REPORTED_FILES = 200;
 
 export default function (pi) {
   // Kill switch — bail before registering any hooks.
@@ -39,28 +44,41 @@ export default function (pi) {
   let memoryBlock = null;
 
   pi.on('session_start', async (_event, ctx) => {
+    // Always emit a report so the host clears any stale memory from a previous
+    // session/project. `null` = no memory folder / empty / read error.
+    const report = (payload) => {
+      if (ctx.ui && typeof ctx.ui.setStatus === 'function') {
+        ctx.ui.setStatus(CLAUDE_MEMORY_STATUS_KEY, JSON.stringify(payload));
+      }
+    };
     try {
       const dir = resolveMemoryDir(ctx.cwd);
       if (!dir) {
         memoryBlock = null;
+        report(null);
         return;
       }
 
       const built = buildMemoryBlock(dir);
       if (!built || built.count === 0) {
         memoryBlock = null;
+        report(null);
         return;
       }
 
       memoryBlock = built.text;
 
-      const label = `${built.count} ${built.count === 1 ? 'memory' : 'memories'} from Claude Code`;
-      if (ctx.ui && typeof ctx.ui.setStatus === 'function') {
-        ctx.ui.setStatus(STATUS_KEY, label);
-      }
+      // Stage B: report the full fact-file list (paths + display titles) so the
+      // host can render a clickable "Project memory" banner group. This lists
+      // ALL facts (any is clickable), independent of which subset the char
+      // budget inlined into the prompt.
+      // The transmitted list is already capped by buildMemoryBlock; `count` is
+      // the true total (the banner shows "+N more" beyond what it lists).
+      report({ dir, count: built.count, files: built.files });
     } catch {
       // Sharing is best-effort — never let a read error break the session.
       memoryBlock = null;
+      report(null);
     }
   });
 
@@ -123,8 +141,10 @@ function gitRoot(start) {
  * until the char budget is reached; any remainder is listed by name so the pi
  * agent can read it on demand with its own read tool. Never mid-cuts a file.
  *
- * Returns { text, count } where count is the number of fact files, or null when
- * the folder holds no fact files.
+ * Returns { text, count, files } where count is the number of fact files and
+ * files is [{ path, title }] for every fact (titles parsed from the MEMORY.md
+ * index links, filename-slug fallback), or null when the folder holds no fact
+ * files.
  */
 function buildMemoryBlock(dir) {
   const maxChars = parseMaxChars();
@@ -134,7 +154,11 @@ function buildMemoryBlock(dir) {
 
   const parts = [];
   const indexPath = path.join(dir, 'MEMORY.md');
-  if (fileExists(indexPath)) parts.push(readText(indexPath).trim());
+  const indexText = fileExists(indexPath) ? readText(indexPath) : '';
+  if (indexText.trim()) parts.push(indexText.trim());
+
+  // Map filename -> display title parsed from MEMORY.md links ("- [Title](slug.md)").
+  const titles = parseIndexTitles(indexText);
 
   let used = parts.reduce((n, p) => n + p.length, 0);
   const skipped = [];
@@ -155,7 +179,34 @@ function buildMemoryBlock(dir) {
     );
   }
 
-  return { text: parts.join('\n\n'), count: factFiles.length };
+  // Cap the mapped list to avoid building a huge array on large memory folders;
+  // `count` stays the true total. The banner shows a "+N more" row beyond this.
+  const files = factFiles.slice(0, MAX_REPORTED_FILES).map((f) => ({
+    path: path.join(dir, f),
+    title: titles.get(f) ?? f.replace(/\.md$/, ''),
+  }));
+
+  return { text: parts.join('\n\n'), count: factFiles.length, files };
+}
+
+/**
+ * Parse a MEMORY.md index into a filename -> title map from its markdown links.
+ * Matches `[Title](slug.md)` anywhere on a line; the link target's basename is
+ * the key so titles resolve regardless of relative path prefixes.
+ */
+function parseIndexTitles(indexText) {
+  const map = new Map();
+  if (!indexText) return map;
+  // Match [Title](target.md) allowing an optional #anchor or ?query after .md,
+  // and relative path prefixes; key by the target's basename.
+  const linkRe = /\[([^\]]+)\]\(([^)]+?\.md)(?:[#?][^)]*)?\)/g;
+  let m;
+  while ((m = linkRe.exec(indexText)) !== null) {
+    const title = m[1].trim();
+    const file = path.basename(m[2].trim());
+    if (title && file && !map.has(file)) map.set(file, title);
+  }
+  return map;
 }
 
 /** Read WINGMAN_CLAUDE_MEMORY_MAX_CHARS, falling back to the default. */

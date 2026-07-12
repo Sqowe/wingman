@@ -263,6 +263,41 @@ export interface InstructionFilesMessage {
   info: InstructionFilesInfo | null;
 }
 
+// ─── Claude Code project memory (shared, read-only) ───────────────────────
+
+/** One remembered fact from Claude Code's project memory folder. */
+export interface ClaudeMemoryEntry {
+  /** Absolute path to the memory file (inside `ClaudeMemoryInfo.dir`). */
+  path: string;
+  /** Display title (parsed from the MEMORY.md index link, filename fallback). */
+  title: string;
+}
+
+export interface ClaudeMemoryInfo {
+  /** Absolute path to the resolved `.../memory/` directory. */
+  dir: string;
+  /** True total number of fact files. May exceed `files.length` (see below). */
+  count: number;
+  /**
+   * The reported fact files for display/clicking. A bounded subset: the
+   * extension caps the transmitted list (200 entries) and the host drops any
+   * malformed or out-of-dir entries, so this can be shorter than `count`. Every
+   * listed entry has an absolute path contained within `dir`.
+   */
+  files: ClaudeMemoryEntry[];
+}
+
+/**
+ * Sent after session (re)start when the bundled claude-memory extension reports
+ * the project's shared Claude Code memory. `info: null` = no memory folder for
+ * this project, or an unreadable/malformed report. Arrives unsolicited (the
+ * extension reports from `session_start`), queued until the webview is ready.
+ */
+export interface ClaudeMemoryMessage {
+  type: 'claudeMemory';
+  info: ClaudeMemoryInfo | null;
+}
+
 /**
  * Sent by the host with the chat UI configuration (whether to show the "View
  * Diff" button on completed `edit` tool cards), per the
@@ -291,7 +326,8 @@ export type HostMessage =
   | SessionMessagesMessage
   | ModelStateMessage
   | ChatConfigMessage
-  | InstructionFilesMessage;
+  | InstructionFilesMessage
+  | ClaudeMemoryMessage;
 
 // ─── Webview → Host ──────────────────────────────────────────────────────────
 
@@ -373,6 +409,27 @@ export interface RequestNewSessionMessage {
   type: 'newSession';
 }
 
+/**
+ * Sent by the webview to open a Claude Code memory file in the editor.
+ * The host guards that `path` resolves inside the most recently reported
+ * `ClaudeMemoryInfo.dir` before opening — the webview must never be able to
+ * name an arbitrary filesystem path (path-traversal defence).
+ */
+export interface OpenFileMessage {
+  type: 'openFile';
+  path: string;
+}
+
+/**
+ * Sent by the webview to reveal the Claude Code memory folder in the OS file
+ * manager. The host guards that `path` resolves (symlink-safe) to exactly the
+ * most recently reported `ClaudeMemoryInfo.dir` before revealing.
+ */
+export interface OpenFolderMessage {
+  type: 'openFolder';
+  path: string;
+}
+
 /** Union of every message the webview can send to the host. */
 export type WebviewMessage =
   | ReadyMessage
@@ -382,5 +439,7 @@ export type WebviewMessage =
   | OpenExternalMessage
   | OpenDiffMessage
   | RequestCommandsMessage
-  | RequestNewSessionMessage;
+  | RequestNewSessionMessage
+  | OpenFileMessage
+  | OpenFolderMessage;
 

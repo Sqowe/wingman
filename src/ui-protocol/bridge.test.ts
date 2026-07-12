@@ -597,3 +597,165 @@ describe('UiProtocolBridge — reserved setStatus key (wingman:instructionFiles)
     bridge2.dispose();
   });
 });
+
+// ─── Reserved setStatus key (wingman:claudeMemory) ───────────────────────────
+
+describe('UiProtocolBridge — reserved setStatus key (wingman:claudeMemory)', () => {
+  function makeSetStatusEvent(statusKey: string, statusText?: string) {
+    return {
+      type: 'extension_ui_request',
+      id: 'm1',
+      method: 'setStatus',
+      statusKey,
+      statusText,
+    };
+  }
+
+  function makeBridge(onMemory: (info: unknown) => void) {
+    return new UiProtocolBridge(
+      { appendLine: () => {} } as unknown as import('vscode').OutputChannel,
+      undefined,
+      onMemory as never,
+    );
+  }
+
+  it('routes the reserved key to the memory callback instead of postUiStatus', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = makeBridge((info) => received.push(info));
+    const provider = { postUiStatus: vi.fn() };
+    bridge2.setProvider(provider as never);
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:claudeMemory',
+      JSON.stringify({
+        dir: '/home/u/.claude/projects/x/memory',
+        count: 2,
+        files: [
+          { path: '/home/u/.claude/projects/x/memory/a.md', title: 'Alpha' },
+          { path: '/home/u/.claude/projects/x/memory/b.md', title: 'Beta' },
+        ],
+      }),
+    ) as never);
+    expect(provider.postUiStatus).not.toHaveBeenCalled();
+    expect(received).toHaveLength(1);
+    const info = received[0] as { dir: string; count: number; files: unknown[] };
+    expect(info.dir).toBe('/home/u/.claude/projects/x/memory');
+    expect(info.count).toBe(2);
+    expect(info.files).toHaveLength(2);
+    bridge2.dispose();
+  });
+
+  it('drops malformed/out-of-dir file entries but keeps the reported total count', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = makeBridge((info) => received.push(info));
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:claudeMemory',
+      JSON.stringify({
+        dir: '/mem',
+        count: 3,
+        files: [
+          { path: '/mem/a.md', title: 'A' },
+          { path: '/mem/b.md' }, // missing title
+          { title: 'no path' }, // missing path
+        ],
+      }),
+    ) as never);
+    const info = received[0] as { count: number; files: unknown[] };
+    // Only one entry is well-formed, but count reflects the true total (3).
+    expect(info.files).toHaveLength(1);
+    expect(info.count).toBe(3);
+    bridge2.dispose();
+  });
+
+  it('drops entries whose path escapes the reported dir', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = makeBridge((info) => received.push(info));
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:claudeMemory',
+      JSON.stringify({
+        dir: '/mem',
+        count: 2,
+        files: [
+          { path: '/mem/a.md', title: 'A' },
+          { path: '/etc/passwd', title: 'Escape' },
+          { path: 'relative/b.md', title: 'Relative' },
+        ],
+      }),
+    ) as never);
+    const info = received[0] as { files: Array<{ path: string }> };
+    expect(info.files).toHaveLength(1);
+    expect(info.files[0].path).toBe('/mem/a.md');
+    bridge2.dispose();
+  });
+
+  it('calls callback with null when dir is not absolute', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = makeBridge((info) => received.push(info));
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:claudeMemory',
+      JSON.stringify({ dir: 'relative/mem', count: 0, files: [] }),
+    ) as never);
+    expect(received[0]).toBeNull();
+    bridge2.dispose();
+  });
+
+  it('clamps a negative/non-integer count to a safe value', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = makeBridge((info) => received.push(info));
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:claudeMemory',
+      JSON.stringify({
+        dir: '/mem',
+        count: -5,
+        files: [{ path: '/mem/a.md', title: 'A' }],
+      }),
+    ) as never);
+    const info = received[0] as { count: number };
+    // Negative clamped, and never below the number of kept entries.
+    expect(info.count).toBe(1);
+    bridge2.dispose();
+  });
+
+  it('calls callback with null for malformed JSON', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = makeBridge((info) => received.push(info));
+    bridge2.handleEvent(makeSetStatusEvent('wingman:claudeMemory', 'NOT JSON') as never);
+    expect(received).toHaveLength(1);
+    expect(received[0]).toBeNull();
+    bridge2.dispose();
+  });
+
+  it('calls callback with null when dir is missing', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = makeBridge((info) => received.push(info));
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:claudeMemory',
+      JSON.stringify({ count: 0, files: [] }),
+    ) as never);
+    expect(received[0]).toBeNull();
+    bridge2.dispose();
+  });
+
+  it('does not intercept the memory key when no callback is provided', () => {
+    const bridge2 = new UiProtocolBridge(
+      { appendLine: () => {} } as unknown as import('vscode').OutputChannel,
+    );
+    const provider = { postUiStatus: vi.fn() };
+    bridge2.setProvider(provider as never);
+    // No memory callback wired: the reserved key is swallowed (returns), and must
+    // NOT leak to the generic status strip.
+    bridge2.handleEvent(makeSetStatusEvent('wingman:claudeMemory', '{"dir":"/m","files":[]}') as never);
+    expect(provider.postUiStatus).not.toHaveBeenCalled();
+    bridge2.dispose();
+  });
+
+  it('routes every other statusKey through postUiStatus unaffected', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = makeBridge((info) => received.push(info));
+    const provider = { postUiStatus: vi.fn() };
+    bridge2.setProvider(provider as never);
+    bridge2.handleEvent(makeSetStatusEvent('some-other-key', 'hi') as never);
+    expect(provider.postUiStatus).toHaveBeenCalledWith('some-other-key', 'hi');
+    expect(received).toHaveLength(0);
+    bridge2.dispose();
+  });
+});

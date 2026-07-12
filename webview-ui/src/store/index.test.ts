@@ -743,6 +743,40 @@ describe('store.setChatConfig', () => {
   });
 });
 
+// ─── setClaudeMemory ──────────────────────────────────────────
+
+describe('store.setClaudeMemory', () => {
+  beforeEach(() => {
+    useChatStore.setState({ claudeMemory: undefined });
+  });
+
+  it('starts undefined (not yet received)', () => {
+    expect(useChatStore.getState().claudeMemory).toBeUndefined();
+  });
+
+  it('sets memory info', () => {
+    const info = { dir: '/mem', count: 2, files: [
+      { path: '/mem/a.md', title: 'Alpha' },
+      { path: '/mem/b.md', title: 'Beta' },
+    ] };
+    useChatStore.getState().setClaudeMemory(info);
+    expect(useChatStore.getState().claudeMemory).toEqual(info);
+  });
+
+  it('clears to null (no memory folder / unreadable)', () => {
+    useChatStore.getState().setClaudeMemory({ dir: '/mem', count: 0, files: [] });
+    useChatStore.getState().setClaudeMemory(null);
+    expect(useChatStore.getState().claudeMemory).toBeNull();
+  });
+
+  it('is preserved across resetSession (re-reported on restart, not cleared)', () => {
+    const info = { dir: '/mem', count: 1, files: [{ path: '/mem/a.md', title: 'A' }] };
+    useChatStore.getState().setClaudeMemory(info);
+    useChatStore.getState().resetSession();
+    expect(useChatStore.getState().claudeMemory).toEqual(info);
+  });
+});
+
 // ─── normalizeShowViewDiffButton ──────────────────────────────────────────────
 
 describe('store.normalizeShowViewDiffButton', () => {

@@ -163,6 +163,114 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
+/* ── Project memory group (shared from Claude Code) ───────────────────────── */
+
+.memory-group {
+  border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+  padding: 6px 10px;
+}
+
+.memory-group__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.memory-group__title {
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.memory-group__badge {
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.memory-group__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.memory-group__entry {
+  display: flex;
+}
+
+.memory-group__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 4px;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--vscode-foreground);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.memory-group__row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+
+.memory-group__row:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
+.memory-group__icon {
+  flex: 0 0 auto;
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.memory-group__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-group__row--more {
+  color: var(--vscode-textLink-foreground);
+}
+
+.memory-group__dir {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 3px 4px;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 10px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.memory-group__dir:hover {
+  background: var(--vscode-list-hoverBackground);
+  color: var(--vscode-textLink-foreground);
+}
+
+.memory-group__dir:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
 /* ── Message list ─────────────────────────────────────────────────────────── */
 
 /* The slot soaks up exactly the leftover flex space (gaps, title, status strip,

@@ -15,7 +15,9 @@ On `session_start` it:
    [Memory source](#memory-source)).
 2. Builds a single markdown block from `MEMORY.md` (the index) plus the
    individual fact files, stripping YAML frontmatter.
-3. Reports a count back to Wingman via `ctx.ui.setStatus('Memory', '<n> memories …')`.
+3. Reports the full fact list back to Wingman via the reserved status key
+   `ctx.ui.setStatus('wingman:claudeMemory', JSON.stringify({ dir, count, files }))`
+   (see [Status key](#status-key)).
 
 Then on every `before_agent_start` it appends that block to pi's system prompt,
 under a `## Project memory (shared from Claude Code — read-only)` heading, with a
@@ -50,21 +52,34 @@ If no such folder exists, the extension is inert (nothing injected, no status).
 
 ## Status key
 
-`Memory` — a **generic** status key (unlike `instruction-report`'s reserved
-`wingman:instructionFiles`), so it flows through `UiProtocolBridge` to the
-webview's generic status strip and renders as `Memory: 4 memories from Claude Code`.
+`wingman:claudeMemory` — a **reserved** status key (like `instruction-report`'s
+`wingman:instructionFiles`). Wingman's `UiProtocolBridge` intercepts it before it
+can reach the generic status strip, parses the JSON payload
+(`{ dir, count, files: [{ path, title }] }`), and renders a read-only
+**Project memory** group inside the `PiStatusBanner` popover — the banner shows a
+`· N memories` count and each row opens that memory file in the editor.
 
-> A later "Level 2" change may instead surface project memory inside the
-> `PiStatusBanner` popover, alongside the instruction files, as its own
-> read-only group. That requires a Wingman-side change and is out of scope here.
+The payload lists **every** fact file (so any row is clickable), independent of
+which subset the char budget (see [Configuration](#configuration)) inlined into
+the prompt — up to a transmit cap of 200 entries to keep the RPC payload bounded
+(`count` still carries the true total, and the banner shows a "+N more" row that
+reveals the memory folder). Titles are parsed from the `MEMORY.md` index links
+(`- [Title](slug.md)`), falling back to the filename slug.
+
+If the payload is malformed or unreadable, the host treats it as "no memory" and
+shows no group.
 
 ## Loading
 
-Like `instruction-report`, this extension is meant to be loaded by pi via
-`-e <absolute-path>` when Wingman spawns the agent. Wingman currently passes a
-single bundled `-e` (the instruction reporter); loading this one as well is a
-small spawn change in `src/extension.ts` / `src/agent/controller.ts` and is the
-immediate next step.
+Like `instruction-report`, this extension is loaded by pi via
+`-e <absolute-path>` when Wingman spawns the agent. Wingman declares both bundled
+extensions in `src/extension.ts` and passes one `-e` per existing file through
+`src/agent/controller.ts`.
+
+> **Double-load caveat:** if this extension is *also* globally `pi install`ed
+> (listed under `packages` in `~/.pi/agent/settings.json`), pi loads it twice and
+> the memory block is injected twice. The ship path is the bundled `-e`; remove
+> any global install to avoid duplication.
 
 ## Why plain JavaScript
 
@@ -75,10 +90,13 @@ repo — each gets its own folder under `pi-extensions/<name>/` with a `README.m
 
 ## Fallback behaviour
 
-- **No memory folder for the project**: inert — nothing injected, no status set.
+- **No memory folder for the project**: inert — nothing injected, no report sent.
 - **Folder exists but has no fact files**: inert.
 - **Read error**: caught and swallowed — sharing is best-effort and never breaks
   the session.
+- **Never writes**: the extension has no write path; the injected text tells the
+  agent not to edit the files, but the guarantee is structural (read-only by
+  construction).
 
 ## Files
 

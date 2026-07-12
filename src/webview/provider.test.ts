@@ -9,7 +9,7 @@
  *  - Size limit: oversized clipboard payload is dropped by validation.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // vi.mock must be called before any import that depends on 'vscode'. Vitest
 // hoists vi.mock() calls above imports, so this explicit factory ensures the
@@ -20,6 +20,9 @@ vi.mock('vscode', async () => {
 });
 
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as nodePath from 'path';
 import { WingmanViewProvider } from './provider';
 import type { AgentController } from '../agent/controller';
 
@@ -721,5 +724,250 @@ describe('WingmanViewProvider — postInstructionFiles', () => {
     sm3({ type: 'ready' });
     await flushMicrotasks();
     expect(pm3).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'instructionFiles' }));
+  });
+});
+
+// ─── postClaudeMemory ────────────────────────────────────────────
+
+describe('WingmanViewProvider — postClaudeMemory', () => {
+  const sample = {
+    dir: '/mem',
+    count: 1,
+    files: [{ path: '/mem/a.md', title: 'Alpha' }],
+  };
+
+  it('posts a claudeMemory message to the webview when ready', () => {
+    const { provider, postMessage } = resolveProvider();
+    provider.postClaudeMemory(sample);
+    expect(postMessage).toHaveBeenCalledWith({ type: 'claudeMemory', info: sample });
+  });
+
+  it('posts null info when there is no memory folder', () => {
+    const { provider, postMessage } = resolveProvider();
+    provider.postClaudeMemory(null);
+    expect(postMessage).toHaveBeenCalledWith({ type: 'claudeMemory', info: null });
+  });
+
+  it('replays cached memory on webview ready', async () => {
+    const { view: v2, postMessage: pm2, sendMessage: sm2 } = makeWebviewView();
+    const p2 = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    p2.setController(makeController() as unknown as AgentController);
+    p2.resolveWebviewView(
+      v2,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    // Cache before ready — must not post yet.
+    p2.postClaudeMemory(sample);
+    expect(pm2).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'claudeMemory' }));
+    sm2({ type: 'ready' });
+    await flushMicrotasks();
+    expect(pm2).toHaveBeenCalledWith({ type: 'claudeMemory', info: sample });
+  });
+
+  it('does not replay when memory was never set (undefined)', async () => {
+    const { view: v3, postMessage: pm3, sendMessage: sm3 } = makeWebviewView();
+    const p3 = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    p3.setController(makeController() as unknown as AgentController);
+    p3.resolveWebviewView(
+      v3,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    sm3({ type: 'ready' });
+    await flushMicrotasks();
+    expect(pm3).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'claudeMemory' }));
+  });
+});
+
+// ─── openFile / openFolder (symlink-safe memory-dir guard) ──────────────────
+
+describe('WingmanViewProvider — openFile / openFolder', () => {
+  let tmpDir: string;
+  let memDir: string;
+  let fileA: string;
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    // Real files on disk — the guard canonicalises with fs.realpathSync.
+    tmpDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'wingman-mem-'));
+    memDir = nodePath.join(tmpDir, 'memory');
+    fs.mkdirSync(memDir);
+    fileA = nodePath.join(memDir, 'a.md');
+    fs.writeFileSync(fileA, '# Alpha');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('opens a file inside the reported memory dir', async () => {
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 1, files: [{ path: fileA, title: 'A' }] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFile', path: fileA });
+    await flushMicrotasks();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toBe('vscode.open');
+  });
+
+  it('rejects a path outside the memory dir (path traversal)', async () => {
+    const outside = nodePath.join(tmpDir, 'passwd');
+    fs.writeFileSync(outside, 'secret');
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 1, files: [{ path: fileA, title: 'A' }] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFile', path: nodePath.join(memDir, '..', 'passwd') });
+    await flushMicrotasks();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('rejects a symlink inside the dir that escapes it (symlink-safe)', async () => {
+    const secret = nodePath.join(tmpDir, 'secret.md');
+    fs.writeFileSync(secret, 'top secret');
+    const link = nodePath.join(memDir, 'link.md');
+    let symlinkOk = true;
+    try {
+      fs.symlinkSync(secret, link);
+    } catch {
+      // Symlink creation may be unavailable (e.g. restricted CI).
+      symlinkOk = false;
+    }
+    if (!symlinkOk) {
+      // eslint-disable-next-line no-console
+      console.warn('[provider.test] skipping symlink-escape assertion: symlinks unavailable');
+      return;
+    }
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 1, files: [{ path: link, title: 'Link' }] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFile', path: link });
+    await flushMicrotasks();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('rejects a sibling dir that shares a name prefix', async () => {
+    const sibling = nodePath.join(tmpDir, 'memory-evil');
+    fs.mkdirSync(sibling);
+    const evil = nodePath.join(sibling, 'secret.md');
+    fs.writeFileSync(evil, 'secret');
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 0, files: [] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFile', path: evil });
+    await flushMicrotasks();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('rejects when no memory dir has been reported', async () => {
+    const { sendMessage } = resolveProvider();
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFile', path: fileA });
+    await flushMicrotasks();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('rejects openFile when the target is a directory', async () => {
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 0, files: [] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFile', path: memDir });
+    await flushMicrotasks();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('reveals the memory folder via revealFileInOS on openFolder', async () => {
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 0, files: [] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFolder', path: memDir });
+    await flushMicrotasks();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toBe('revealFileInOS');
+  });
+
+  it('rejects openFolder when the target is a file (not a directory)', async () => {
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 1, files: [{ path: fileA, title: 'A' }] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFolder', path: fileA });
+    await flushMicrotasks();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('rejects openFolder outside the reported dir', async () => {
+    const sibling = nodePath.join(tmpDir, 'memory-evil');
+    fs.mkdirSync(sibling);
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 0, files: [] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFolder', path: sibling });
+    await flushMicrotasks();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('rejects openFolder on a subdirectory of the memory dir (exact-dir contract)', async () => {
+    const subdir = nodePath.join(memDir, 'sub');
+    fs.mkdirSync(subdir);
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 0, files: [] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFolder', path: subdir });
+    await flushMicrotasks();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a warning when vscode.open fails (missing file)', async () => {
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 1, files: [{ path: fileA, title: 'A' }] });
+    vi.spyOn(vscode.commands, 'executeCommand').mockRejectedValue(new Error('not found'));
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage');
+    expect(() => sendMessage({ type: 'openFile', path: fileA })).not.toThrow();
+    await flushMicrotasks();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('still attempts to open a stale (deleted) file inside the dir, then warns', async () => {
+    const stale = nodePath.join(memDir, 'gone.md');
+    const { provider, sendMessage } = resolveProvider();
+    // Reported but never created on disk (deleted between report and click).
+    provider.postClaudeMemory({ dir: memDir, count: 1, files: [{ path: stale, title: 'Gone' }] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand').mockRejectedValue(new Error('ENOENT'));
+    const warn = vi.spyOn(vscode.window, 'showWarningMessage');
+    sendMessage({ type: 'openFile', path: stale });
+    await flushMicrotasks();
+    // Containment passes (path is inside the dir), open is attempted, then warns.
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toBe('vscode.open');
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a stale path OUTSIDE the dir even when it does not exist', async () => {
+    const staleOutside = nodePath.join(tmpDir, 'gone-outside.md');
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 0, files: [] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFile', path: staleOutside });
+    await flushMicrotasks();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('drops an openFile message with a non-string path', () => {
+    const { sendMessage } = resolveProvider();
+    expect(() => sendMessage({ type: 'openFile' })).not.toThrow();
+  });
+
+  it('clears memory state on a null report: posts null and rejects opens', async () => {
+    const { provider, sendMessage, postMessage } = resolveProvider();
+    // First a valid report, then a null report (e.g. switching to a project with
+    // no memory folder) must clear state so stale entries can't be opened.
+    provider.postClaudeMemory({ dir: memDir, count: 1, files: [{ path: fileA, title: 'A' }] });
+    provider.postClaudeMemory(null);
+    expect(postMessage).toHaveBeenCalledWith({ type: 'claudeMemory', info: null });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFile', path: fileA });
+    sendMessage({ type: 'openFolder', path: memDir });
+    await flushMicrotasks();
+    expect(spy).not.toHaveBeenCalled();
   });
 });

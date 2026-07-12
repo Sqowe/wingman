@@ -9,9 +9,12 @@
 
 import * as vscode from 'vscode';
 import * as crypto from 'crypto';
+import * as path from 'path';
+import * as fs from 'fs';
 import type { AgentController } from '../agent/controller';
-import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo } from '../shared/messages';
+import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo, ClaudeMemoryInfo } from '../shared/messages';
 import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES, MAX_PATCH_BYTES, MAX_IMAGE_BYTES, MAX_IMAGES_PER_PROMPT, MAX_TOTAL_IMAGE_BYTES, ALLOWED_IMAGE_MIME_TYPES, type AllowedImageMimeType } from '../shared/limits';
+import { isWithinOrEqualDir, isSameDir } from '../shared/path-guard';
 import type { RpcEvent } from '../agent/transport';
 import type { DiffService } from '../diff/diff-service';
 
@@ -55,6 +58,8 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   private _lastChatConfig: boolean | undefined;
   /** Last instruction files info — replayed on webview (re)ready. undefined = never set. */
   private _lastInstructionFiles: InstructionFilesInfo | null | undefined;
+  /** Last Claude Code memory info — replayed on webview (re)ready. undefined = never set. */
+  private _lastClaudeMemory: ClaudeMemoryInfo | null | undefined;
   /** Timestamp of the last accepted sendPrompt — for basic rate-limiting. */
   private _lastPromptAt = 0;
   /** Timestamp of the last accepted clipboard write — for basic rate-limiting. */
@@ -160,6 +165,10 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
             if (this._lastInstructionFiles !== undefined) {
               this._postMessage({ type: 'instructionFiles', info: this._lastInstructionFiles });
             }
+            // Replay Claude Code memory so the banner popover is accurate immediately.
+            if (this._lastClaudeMemory !== undefined) {
+              this._postMessage({ type: 'claudeMemory', info: this._lastClaudeMemory });
+            }
             break;
 
           case 'sendPrompt':
@@ -190,6 +199,14 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
             // The webview forwards the new-session shortcut (keybindings don't
             // reach the iframe). Run the same native command the palette uses.
             void vscode.commands.executeCommand('sqoweWingman.newSession');
+            break;
+
+          case 'openFile':
+            void this._handleOpenFile(message.path);
+            break;
+
+          case 'openFolder':
+            void this._handleOpenFolder(message.path);
             break;
         }
       }),
@@ -337,6 +354,38 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
 
       case 'newSession':
         return { type: 'newSession' };
+
+      case 'openFile': {
+        if (typeof msg['path'] !== 'string') {
+          this._controller?.outputChannel?.appendLine(
+            '[WingmanViewProvider] dropped openFile: missing/invalid path field',
+          );
+          return null;
+        }
+        if (msg['path'].length > 4096) {
+          this._controller?.outputChannel?.appendLine(
+            '[WingmanViewProvider] dropped openFile: path exceeds 4096 chars',
+          );
+          return null;
+        }
+        return { type: 'openFile', path: msg['path'] };
+      }
+
+      case 'openFolder': {
+        if (typeof msg['path'] !== 'string') {
+          this._controller?.outputChannel?.appendLine(
+            '[WingmanViewProvider] dropped openFolder: missing/invalid path field',
+          );
+          return null;
+        }
+        if (msg['path'].length > 4096) {
+          this._controller?.outputChannel?.appendLine(
+            '[WingmanViewProvider] dropped openFolder: path exceeds 4096 chars',
+          );
+          return null;
+        }
+        return { type: 'openFolder', path: msg['path'] };
+      }
 
       default:
         this._controller?.outputChannel?.appendLine(
@@ -596,6 +645,14 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Push Claude Code memory info to the webview (and cache for replay on ready). */
+  public postClaudeMemory(info: ClaudeMemoryInfo | null): void {
+    this._lastClaudeMemory = info;
+    if (this._webviewReady) {
+      this._postMessage({ type: 'claudeMemory', info });
+    }
+  }
+
   /** Push the chat UI config to the webview (and cache for replay on ready). */
   public postChatConfig(showViewDiffButton: boolean): void {
     this._lastChatConfig = showViewDiffButton;
@@ -687,6 +744,133 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     } catch (err) {
       this._controller?.outputChannel?.appendLine(
         `[WingmanViewProvider] openExternal failed: ${String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * Resolve a webview-supplied path against the most recently reported memory
+   * `dir`. Returns the target (and whether it exists / is a dir) only if it is
+   * the dir itself or strictly contained within it; otherwise null.
+   *
+   * A webview message must never be able to open an arbitrary filesystem path
+   * (path-traversal defence). The dir is canonicalised with `fs.realpathSync`
+   * (symlink-safe anchor). When the target exists it is realpath'd too, so a
+   * symlink inside the dir cannot escape containment; when it does NOT exist
+   * (e.g. deleted between report and click) we fall back to its resolved path
+   * and still enforce containment via `path.relative` — so a stale entry reaches
+   * the caller's open attempt and surfaces a non-blocking warning rather than
+   * being silently dropped. Containment uses shared, platform-aware helpers
+   * (`path.relative`-based) so name-prefix siblings (`/mem-evil` vs `/mem`) and
+   * Windows casing are handled consistently.
+   */
+  private _resolveWithinMemoryDir(target: string): { target: string; exists: boolean; isDir: boolean } | null {
+    const dir = this._lastClaudeMemory?.dir;
+    if (!dir) {
+      this._controller?.outputChannel?.appendLine(
+        '[WingmanViewProvider] openFile/openFolder rejected: no memory dir reported',
+      );
+      return null;
+    }
+    let realDir: string;
+    try {
+      realDir = fs.realpathSync(path.resolve(dir));
+    } catch (err) {
+      // The memory dir itself is gone / unreadable — refuse rather than guess.
+      this._controller?.outputChannel?.appendLine(
+        `[WingmanViewProvider] openFile/openFolder rejected: memory dir realpath failed (${String(err)})`,
+      );
+      return null;
+    }
+    // Prefer the symlink-resolved target when it exists; otherwise fall back to
+    // its plain resolved path so stale/deleted entries still validate + warn.
+    let resolvedTarget: string;
+    let exists = true;
+    let isDir = false;
+    try {
+      resolvedTarget = fs.realpathSync(path.resolve(target));
+      isDir = fs.statSync(resolvedTarget).isDirectory();
+    } catch {
+      // Target itself is gone. Canonicalise its PARENT (which usually still
+      // exists) so symlinks above the leaf are still resolved — important where
+      // the OS temp/home dir is itself a symlink (e.g. macOS /var -> /private/var)
+      // — then rejoin the leaf name. Falls back to a plain resolve if even the
+      // parent is gone.
+      const abs = path.resolve(target);
+      try {
+        resolvedTarget = path.join(fs.realpathSync(path.dirname(abs)), path.basename(abs));
+      } catch {
+        resolvedTarget = abs;
+      }
+      exists = false;
+    }
+    if (!isWithinOrEqualDir(realDir, resolvedTarget)) {
+      this._controller?.outputChannel?.appendLine(
+        `[WingmanViewProvider] openFile/openFolder rejected: path outside memory dir (${resolvedTarget})`,
+      );
+      return null;
+    }
+    return { target: resolvedTarget, exists, isDir };
+  }
+
+  /**
+   * Open a Claude Code memory file in the editor. Guarded to the reported memory
+   * dir; a directory target is rejected here (use openFolder). A missing file
+   * still reaches `vscode.open`, which surfaces a non-blocking warning.
+   */
+  private async _handleOpenFile(filePath: string): Promise<void> {
+    const resolved = this._resolveWithinMemoryDir(filePath);
+    if (!resolved) return;
+    if (resolved.isDir) {
+      this._controller?.outputChannel?.appendLine(
+        '[WingmanViewProvider] openFile rejected: target is a directory (use openFolder)',
+      );
+      return;
+    }
+    try {
+      await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(resolved.target));
+    } catch (err) {
+      // Missing file (e.g. deleted between report and click) -> non-blocking warning.
+      void vscode.window.showWarningMessage(
+        `Sqowe Wingman: could not open memory file — ${String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * Reveal the Claude Code memory folder in the OS file manager. Guarded so only
+   * the reported memory dir itself can be revealed. Uses `revealFileInOS` rather
+   * than `vscode.open`, which does not reliably open directories across
+   * platforms/VS Code versions.
+   */
+  private async _handleOpenFolder(folderPath: string): Promise<void> {
+    const resolved = this._resolveWithinMemoryDir(folderPath);
+    if (!resolved) return;
+    // Contract (OpenFolderMessage): only the memory dir *itself* may be revealed,
+    // not a subdirectory within it.
+    let realDir: string;
+    try {
+      realDir = fs.realpathSync(path.resolve(this._lastClaudeMemory!.dir));
+    } catch {
+      return;
+    }
+    if (!isSameDir(realDir, resolved.target)) {
+      this._controller?.outputChannel?.appendLine(
+        '[WingmanViewProvider] openFolder rejected: target is not the memory dir itself',
+      );
+      return;
+    }
+    if (!resolved.exists || !resolved.isDir) {
+      this._controller?.outputChannel?.appendLine(
+        '[WingmanViewProvider] openFolder rejected: target is not an existing directory',
+      );
+      return;
+    }
+    try {
+      await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(resolved.target));
+    } catch (err) {
+      void vscode.window.showWarningMessage(
+        `Sqowe Wingman: could not open memory folder — ${String(err)}`,
       );
     }
   }
