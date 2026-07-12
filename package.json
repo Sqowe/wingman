@@ -2,7 +2,7 @@
   "name": "sqowe-wingman",
   "displayName": "Sqowe Wingman",
   "description": "A VS Code client for the pi coding agent",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "publisher": "sqowe",
   "license": "MIT",
   "repository": {
