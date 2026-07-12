@@ -71,17 +71,25 @@ function readShowViewDiffButton(): boolean {
 
 export function activate(context: vscode.ExtensionContext): void {
   // ── Controller ────────────────────────────────────────────────────────────
-  const bundledExtensionPath = context.asAbsolutePath('pi-extensions/instruction-report/index.js');
-  // Only pass -e if the bundled extension file actually exists (guards against
-  // packaging errors and development environments where the file may be absent).
-  const bundledExtensionArg = fs.existsSync(bundledExtensionPath) ? bundledExtensionPath : undefined;
-  const controller = new AgentController(bundledExtensionArg);
+  const bundledExtensions = [
+    { rel: 'pi-extensions/instruction-report/index.js', label: 'instruction file visibility' },
+    { rel: 'pi-extensions/claude-memory/index.js', label: 'Claude Code memory sharing' },
+  ].map((e) => {
+    const absPath = context.asAbsolutePath(e.rel);
+    return { ...e, path: absPath, exists: isFile(absPath) };
+  });
+  // Only pass -e for bundled extensions that resolve to a regular file (guards
+  // against packaging errors and dev environments where a file may be absent,
+  // and against a path that exists but is a directory or other non-file entry).
+  const controller = new AgentController(bundledExtensions.filter((e) => e.exists).map((e) => e.path));
   _controller = controller;
-  if (!bundledExtensionArg) {
-    // Log to the output channel so users can diagnose "instruction file info unavailable".
-    controller.outputChannel.appendLine(
-      `[extension] bundled pi extension not found at ${bundledExtensionPath} — instruction file visibility unavailable`,
-    );
+  for (const e of bundledExtensions) {
+    if (!e.exists) {
+      // Log to the output channel so users can diagnose the missing feature.
+      controller.outputChannel.appendLine(
+        `[extension] bundled pi extension not found at ${e.path} — ${e.label} unavailable`,
+      );
+    }
   }
   // Push into subscriptions so VS Code cleans it up if deactivate() is not
   // called (e.g., reload, test harness). AgentController.dispose() is
@@ -277,4 +285,13 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   _controller?.dispose();
   _controller = undefined;
+}
+
+/** True only if `p` exists and is a regular file (not a directory/other entry). */
+function isFile(p: string): boolean {
+  try {
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
 }

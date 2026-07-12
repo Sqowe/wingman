@@ -14,6 +14,7 @@ import type { AgentTransport, RpcEvent } from './transport';
 import type { WingmanViewProvider } from '../webview/provider';
 import type { PiStatus, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo } from '../shared/messages';
 import { UiProtocolBridge } from '../ui-protocol/bridge';
+import { normalizeBundledExtensionPaths, buildExtraArgs } from './spawn-args';
 import type { TrustDecision } from '../trust/project-trust';
 
 /**
@@ -117,6 +118,8 @@ export class AgentController implements vscode.Disposable {
   private _disposed = false;
   /** Incremented on every _doStart call; used to detect stale completions. */
   private _startSeq = 0;
+  /** Bundled pi extension paths passed as `-e` args on spawn (de-duplicated). */
+  private readonly _bundledExtensionPaths: readonly string[];
   /** Owned output channel — disposed with the controller. */
   private readonly _outputChannel: vscode.OutputChannel;
   /** Handles extension_ui_request events from pi. */
@@ -147,7 +150,10 @@ export class AgentController implements vscode.Disposable {
   private _instructionFilesWaiter: InstructionFilesWaiter | undefined;
   private _instructionFilesNonce = 0;
 
-  constructor(private readonly _bundledExtensionPath?: string) {
+  constructor(bundledExtensionPaths: readonly string[] = []) {
+    // Normalize + de-duplicate so bad/duplicate entries never yield `-e ''` or
+    // repeated `-e` pairs (which could double-load an extension on the pi side).
+    this._bundledExtensionPaths = normalizeBundledExtensionPaths(bundledExtensionPaths);
     this._outputChannel = vscode.window.createOutputChannel('Sqowe Wingman');
     this._uiBridge = new UiProtocolBridge(
       this._outputChannel,
@@ -942,11 +948,11 @@ export class AgentController implements vscode.Disposable {
 
     this._tearDownTransport();
 
-    const extraArgs = [
-      ...(this._trustArg ? [this._trustArg] : []),
-      ...(resumeSessionPath ? ['--session', resumeSessionPath] : []),
-      ...(this._bundledExtensionPath ? ['-e', this._bundledExtensionPath] : []),
-    ];
+    const extraArgs = buildExtraArgs({
+      trustArg: this._trustArg,
+      resumeSessionPath,
+      bundledExtensionPaths: this._bundledExtensionPaths,
+    });
     const transport = new RpcTransport(piStatus.path, cwd, extraArgs);
     transport.outputChannel = this._outputChannel;
 

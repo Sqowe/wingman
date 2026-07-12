@@ -814,3 +814,13 @@ describe('AgentController._reportInstructionFiles()', () => {
     })).toBe(true);
   });
 });
+
+describe('AgentController — bundled extension paths', () => {
+  it('is constructed cleanly with no args', () => {
+    expect(() => new AgentController()).not.toThrow();
+  });
+
+  it('is constructed cleanly with a list of extension paths', () => {
+    expect(() => new AgentController(['/ext/a/index.js', '/ext/b/index.js'])).not.toThrow();
+  });
+});

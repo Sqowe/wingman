@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Claude Code memory sharing (read-only)** — when a project also has a Claude
+  Code memory folder (`~/.claude/projects/<slug>/memory/`), Wingman now loads a
+  bundled pi extension that reads that folder and appends its facts to pi's
+  system prompt, so the pi agent shares what Claude Code has already learned
+  about the project. Sharing is strictly one-way and read-only — the extension
+  never writes, updates, or deletes the memory. Injection is resolved once per
+  session and appended byte-identically each turn for KV-cache stability, bounded
+  by a char budget (`WINGMAN_CLAUDE_MEMORY_MAX_CHARS`, default 12 000) with
+  overflow files listed by name. Disable with `WINGMAN_CLAUDE_MEMORY=off`.
+
 ## [0.1.9] - 2026-07-10
 
 ### Added
