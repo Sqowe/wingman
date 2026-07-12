@@ -119,7 +119,7 @@ export class AgentController implements vscode.Disposable {
   /** Incremented on every _doStart call; used to detect stale completions. */
   private _startSeq = 0;
   /** Bundled pi extension paths passed as `-e` args on spawn (de-duplicated). */
-  private readonly _bundledExtensionPaths: readonly string[];
+  private _bundledExtensionPaths: readonly string[];
   /** Owned output channel — disposed with the controller. */
   private readonly _outputChannel: vscode.OutputChannel;
   /** Handles extension_ui_request events from pi. */
@@ -173,6 +173,16 @@ export class AgentController implements vscode.Disposable {
         this._provider?.postClaudeMemory(info);
       },
     );
+  }
+
+  /**
+   * Replace the bundled `-e` extension paths used on the next spawn. Backs the
+   * `sqoweWingman.shareClaudeMemory` toggle (which gates the claude-memory
+   * extension); call `reload()` afterwards to respawn pi with the new set.
+   * De-duplicated like the constructor.
+   */
+  public setBundledExtensionPaths(paths: readonly string[]): void {
+    this._bundledExtensionPaths = normalizeBundledExtensionPaths(paths);
   }
 
   // ─── Public API ───────────────────────────────────────────────────────────

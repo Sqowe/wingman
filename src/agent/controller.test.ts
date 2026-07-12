@@ -824,6 +824,16 @@ describe('AgentController — bundled extension paths', () => {
   it('is constructed cleanly with a list of extension paths', () => {
     expect(() => new AgentController(['/ext/a/index.js', '/ext/b/index.js'])).not.toThrow();
   });
+
+  it('accepts a replacement extension-path set via setBundledExtensionPaths (backs the memory toggle)', () => {
+    const controller = new AgentController(['/ext/a/index.js']);
+    // Re-applying the gate (e.g. sqoweWingman.shareClaudeMemory toggled off) swaps
+    // the -e set for the next spawn; de-duplicates like the constructor.
+    expect(() => controller.setBundledExtensionPaths([])).not.toThrow();
+    expect(() =>
+      controller.setBundledExtensionPaths(['/ext/a/index.js', '/ext/a/index.js', '/ext/b/index.js']),
+    ).not.toThrow();
+  });
 });
 
 describe('AgentController — claudeMemory bridge report', () => {

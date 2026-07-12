@@ -84,6 +84,7 @@ The extension exposes only Wingman-side GUI settings; everything else belongs to
 | --- | --- | --- |
 | `sqoweWingman.piExecutablePath` | `""` | Path to the `pi` executable (a leading `~` is expanded). Empty = auto-detect from `PATH`, npm-global, Homebrew, and Volta. |
 | `sqoweWingman.showViewDiffButton` | `true` | Show the *View Diff* button on completed `edit` tool cards (read-only before↔after preview). Set to `false` to hide it. Changes apply to the running chat immediately. |
+| `sqoweWingman.shareClaudeMemory` | `true` | Share Claude Code's project memory (read-only) with pi — injects the facts Claude Code recorded for the project into pi's prompt and lists them in the status banner (click a memory to open it). Only active when a Claude Code memory folder exists for the project. Toggling reloads the agent. |
 
 ### pi's configuration (shared with the CLI)
 

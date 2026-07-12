@@ -69,19 +69,37 @@ function readShowViewDiffButton(): boolean {
     .get<boolean>('showViewDiffButton', true);
 }
 
+/**
+ * Read the `sqoweWingman.shareClaudeMemory` setting (defaults to `true`).
+ * Gates whether the bundled `claude-memory` pi extension is loaded (`-e`), which
+ * shares Claude Code's project memory (read-only) with pi.
+ */
+function readShareClaudeMemory(): boolean {
+  return vscode.workspace
+    .getConfiguration('sqoweWingman')
+    .get<boolean>('shareClaudeMemory', true);
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   // ── Controller ────────────────────────────────────────────────────────────
-  const bundledExtensions = [
+  // Bundled pi extensions loaded via `-e`. `gate` (optional) makes an extension
+  // conditional on a setting: instruction-report is always on; claude-memory is
+  // gated by `sqoweWingman.shareClaudeMemory`.
+  const bundledExtensionDefs: Array<{ rel: string; label: string; gate?: () => boolean }> = [
     { rel: 'pi-extensions/instruction-report/index.js', label: 'instruction file visibility' },
-    { rel: 'pi-extensions/claude-memory/index.js', label: 'Claude Code memory sharing' },
-  ].map((e) => {
+    { rel: 'pi-extensions/claude-memory/index.js', label: 'Claude Code memory sharing', gate: readShareClaudeMemory },
+  ];
+  const bundledExtensions = bundledExtensionDefs.map((e) => {
     const absPath = context.asAbsolutePath(e.rel);
     return { ...e, path: absPath, exists: isFile(absPath) };
   });
-  // Only pass -e for bundled extensions that resolve to a regular file (guards
-  // against packaging errors and dev environments where a file may be absent,
-  // and against a path that exists but is a directory or other non-file entry).
-  const controller = new AgentController(bundledExtensions.filter((e) => e.exists).map((e) => e.path));
+  // Pass -e only for bundled extensions that resolve to a regular file (guards
+  // against packaging errors and dev environments where a file may be absent)
+  // AND pass their config gate (guards against a toggled-off extension).
+  // Recomputed and re-applied when a gating setting changes.
+  const enabledBundledExtensionPaths = (): string[] =>
+    bundledExtensions.filter((e) => e.exists && (e.gate ? e.gate() : true)).map((e) => e.path);
+  const controller = new AgentController(enabledBundledExtensionPaths());
   _controller = controller;
   for (const e of bundledExtensions) {
     if (!e.exists) {
@@ -144,6 +162,20 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('sqoweWingman.showViewDiffButton')) {
         provider.postChatConfig(readShowViewDiffButton());
+      }
+      if (e.affectsConfiguration('sqoweWingman.shareClaudeMemory')) {
+        // Recompute the -e set and respawn pi so the gate takes effect. When the
+        // toggle goes off, the now-unloaded extension can't emit its own
+        // clearing report, so clear the banner group here.
+        controller.setBundledExtensionPaths(enabledBundledExtensionPaths());
+        if (!readShareClaudeMemory()) {
+          provider.postClaudeMemory(null);
+        }
+        void reloadAgent(
+          controller,
+          () => locatePi((m) => controller.outputChannel.appendLine(m)),
+          (s) => applyPiStatus(s, provider),
+        );
       }
     }),
   );

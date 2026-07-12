@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Setting to toggle Claude Code memory sharing** — `sqoweWingman.shareClaudeMemory`
+  (default `true`) turns the read-only Claude Code memory bridge on or off. Toggling
+  reloads the agent to apply, and disabling clears the "Project memory" banner group.
+  Complements the lower-level `WINGMAN_CLAUDE_MEMORY=off` environment override.
+
 ## [0.1.10] - 2026-07-12
 
 ### Added
