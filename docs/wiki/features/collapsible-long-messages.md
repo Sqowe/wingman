@@ -23,7 +23,6 @@ flow.
    The choice is per-message and persists across the session.
 
 ![Collapsible long prompt](../assets/collapsible-long-messages.png)
-> ⚠️ TODO (human): capture this → docs/wiki/assets/collapsible-long-messages.png
 
 ---
 [← All docs](../index.md)

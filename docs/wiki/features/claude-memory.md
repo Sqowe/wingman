@@ -53,9 +53,6 @@ accumulated; the count in the banner tells you the true total.
 
 ![screenshot: the status banner popover showing the Project memory group](../assets/claude-memory.png)
 
-> ⚠️ TODO (human): capture the banner popover with the *Project memory* group visible
-> (run Wingman in a project that has a `~/.claude/projects/<slug>/memory/` folder) and save
-> it at `docs/wiki/assets/claude-memory.png`.
 
 ## Where the memory comes from
 
