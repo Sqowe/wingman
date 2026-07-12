@@ -23,6 +23,7 @@ one show up in the other.
 - **Answer prompts natively** — pi's permission and input prompts render as VS Code dialogs → [guide](features/dialogs.md)
 - **Control project trust** — approve project `.pi/` resources before they load, and pick a folder in multi-root workspaces → [guide](features/trust.md)
 - **See which instruction files are active** — the status banner lists the files pi loaded for the session → [guide](features/instruction-files.md)
+- **Share Claude Code's memory** — if a project also has a Claude Code memory folder, its facts are shared read-only with the pi agent and surfaced in the status banner → [guide](features/claude-memory.md)
 - **Reload the agent** — restart pi in place to pick up config or a new pi binary, without losing the conversation → [guide](features/reload-agent.md)
 - **Attach images** — send images alongside your prompt when the model supports them → [guide](features/images.md)
 - **Collapse long prompts** — long user messages in the transcript collapse to a bounded height with a soft fade and a *Show more / Show less* toggle, so a wall-of-text prompt no longer pushes the assistant's reply out of view → [guide](features/collapsible-long-messages.md)
