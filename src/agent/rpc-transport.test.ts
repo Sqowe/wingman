@@ -195,10 +195,11 @@ describe('RpcTransport request timeout', () => {
 // ─── Stdout buffer cap ────────────────────────────────────────────────────────
 
 describe('RpcTransport stdout buffer cap', () => {
-  it('disposes the transport when the stdout buffer exceeds 2 MB', async () => {
+  it('disposes the transport when the stdout buffer exceeds the configured cap', async () => {
     const { t, i, lines } = await makeTransport();
     i._isRunning = true;
     i._proc = { stdin: { write: () => true, destroy: () => {} }, kill: () => {} };
+    i._stdoutBufMaxBytes = 2 * 1024 * 1024; // shrink cap so the test needn't allocate 64 MB
 
     const disposeSpy = vi.spyOn(t, 'dispose');
 
@@ -213,19 +214,58 @@ describe('RpcTransport stdout buffer cap', () => {
   });
 });
 
-// ─── Oversized event ──────────────────────────────────────────────────────────
+// ─── Oversized event / critical-event allowlist ────────────────────────────────
 
 describe('RpcTransport oversized event dropping', () => {
-  it('drops events larger than 512 KB and logs a diagnostic', async () => {
+  it('drops oversized non-critical content events and logs a diagnostic', async () => {
     const { i, lines } = await makeTransport();
+    i._maxEventBytes = 1_000; // shrink cap so the test needn't allocate megabytes
     const events: unknown[] = [];
     i._eventHandlers.add((e: unknown) => events.push(e));
 
-    const bigEvent = { type: 'message_update', data: 'x'.repeat(600_000) };
+    // `message_update` is a bulk content event (not lifecycle) → subject to the cap.
+    const bigEvent = { type: 'message_update', data: 'x'.repeat(2_000) };
     feedChunks(i, JSON.stringify(bigEvent) + '\n');
 
     expect(events).toHaveLength(0);
     expect(lines.some((l: string) => l.includes('oversized event'))).toBe(true);
+  });
+
+  it('never drops a lifecycle event, and strips agent_end.messages before forwarding', async () => {
+    const { i, lines } = await makeTransport();
+    i._maxEventBytes = 1_000; // agent_end below will exceed this
+    const events: Array<{ type: string; messages?: unknown }> = [];
+    i._eventHandlers.add((e: { type: string; messages?: unknown }) => events.push(e));
+
+    // A large agent_end (well past the shrunk cap) carrying a heavy `messages` array.
+    const bigAgentEnd = {
+      type: 'agent_end',
+      willRetry: false,
+      messages: Array.from({ length: 50 }, () => ({ role: 'assistant', text: 'x'.repeat(100) })),
+    };
+    feedChunks(i, JSON.stringify(bigAgentEnd) + '\n');
+
+    // Forwarded despite exceeding the cap …
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe('agent_end');
+    // … with the unused, unbounded `messages` payload stripped, and no drop logged.
+    expect(events[0] && 'messages' in events[0]).toBe(false);
+    expect(lines.some((l: string) => l.includes('oversized event'))).toBe(false);
+  });
+
+  it('forwards other oversized critical events unmodified (turn_end, queue_update)', async () => {
+    const { i } = await makeTransport();
+    i._maxEventBytes = 1_000;
+    const events: Array<{ type: string }> = [];
+    i._eventHandlers.add((e: { type: string }) => events.push(e));
+
+    feedChunks(
+      i,
+      JSON.stringify({ type: 'turn_end', message: { text: 'x'.repeat(2_000) } }) + '\n',
+    );
+    feedChunks(i, JSON.stringify({ type: 'queue_update', data: 'x'.repeat(2_000) }) + '\n');
+
+    expect(events.map((e) => e.type)).toEqual(['turn_end', 'queue_update']);
   });
 });
 

@@ -13,6 +13,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (default `true`) turns the read-only Claude Code memory bridge on or off. Toggling
   reloads the agent to apply, and disabling clears the "Project memory" banner group.
   Complements the lower-level `WINGMAN_CLAUDE_MEMORY=off` environment override.
+- **Setting for the RPC output buffer cap** — `sqoweWingman.maxStdoutBufferMb`
+  (default `64`) controls how large a single line of pi's RPC output may be before the
+  sidecar is terminated to bound memory. A whole turn arrives as one `agent_end` line
+  whose size grows with the context window (several MB at a 1M-token context, more with
+  pasted images), so raise this for very large sessions. Takes effect when the agent
+  next starts.
+
+### Changed
+
+- **Larger RPC size limits** — the per-event forwarding cap is raised from 512 KB to
+  16 MB, and the stdout line-buffer cap moves from a fixed 2 MB to a configurable 64 MB
+  default (see `sqoweWingman.maxStdoutBufferMb`), so large-context turns are received
+  and rendered intact instead of being truncated.
+
+### Fixed
+
+- **Agent frozen on "Agent is working…" after a large turn** — once a conversation grew
+  large enough, pi's terminating `agent_end` event (which carries every message from the
+  turn) crossed the transport's 512 KB per-event size cap and was silently dropped.
+  Wingman therefore never saw the turn end: the composer stayed disabled behind the
+  streaming indicator, Stop had no effect, and further prompts were rejected as "busy" —
+  the session was wedged until a full window reload, even though pi had already finished
+  and gone idle. Lifecycle and session-state events (`agent_*`, `turn_*`, `compaction_*`,
+  `auto_retry_*`, `queue_update`) are now never size-dropped, and `agent_end`'s unused
+  message payload is stripped before forwarding, so a large turn can no longer strand the
+  UI.
 
 ## [0.1.10] - 2026-07-12
 

@@ -23,14 +23,53 @@ import type {
 /** Milliseconds before a send() rejects if pi never responds. */
 const REQUEST_TIMEOUT_MS = 60_000;
 
-/** Hard cap on the stdout line buffer (bytes). Prevents OOM from a runaway pi process. */
-const STDOUT_BUF_MAX_BYTES = 2_097_152; // 2 MB
+/**
+ * Default cap on the stdout line buffer (MB), overridable via the
+ * `sqoweWingman.maxStdoutBufferMb` setting. This buffer must hold the largest single
+ * RPC line pi emits — the per-turn `agent_end`, whose serialized size grows with the
+ * context window (several MB at a 1M-token context, more with inline base64 images).
+ */
+const DEFAULT_STDOUT_BUF_MAX_MB = 64;
+
+/** Maximum serialized event size forwarded to the webview (bytes). Lifecycle/state events
+ * bypass this (see {@link isCriticalEvent}) — only bulk *content* events are bounded. */
+const MAX_EVENT_BYTES = 16_777_216; // 16 MB
+
+/**
+ * Floor for the stdout buffer cap: it must never be smaller than {@link MAX_EVENT_BYTES},
+ * or a large-but-forwardable content event would trip the buffer kill (terminating pi)
+ * before the event-size decision is ever reached.
+ */
+const MIN_STDOUT_BUF_MAX_BYTES = MAX_EVENT_BYTES;
 
 /** Hard cap on the stderr line buffer (bytes). */
 const STDERR_BUF_MAX_BYTES = 524_288; // 512 KB
 
-/** Maximum serialized event size forwarded to the webview (bytes). */
-const MAX_EVENT_BYTES = 512_000; // 512 KB
+/**
+ * Event-type prefixes/names that are **never** size-dropped. These carry pi's lifecycle
+ * and session state (agent/turn boundaries, compaction, retries, queue). Dropping one —
+ * `agent_end` above all — would strand the UI in a permanent "Agent is working…" state,
+ * since Wingman clears its streaming flag only on that event. Bulk *content* events
+ * (`message_update`, `tool_execution_*`) are not listed and remain bounded by MAX_EVENT_BYTES.
+ */
+const CRITICAL_EVENT_PREFIXES = ['agent_', 'turn_', 'compaction_', 'auto_retry_'] as const;
+const CRITICAL_EVENT_TYPES = new Set<string>(['queue_update']);
+
+function isCriticalEvent(type: string): boolean {
+  return (
+    CRITICAL_EVENT_TYPES.has(type) ||
+    CRITICAL_EVENT_PREFIXES.some((prefix) => type.startsWith(prefix))
+  );
+}
+
+/** Resolve the stdout buffer cap (bytes) from settings, clamped to a safe floor. */
+function readStdoutBufMaxBytes(): number {
+  const mb = vscode.workspace
+    .getConfiguration('sqoweWingman')
+    .get<number>('maxStdoutBufferMb', DEFAULT_STDOUT_BUF_MAX_MB);
+  const safeMb = Number.isFinite(mb) && mb > 0 ? mb : DEFAULT_STDOUT_BUF_MAX_MB;
+  return Math.max(safeMb * 1024 * 1024, MIN_STDOUT_BUF_MAX_BYTES);
+}
 
 interface PendingRequest {
   resolve: (value: RpcResponse) => void;
@@ -152,6 +191,11 @@ export class RpcTransport implements AgentTransport {
   private _bufBytes = 0;
   private _writeQueue: string[] = [];
   private _writeFlushing = false;
+
+  /** Cap on the stdout line buffer (bytes); resolved from `sqoweWingman.maxStdoutBufferMb`. */
+  private readonly _stdoutBufMaxBytes = readStdoutBufMaxBytes();
+  /** Cap on the size of a single forwarded (non-critical) event (bytes). */
+  private readonly _maxEventBytes = MAX_EVENT_BYTES;
 
   /**
    * @param piPath     Absolute path to the `pi` executable.
@@ -471,9 +515,9 @@ export class RpcTransport implements AgentTransport {
 
   private _drainLines(flush = false): void {
     // Hard cap using accurate byte count (correct for multibyte chars).
-    if (this._bufBytes > STDOUT_BUF_MAX_BYTES) {
+    if (this._bufBytes > this._stdoutBufMaxBytes) {
       this.outputChannel?.appendLine(
-        `[RpcTransport] stdout buffer exceeded ${STDOUT_BUF_MAX_BYTES} bytes — terminating pi process`,
+        `[RpcTransport] stdout buffer exceeded ${this._stdoutBufMaxBytes} bytes — terminating pi process`,
       );
       this._buf = '';
       this._bufBytes = 0;
@@ -527,16 +571,30 @@ export class RpcTransport implements AgentTransport {
         pending.resolve(msg as unknown as RpcResponse);
       }
     } else if (msg.type !== 'response') {
-      // Guard against oversized events before forwarding.
-      if (Buffer.byteLength(line, 'utf8') > MAX_EVENT_BYTES) {
+      // Size guard, but never for lifecycle/state events: dropping one (e.g. `agent_end`)
+      // would strand the UI in a permanent "Agent is working…" state. Only bulk *content*
+      // events are bounded here.
+      if (!isCriticalEvent(msg.type) && Buffer.byteLength(line, 'utf8') > this._maxEventBytes) {
         this.outputChannel?.appendLine(
           `[RpcTransport] oversized event (${line.length} chars) dropped: type=${msg.type}`,
         );
         return;
       }
+
+      // `agent_end` carries the whole turn's `messages` array — which grows with the context
+      // window (megabytes at large contexts) yet Wingman never reads it (only the event's
+      // `type`, to clear the streaming flag). Strip it so a big turn can neither bloat the
+      // webview nor push a future line past the stdout buffer cap.
+      let event = msg;
+      if (msg.type === 'agent_end' && (msg as Record<string, unknown>).messages !== undefined) {
+        const slim: Record<string, unknown> = { ...(msg as Record<string, unknown>) };
+        delete slim.messages;
+        event = slim as typeof msg;
+      }
+
       for (const handler of this._eventHandlers) {
         try {
-          handler(msg as RpcEvent);
+          handler(event as RpcEvent);
         } catch {
           // A misbehaving handler must not break the others.
         }
