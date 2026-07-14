@@ -18,10 +18,24 @@ function isMissing(raw: unknown): raw is null | undefined | '' {
 }
 
 /** Format a scaled value with an optional trailing `.0` stripped (compact form). */
-function formatScaled(scaled: number, suffix: 'k' | 'M'): string {
+function formatScaledCore(scaled: number, suffix: 'k' | 'M'): string {
   const fixed = scaled.toFixed(1);
   const trimmed = fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed;
-  return `${trimmed}${suffix} tok`;
+  return `${trimmed}${suffix}`;
+}
+
+/**
+ * Format a token count without the trailing " tok" unit. Returns "—" for
+ * missing / non-finite values. Used where the unit is only wanted once
+ * (e.g. the numerator of a "12.4k / 200k tok" fraction).
+ */
+function formatTokensCore(raw: unknown): string {
+  if (isMissing(raw)) return '—';
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1_000_000) return formatScaledCore(n / 1_000_000, 'M');
+  if (n >= 1_000) return formatScaledCore(n / 1_000, 'k');
+  return `${Math.round(n)}`;
 }
 
 /**
@@ -32,12 +46,8 @@ function formatScaled(scaled: number, suffix: 'k' | 'M'): string {
  * @example formatTokens(null)   → "—"  (was "0 tok" before the fix)
  */
 export function formatTokens(raw: unknown): string {
-  if (isMissing(raw)) return '—';
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return '—';
-  if (n >= 1_000_000) return formatScaled(n / 1_000_000, 'M');
-  if (n >= 1_000) return formatScaled(n / 1_000, 'k');
-  return `${Math.round(n)} tok`;
+  const core = formatTokensCore(raw);
+  return core === '—' ? core : `${core} tok`;
 }
 
 /**
@@ -78,9 +88,10 @@ export function formatPercent(raw: unknown): string {
 }
 
 /**
- * Format the context-usage fraction as `"12.4k / 200k tok"`. Returns `null` when either
- * the numerator or denominator is missing / non-finite — callers are expected to fall
- * back to a placeholder ("—") or to the session-totals reading (see formatContextText).
+ * Format the context-usage fraction as `"12.4k / 200k tok"` (unit shown once, on the
+ * denominator). Returns `null` when either the numerator or denominator is missing /
+ * non-finite — callers are expected to fall back to a placeholder ("—") or to the
+ * session-totals reading (see formatContextText).
  */
 export function formatContextFraction(usage: SessionStats['contextUsage']): string | null {
   if (!usage) return null;
@@ -90,7 +101,7 @@ export function formatContextFraction(usage: SessionStats['contextUsage']): stri
   const t = Number(tokens);
   const w = Number(window);
   if (!Number.isFinite(t) || !Number.isFinite(w)) return null;
-  return `${formatTokens(t)} / ${formatTokens(w)}`;
+  return `${formatTokensCore(t)} / ${formatTokens(w)}`;
 }
 
 /**
@@ -98,9 +109,9 @@ export function formatContextFraction(usage: SessionStats['contextUsage']): stri
  * (context / cost-fallback / messages), separated by " · ".
  *
  *  - When `contextUsage` is known and not in the post-compaction transient
- *    (both `tokens` and `percent` are numbers): `"12.4k / 200k · 6% · 85 msg"`.
+ *    (both `tokens` and `percent` are numbers): `"9k / 1M tok · 1% · 42 msg"`.
  *  - When `contextUsage.tokens` / `percent` are `null` (post-compaction transient)
- *    but the denominator is known: `"— / 200k · — · 85 msg"` so the user still
+ *    but the denominator is known: `"— / 200k tok · — · 85 msg"` so the user still
  *    sees the model window size while waiting for the next assistant response.
  *  - When `contextUsage` is absent entirely (no model set, old pi, etc.):
  *    falls back to the session-totals reading — `"105k tok · 85 msg"` (cost
@@ -113,15 +124,16 @@ export function formatContextText(stats: SessionStats): string {
 
   if (stats.contextUsage) {
     const { tokens, contextWindow, percent } = stats.contextUsage;
-    const numerator = formatTokens(tokens);
+    const numerator = formatTokensCore(tokens);
     const denominator = formatTokens(contextWindow);
     const pct = formatPercent(percent);
+    const pctText = pct === '—' ? pct : `${pct}%`;
     // Post-compaction transient: numerator may be '—' but the denominator is still known.
     // Show the window size if we have it, so the user understands what "near full" means.
     if (tokens === null && contextWindow != null) {
-      return `— / ${denominator} · ${pct} · ${messages} msg`;
+      return `— / ${denominator} · ${pctText} · ${messages} msg`;
     }
-    return `${numerator} / ${denominator} · ${pct} · ${messages} msg`;
+    return `${numerator} / ${denominator} · ${pctText} · ${messages} msg`;
   }
 
   // No contextUsage yet — fall back to session totals.

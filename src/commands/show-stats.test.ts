@@ -55,7 +55,7 @@ describe('showStats — stats with contextUsage', () => {
     await showStats(controller as never);
     expect(infoSpy).toHaveBeenCalledTimes(1);
     const message = infoSpy.mock.calls[0][0] as string;
-    expect(message).toContain('Context: 12.4k tok / 200k tok (6%)');
+    expect(message).toContain('Context: 12.4k / 200k tok (6%)');
     expect(message).toContain('Tokens: 105k tok');
     expect(message).toContain('Messages: 85');
     // Cost must be dropped — enforced regression.

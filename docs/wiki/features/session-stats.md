@@ -9,7 +9,7 @@ has to compact or you lose room to work. Wingman keeps an always-visible status 
 you can see how much of the window you've used at a glance, without opening anything.
 
 The status bar shows your context usage as `tokens used / window · percent · message count`
-— for example `12.4k tok / 200k tok · 6% · 85 msg`. The denominator updates as soon as you
+— for example `12.4k / 200k tok · 6% · 85 msg`. The denominator updates as soon as you
 switch models, so it always reflects the active model's window. Right after pi compacts a
 session there's a brief moment where the token count isn't known yet; during that window it
 shows a `— / window · — · messages` placeholder so you still see the model's window size.

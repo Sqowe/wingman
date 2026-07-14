@@ -38,8 +38,8 @@ describe('WingmanStatusBar', () => {
       totalMessages: 85,
       contextUsage: { tokens: 12_400, contextWindow: 200_000, percent: 6 },
     }));
-    // 12.4k / 200k · 6 · 85 msg — exact format from formatContextText.
-    expect(item.text).toBe('$(hubot) 12.4k tok / 200k tok · 6 · 85 msg');
+    // 12.4k / 200k tok · 6% · 85 msg — exact format from formatContextText.
+    expect(item.text).toBe('$(hubot) 12.4k / 200k tok · 6% · 85 msg');
   });
 
   it('update() sets the tooltip body to the context + messages two-liner', () => {
@@ -52,7 +52,7 @@ describe('WingmanStatusBar', () => {
     const value = (tip as MarkdownString).value;
     expect(value).toBe(
       '**Sqowe Wingman**\n\n' +
-      'Context: 12.4k tok / 200k tok (6 %)\n' +
+      'Context: 12.4k / 200k tok (6 %)\n' +
       'Messages: 85',
     );
   });

@@ -166,7 +166,7 @@ describe('formatContextFraction', () => {
   });
   it('formats a known fraction', () => {
     expect(formatContextFraction({ tokens: 12400, contextWindow: 200000, percent: 6 }))
-      .toBe('12.4k tok / 200k tok');
+      .toBe('12.4k / 200k tok');
   });
 });
 
@@ -175,7 +175,7 @@ describe('formatContextText — status bar 1-line text', () => {
     expect(formatContextText(stats({
       totalMessages: 85,
       contextUsage: { tokens: 12400, contextWindow: 200000, percent: 6 },
-    }))).toBe('12.4k tok / 200k tok · 6 · 85 msg');
+    }))).toBe('12.4k / 200k tok · 6% · 85 msg');
   });
 
   it('shows the denominator with em-dash numerator during the post-compaction transient', () => {
@@ -212,7 +212,7 @@ describe('formatContextTooltipBody', () => {
       totalMessages: 85,
       contextUsage: { tokens: 12400, contextWindow: 200000, percent: 6 },
     }));
-    expect(body).toBe('Context: 12.4k tok / 200k tok (6 %)\nMessages: 85');
+    expect(body).toBe('Context: 12.4k / 200k tok (6 %)\nMessages: 85');
   });
 
   it('mentions the post-compaction transient with the known window', () => {
