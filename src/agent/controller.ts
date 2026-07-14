@@ -1104,6 +1104,14 @@ export class AgentController implements vscode.Disposable {
       this._setStreaming(false);
       // Refresh stats after every completed turn (non-blocking).
       void this._fetchSessionStats();
+    } else if (event.type === 'turn_end') {
+      // A multi-iteration turn (e.g. a long code review) emits a turn_end per
+      // iteration but only one agent_end at the very end. Refresh on each turn
+      // boundary so the context-usage status bar climbs live during the turn
+      // instead of sitting stale until the whole turn completes. Best-effort and
+      // sequence-guarded inside _fetchSessionStats, so extra in-flight fetches
+      // are harmless.
+      void this._fetchSessionStats();
     } else if (event.type === 'compaction_end') {
       // Compaction leaves contextUsage.tokens/percent as null until the next
       // post-compaction assistant response. Re-fetch stats immediately so the

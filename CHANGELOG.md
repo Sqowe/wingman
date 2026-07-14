@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   16 MB, and the stdout line-buffer cap moves from a fixed 2 MB to a configurable 64 MB
   default (see `sqoweWingman.maxStdoutBufferMb`), so large-context turns are received
   and rendered intact instead of being truncated.
+- **Live context-usage during long turns** — the session-stats status bar now refreshes
+  on each turn (iteration) boundary, not only when a whole turn ends, so the
+  `tokens / window` indicator climbs live through a multi-iteration turn (e.g. a long
+  code review) instead of sitting stale until the turn finishes.
 
 ### Fixed
 

@@ -396,6 +396,32 @@ describe('AgentController stats normalization', () => {
     const stats: SessionStats = provider.postSessionStats.mock.calls[0][0];
     expect(stats.contextUsage?.tokens).toBe(1000);
   });
+
+  it('triggers _fetchSessionStats on turn_end (live update during a multi-iteration turn)', async () => {
+    const sendCalls: string[] = [];
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      sendCalls.push(cmd.type as string);
+      if (cmd.type === 'get_session_stats') {
+        return {
+          type: 'response', success: true, command: 'get_session_stats',
+          data: {
+            tokens: { total: 42 },
+            cost: 0,
+            totalMessages: 3,
+            contextUsage: { tokens: 500, contextWindow: 1_000_000, percent: 0.05 },
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    // A per-iteration turn_end must refresh stats without waiting for agent_end.
+    ctrl._trackStreaming({ type: 'turn_end', message: { role: 'assistant' }, toolResults: [] });
+    await flush();
+    expect(sendCalls).toContain('get_session_stats');
+    expect(provider.postSessionStats).toHaveBeenCalledTimes(1);
+    const stats: SessionStats = provider.postSessionStats.mock.calls[0][0];
+    expect(stats.contextUsage?.tokens).toBe(500);
+  });
 });
 
 // ─── onNewSession tests ─────────────────────────────────────────────────────
