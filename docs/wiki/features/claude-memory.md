@@ -1,4 +1,4 @@
-<!-- sources: CHANGELOG.md#0.1.10, docs/design/claude-memory-sharing.md, pi-extensions/claude-memory/README.md, pi-extensions/claude-memory/index.js, src/ui-protocol/bridge.ts, src/webview/provider.ts, src/shared/path-guard.ts, src/shared/messages.ts, webview-ui/src/App.tsx, docs/chats/duplicate-instruction-file-tooltip-issue-2026-07-10.md -->
+<!-- sources: CHANGELOG.md#0.1.10, CHANGELOG.md#0.2.0, docs/design/claude-memory-sharing.md, pi-extensions/claude-memory/README.md, pi-extensions/claude-memory/index.js, src/extension.ts, src/ui-protocol/bridge.ts, src/webview/provider.ts, src/shared/path-guard.ts, src/shared/messages.ts, webview-ui/src/App.tsx, contributes:shareClaudeMemory, docs/chats/duplicate-instruction-file-tooltip-issue-2026-07-10.md -->
 
 # Claude Code memory sharing
 
@@ -66,13 +66,17 @@ the feature is simply inactive: no memory is injected and the banner shows no me
 
 ## Turning it off and tuning it
 
-Sharing is controlled by environment variables rather than VS Code settings, because the
-work happens inside the pi agent process. Set these in the environment VS Code launches
-with (for example your shell profile):
+The simplest switch is the **`sqoweWingman.shareClaudeMemory`** setting (default on). Find it
+in VS Code under Settings → search "Sqowe Wingman", or see [Settings](../reference/settings.md).
+Toggle it off to stop sharing memory entirely; Wingman reloads the agent to apply and clears
+the Project memory banner group. Toggle it back on to resume.
+
+For finer control there are two environment variables, read inside the pi agent process. Set
+them in the environment VS Code launches with (for example your shell profile):
 
 | Variable | Values | Default | What it does |
 | --- | --- | --- | --- |
-| `WINGMAN_CLAUDE_MEMORY` | `off` | unset (on) | Set to `off` to disable memory sharing entirely. |
+| `WINGMAN_CLAUDE_MEMORY` | `off` | unset (on) | Set to `off` to disable memory sharing entirely — a lower-level override that complements the `sqoweWingman.shareClaudeMemory` setting. |
 | `WINGMAN_CLAUDE_MEMORY_MAX_CHARS` | integer | `12000` | How many characters of memory to inline into the prompt. Whole fact files are included until the budget is reached; the rest are listed by name for the agent to read on demand. |
 
 The character budget only bounds what goes into the prompt. The banner popover always lists
