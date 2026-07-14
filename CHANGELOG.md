@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-14
+
 ### Added
 
 - **Setting to toggle Claude Code memory sharing** — `sqoweWingman.shareClaudeMemory`
@@ -43,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `auto_retry_*`, `queue_update`) are now never size-dropped, and `agent_end`'s unused
   message payload is stripped before forwarding, so a large turn can no longer strand the
   UI.
+- **Context-window indicator repeated its unit and dropped `%`** — the status bar text
+  and the tooltip/popup fraction both showed the unit on either side (`12.4k tok / 200k
+  tok`), and the bar's percent slot had no `%` sign. The unit is now shown once, on the
+  denominator, and the percent slot reads `6%` — e.g. `9k / 1M tok · 1% · 42 msg`.
 
 ## [0.1.10] - 2026-07-12
 
