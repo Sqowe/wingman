@@ -110,6 +110,40 @@ The in-editor commands (**Set Model**, **Set Thinking Level**, **Compact**, …)
 *running* pi session over RPC — convenient for the current conversation — but persistent
 defaults still come from pi's configuration above.
 
+### Recommended: a tool-call size limit in `AGENTS.md`
+
+Not every connection to a model can carry an arbitrarily large tool call. If you reach the
+model through a local gateway or proxy instead of the provider's own endpoint, a big `write`
+or `edit` can arrive with its arguments cut off: pi rejects the incomplete call, the tool
+never runs, and repeating the same call unchanged fails in exactly the same way. This looks
+like a Wingman fault but is not one — a call that arrives truncated cannot be repaired further
+down the chain. What does help is telling the agent to keep each call small.
+
+Add this to your global instructions (`~/.pi/agent/AGENTS.md`), or to a project's `AGENTS.md`
+if only one project is affected:
+
+```markdown
+## Tool call size limit
+
+The transport that carries tool calls silently drops any single call whose
+arguments exceed roughly 15 KB. The call is lost in full — no error is returned,
+the tool never runs, and the arguments arrive empty. Retrying the same call
+unchanged fails in exactly the same way.
+
+Keep every `write` and `edit` call under that size, counting the whole argument
+payload: for `write` that is the `content` field, for `edit` it is all
+`oldText`/`newText` pairs together. To create a file larger than the limit, make
+the first `write` with the opening section and append each further section with
+its own `edit` call. Split a large `edit` into several smaller ones the same way.
+
+This is a limit on one call, not on the file — a file of any size is fine, it
+just has to arrive in several calls.
+```
+
+Set the figure to whatever your connection actually tolerates; ~15 KB is a safe starting
+point. Once pi loads the file, it appears in Wingman's instruction-file popover in the status
+banner, so you can confirm the rule is in effect for the session.
+
 ### Project trust
 
 When a project contains trust-gated `.pi/` resources (settings, extensions, skills, prompt
