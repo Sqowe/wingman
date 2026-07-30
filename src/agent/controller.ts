@@ -964,6 +964,15 @@ export class AgentController implements vscode.Disposable {
 
     this._tearDownTransport();
 
+    // The outgoing process's Claude-memory report describes a folder state that
+    // may already be out of date, and only the incoming process can replace it
+    // (the report is pushed from session_start, never asked for). Clear it now so
+    // a stale "Project memory" group cannot outlive the process that reported it
+    // — including when the spawn below fails and no new report ever arrives.
+    // Must precede the transport.onEvent() subscription further down, which is
+    // what releases the incoming process's own report.
+    this._provider?.postClaudeMemory(null);
+
     const extraArgs = buildExtraArgs({
       trustArg: this._trustArg,
       resumeSessionPath,

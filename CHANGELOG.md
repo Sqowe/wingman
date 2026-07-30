@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-30
+
+### Fixed
+
+- **Claude Code memory count no longer goes stale** — the "Project memory" banner kept
+  showing a count and file list from an earlier session, and reloading the agent did not
+  refresh it. pi runs its `session_start` handlers — where the bundled claude-memory
+  extension reports what it found — before it answers the readiness check, so the report
+  arrived while the transport still had no subscriber and was discarded on every spawn.
+  The transport now holds events that arrive before the first subscriber and replays them
+  in order, so no startup event is lost. The cached report is also cleared on each
+  respawn, so a stale group cannot outlive the process that reported it — including when
+  the spawn fails. Adding or deleting memory files still requires an agent reload to show
+  up; the folder is read once per session so the injected prompt stays byte-identical.
+
 ## [0.2.0] - 2026-07-14
 
 ### Added
@@ -295,7 +310,9 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/wingman/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/sqowe/wingman/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/sqowe/wingman/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/sqowe/wingman/compare/v0.1.10...v0.2.0
 [0.1.10]: https://github.com/sqowe/wingman/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/sqowe/wingman/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/sqowe/wingman/compare/v0.1.7...v0.1.8

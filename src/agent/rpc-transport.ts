@@ -174,6 +174,14 @@ export { buildChildEnv as _buildChildEnvForTesting };
 /** Maximum number of payloads queued for stdin writes. */
 const WRITE_QUEUE_MAX = 256;
 
+/**
+ * Bounds on the pre-subscription holding area (see {@link RpcTransport.onEvent}).
+ * Startup emits only a handful of small events, so these exist purely so a
+ * transport that never gains a subscriber cannot grow without limit.
+ */
+const EARLY_EVENT_MAX_COUNT = 256;
+const EARLY_EVENT_MAX_BYTES = 8_388_608; // 8 MB
+
 // ─── RpcTransport ─────────────────────────────────────────────────────────────
 
 export class RpcTransport implements AgentTransport {
@@ -184,6 +192,24 @@ export class RpcTransport implements AgentTransport {
   private _eventHandlers = new Set<(event: RpcEvent) => void>();
   private _closeHandlers = new Set<(info: { reason: string }) => void>();
   private _isRunning = false;
+
+  /**
+   * Events that arrived before the first `onEvent` subscriber attached.
+   *
+   * pi runs its `session_start` handlers — and so emits the extensions' status
+   * reports, the bundled claude-memory one among them — before it starts reading
+   * commands, so they reach us while `start()` is still waiting on the readiness
+   * reply and the controller has not subscribed yet. Handing them straight to an
+   * empty handler set would lose them on every spawn, leaving the UI showing
+   * whatever the previous process reported. They are held here instead, replayed
+   * in order to the first subscriber, and the holding area is then retired for
+   * the life of the transport.
+   */
+  private _earlyEvents: RpcEvent[] = [];
+  private _earlyEventBytes = 0;
+  private _earlyEventsFlushed = false;
+  private _earlyEventsOverflowed = false;
+
   /** Optional output channel for transport diagnostics. */
   public outputChannel: vscode.OutputChannel | undefined;
 
@@ -342,6 +368,23 @@ export class RpcTransport implements AgentTransport {
 
   public onEvent(handler: (event: RpcEvent) => void): vscode.Disposable {
     this._eventHandlers.add(handler);
+
+    // The first subscriber inherits everything that arrived during startup, in
+    // order and ahead of any live event; later subscribers get only live events.
+    if (!this._earlyEventsFlushed) {
+      this._earlyEventsFlushed = true;
+      const held = this._earlyEvents;
+      this._earlyEvents = [];
+      this._earlyEventBytes = 0;
+      for (const event of held) {
+        try {
+          handler(event);
+        } catch {
+          // A misbehaving handler must not cut the replay short.
+        }
+      }
+    }
+
     return new vscode.Disposable(() => {
       this._eventHandlers.delete(handler);
     });
@@ -371,6 +414,7 @@ export class RpcTransport implements AgentTransport {
     this._isRunning = false;
     this._rejectAllPending('transport disposed');
     this._eventHandlers.clear();
+    this._discardEarlyEvents();
     // Deliberate teardown — drop close listeners without notifying them.
     this._closeHandlers.clear();
     this._writeQueue = [];
@@ -592,6 +636,13 @@ export class RpcTransport implements AgentTransport {
         event = slim as typeof msg;
       }
 
+      // Nobody has subscribed yet — hold the event for the first subscriber
+      // instead of discarding it (see _earlyEvents).
+      if (this._eventHandlers.size === 0 && !this._earlyEventsFlushed) {
+        this._holdEarlyEvent(event as RpcEvent, Buffer.byteLength(line, 'utf8'));
+        return;
+      }
+
       for (const handler of this._eventHandlers) {
         try {
           handler(event as RpcEvent);
@@ -600,6 +651,34 @@ export class RpcTransport implements AgentTransport {
         }
       }
     }
+  }
+
+  /**
+   * Drop anything still held for a subscriber that will never come, and close
+   * the holding area so a post-mortem `onEvent` cannot replay a dead process.
+   */
+  private _discardEarlyEvents(): void {
+    this._earlyEvents = [];
+    this._earlyEventBytes = 0;
+    this._earlyEventsFlushed = true;
+  }
+
+  /** Park a pre-subscription event, within the count and byte bounds. */
+  private _holdEarlyEvent(event: RpcEvent, bytes: number): void {
+    if (
+      this._earlyEvents.length >= EARLY_EVENT_MAX_COUNT ||
+      this._earlyEventBytes + bytes > EARLY_EVENT_MAX_BYTES
+    ) {
+      if (!this._earlyEventsOverflowed) {
+        this._earlyEventsOverflowed = true;
+        this.outputChannel?.appendLine(
+          '[RpcTransport] pre-subscription event buffer full — further startup events dropped',
+        );
+      }
+      return;
+    }
+    this._earlyEvents.push(event);
+    this._earlyEventBytes += bytes;
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -613,6 +692,7 @@ export class RpcTransport implements AgentTransport {
     this._writeQueue = [];
     this._writeFlushing = false;
     this._eventHandlers.clear();
+    this._discardEarlyEvents();
     this.outputChannel?.appendLine(`[RpcTransport] exit: ${reason}`);
     this._rejectAllPending(reason);
     this._fireClose(reason);

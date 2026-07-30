@@ -102,6 +102,7 @@ function makeProvider() {
     postSessionReset: vi.fn(),
     postSessionMessages: vi.fn(),
     postInstructionFiles: vi.fn(),
+    postClaudeMemory: vi.fn(),
   };
 }
 
@@ -502,6 +503,54 @@ describe('AgentController.reload', () => {
 
     // Transport should be running (spawn succeeded despite refresh failure).
     expect(FakeTransport.instances[0].isRunning).toBe(true);
+  });
+});
+
+// ─── Claude-memory banner clearing on respawn ────────────────────────────────
+
+describe('AgentController — Claude memory cleared on respawn', () => {
+  it('clears the memory report on every spawn', async () => {
+    const { controller, provider } = makeController();
+    setFolders(['/a']);
+
+    await controller.start(FOUND);
+    expect(provider.postClaudeMemory).toHaveBeenCalledWith(null);
+
+    provider.postClaudeMemory.mockClear();
+    await controller.forceRestart(FOUND);
+    expect(provider.postClaudeMemory).toHaveBeenCalledWith(null);
+  });
+
+  it('clears the memory report even when the spawn fails', async () => {
+    // Otherwise a "Project memory" group would linger for a process that is gone
+    // and can never send a replacing report.
+    const { controller, provider } = makeController();
+    setFolders(['/a']);
+    vi.spyOn(FakeTransport.prototype, 'start').mockRejectedValue(new Error('boom'));
+
+    await controller.start(FOUND);
+
+    expect(provider.postClaudeMemory).toHaveBeenCalledWith(null);
+    expect(FakeTransport.instances[0].isRunning).toBe(false);
+  });
+
+  it('clears before subscribing, so the new process report survives', async () => {
+    // Ordering guard: the transport releases its held startup events the moment
+    // _doStart subscribes, so clearing after that point would wipe the fresh
+    // report instead of the stale one.
+    const { controller, provider } = makeController();
+    setFolders(['/a']);
+
+    const order: string[] = [];
+    provider.postClaudeMemory.mockImplementation(() => order.push('clear'));
+    vi.spyOn(FakeTransport.prototype, 'onEvent').mockImplementation(function () {
+      order.push('subscribe');
+      return { dispose() {} };
+    });
+
+    await controller.start(FOUND);
+
+    expect(order).toEqual(['clear', 'subscribe']);
   });
 });
 

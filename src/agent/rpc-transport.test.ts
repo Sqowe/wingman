@@ -269,6 +269,144 @@ describe('RpcTransport oversized event dropping', () => {
   });
 });
 
+// ─── Pre-subscription event holding area ──────────────────────────────────────
+
+describe('RpcTransport pre-subscription events', () => {
+  it('replays events received before the first subscriber, in order', async () => {
+    const { t, i } = await makeTransport();
+
+    // No subscriber yet — this is the window between spawn and the controller
+    // attaching its handler once start() resolves.
+    feedChunks(
+      i,
+      '{"type":"session_start"}\n',
+      '{"type":"agent_start"}\n',
+    );
+
+    const events: Array<{ type: string }> = [];
+    t.onEvent((e: unknown) => events.push(e as { type: string }));
+
+    expect(events.map((e) => e.type)).toEqual(['session_start', 'agent_start']);
+  });
+
+  it('delivers a startup extension_ui_request to the first subscriber', async () => {
+    // Regression: pi runs session_start — and so the bundled claude-memory
+    // extension's setStatus report — before it answers the readiness ping, so the
+    // report always arrived while the handler set was still empty and was lost on
+    // every spawn, leaving the previous process's memory count on screen.
+    const { t, i } = await makeTransport();
+
+    feedChunks(
+      i,
+      JSON.stringify({
+        type: 'extension_ui_request',
+        id: 'm1',
+        method: 'setStatus',
+        statusKey: 'wingman:claudeMemory',
+        statusText: JSON.stringify({ dir: '/mem', count: 16, files: [] }),
+      }) + '\n',
+    );
+
+    const events: Array<{ type: string; statusKey?: string }> = [];
+    t.onEvent((e: unknown) => events.push(e as { type: string; statusKey?: string }));
+
+    expect(events).toHaveLength(1);
+    expect(events[0]!.statusKey).toBe('wingman:claudeMemory');
+  });
+
+  it('replays only to the first subscriber, then delivers live events to all', async () => {
+    const { t, i } = await makeTransport();
+    feedChunks(i, '{"type":"session_start"}\n');
+
+    const first: Array<{ type: string }> = [];
+    const second: Array<{ type: string }> = [];
+    t.onEvent((e: unknown) => first.push(e as { type: string }));
+    t.onEvent((e: unknown) => second.push(e as { type: string }));
+
+    feedChunks(i, '{"type":"agent_start"}\n');
+
+    expect(first.map((e) => e.type)).toEqual(['session_start', 'agent_start']);
+    expect(second.map((e) => e.type)).toEqual(['agent_start']);
+  });
+
+  it('does not resume holding when every subscriber unsubscribes', async () => {
+    const { t, i } = await makeTransport();
+    const sub = t.onEvent(() => {});
+    sub.dispose();
+
+    feedChunks(i, '{"type":"agent_start"}\n');
+
+    const events: unknown[] = [];
+    t.onEvent((e: unknown) => events.push(e));
+    expect(events).toEqual([]);
+  });
+
+  it('bounds the holding area by count and logs the overflow once', async () => {
+    const { t, i, lines } = await makeTransport();
+
+    for (let n = 0; n < 260; n++) {
+      feedChunks(i, `{"type":"agent_start","n":${n}}\n`);
+    }
+
+    const events: unknown[] = [];
+    t.onEvent((e: unknown) => events.push(e));
+
+    expect(events).toHaveLength(256);
+    expect(lines.filter((l) => l.includes('pre-subscription event buffer full'))).toHaveLength(1);
+  });
+
+  it('bounds the holding area by total bytes', async () => {
+    const { t, i } = await makeTransport();
+    i._maxEventBytes = 20_000_000; // keep the per-event size guard out of the way
+
+    // Three events of ~4 MB each against an 8 MB budget: the third does not fit.
+    const big = 'x'.repeat(4_000_000);
+    for (let n = 0; n < 3; n++) {
+      feedChunks(i, JSON.stringify({ type: 'agent_start', data: big }) + '\n');
+    }
+
+    const events: unknown[] = [];
+    t.onEvent((e: unknown) => events.push(e));
+    expect(events).toHaveLength(2);
+  });
+
+  it('discards held events when the process dies before anyone subscribes', async () => {
+    const { t, i } = await makeTransport();
+    i._isRunning = true;
+    feedChunks(i, '{"type":"session_start"}\n');
+
+    i._handleExit('pi process closed (exit code 1)');
+
+    const events: unknown[] = [];
+    t.onEvent((e: unknown) => events.push(e));
+    expect(events).toEqual([]);
+  });
+
+  it('discards held events on dispose', async () => {
+    const { t, i } = await makeTransport();
+    feedChunks(i, '{"type":"session_start"}\n');
+
+    t.dispose();
+
+    const events: unknown[] = [];
+    t.onEvent((e: unknown) => events.push(e));
+    expect(events).toEqual([]);
+  });
+
+  it('still drops an oversized non-critical event rather than holding it', async () => {
+    const { t, i, lines } = await makeTransport();
+    i._maxEventBytes = 1_000;
+
+    feedChunks(i, JSON.stringify({ type: 'message_update', text: 'x'.repeat(2_000) }) + '\n');
+
+    const events: unknown[] = [];
+    t.onEvent((e: unknown) => events.push(e));
+
+    expect(events).toEqual([]);
+    expect(lines.some((l) => l.includes('oversized event'))).toBe(true);
+  });
+});
+
 // ─── Write queue overflow ─────────────────────────────────────────────────────
 
 describe('RpcTransport write queue overflow', () => {
