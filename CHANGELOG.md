@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Verified against pi 0.84.0.** pi's v0.84.0 breaking change — `message_update` RPC events
+  no longer carry the cumulative `message` field or `assistantMessageEvent.partial` — does not
+  affect Wingman: the webview store reads only `assistantMessageEvent.{type,delta,content,thinking}`
+  from `message_update`, and `message_end`'s `message` (still authoritative and unchanged) is
+  the sole source for the final rendered content. Confirmed live against the pi 0.84.0 binary.
+  `PI_MINIMUM_VERSION` stays at `0.80.0`.
+
 ## [0.2.1] - 2026-07-30
 
 ### Fixed

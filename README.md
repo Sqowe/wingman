@@ -66,7 +66,7 @@ Then authenticate **once** with the pi CLI — Wingman reuses the saved credenti
 pi          # then run /login in the pi TUI and follow the prompts
 ```
 
-Tested against pi **0.83.x**; versions below **0.80.0** warn but are not blocked. Requires **Node ≥ 20**.
+Tested against pi **0.84.x**; versions below **0.80.0** warn but are not blocked. Requires **Node ≥ 20**.
 
 ## Configuration
 
