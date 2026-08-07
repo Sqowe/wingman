@@ -134,28 +134,38 @@ const ACTIVE_DETAIL_MARKER = '  ▸  ';
 const MAX_PLACEHOLDER_CHARS = 100;
 
 /**
- * A quick pick renders its title as a single text node, so newlines in it
- * collapse into spaces: `bash-restrictions` sends "Bash restriction", a blank
- * line, then the command it wants permission for, and the user reads
- * "Bash restriction   rm -rf build" as one run.
+ * Both quick input surfaces render their title as a single text node, so
+ * newlines in it collapse into spaces.  Senders that compose a title out of
+ * several blocks separated by a blank line — `bash-restrictions` sends
+ * "Bash restriction", a blank line, then the command it wants permission for —
+ * therefore read as one run: "Bash restriction   rm -rf build".
  *
- * When the part after the first blank line is short enough for one line, move
- * it to the placeholder — the greyed text inside the filter box — which is a
- * separate line and keeps the command distinct from the headline.
- *
- * When it is long, leave the title whole. rpiv folds option previews into the
- * title the same way (up to 600 characters each); those must stay in the title,
- * because it wraps and the placeholder would clip them.
+ * Split at the first blank line so the caller can put the second block on a
+ * surface of its own.  `rest` is undefined when the title is a single block.
+ * Collapsed newlines *within* a block are not recoverable here: no quick input
+ * surface honours a line break.  That ceiling is what the in-chat question
+ * cards are for — see docs/design/in-chat-question-cards.md.
  */
-function splitTitle(title: string): { title: string; placeholder?: string } {
+function splitTitleBlocks(title: string): { head: string; rest?: string } {
   const at = title.search(/\n[^\S\n]*\n/);
-  if (at < 0) return { title };
+  if (at < 0) return { head: title };
 
   const head = title.slice(0, at).trim();
   const rest = title.slice(at).trim();
-  if (head.length === 0 || rest.length === 0 || rest.length > MAX_PLACEHOLDER_CHARS) {
-    return { title };
-  }
+  if (head.length === 0 || rest.length === 0) return { head: title };
+  return { head, rest };
+}
+
+/**
+ * Quick pick flavour of splitTitleBlocks: the second block moves to the
+ * placeholder — the greyed text inside the filter box — but only when it fits
+ * one line, because the placeholder clips.  rpiv folds option previews into the
+ * title the same way (up to 600 characters each); those stay in the title,
+ * which wraps.
+ */
+function splitTitle(title: string): { title: string; placeholder?: string } {
+  const { head, rest } = splitTitleBlocks(title);
+  if (rest === undefined || rest.length > MAX_PLACEHOLDER_CHARS) return { title };
   return { title: head, placeholder: rest };
 }
 
@@ -430,11 +440,23 @@ export class UiProtocolBridge implements vscode.Disposable {
     }
   }
 
+  /**
+   * `input` renders as an input box.  Its title is one line and collapses
+   * newlines, so a title built from several blocks — rpiv's multiple choice
+   * sends the question, the option list and "enter the numbers, comma-separated"
+   * as one string — arrives as a single centred run of text.  Everything after
+   * the first block moves to `prompt`, which renders below the box and wraps
+   * without a height limit, so there is no length cap here.  The sender's own
+   * placeholder stays in the box, where the user types.
+   */
   private async _handleInput(req: InputRequest): Promise<void> {
+    const blocks = req.title === undefined ? undefined : splitTitleBlocks(req.title);
+
     let value: string | undefined;
     try {
       value = await vscode.window.showInputBox({
-        title: req.title,
+        title: blocks?.head ?? req.title,
+        prompt: blocks?.rest,
         placeHolder: req.placeholder,
         ignoreFocusOut: true,
       });

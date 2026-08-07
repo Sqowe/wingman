@@ -496,6 +496,81 @@ describe('UiProtocolBridge', () => {
     });
   });
 
+  // ── input: multi-block titles ─────────────────────────────────────────
+
+  it('input: keeps a single-block title on the title, with no prompt', async () => {
+    mockShowInputBox.mockResolvedValue('x');
+    bridge.handleEvent(makeRequest('input', { title: 'Enter a value', placeholder: 'type...' }));
+    await vi.waitFor(() => expect(mockShowInputBox).toHaveBeenCalled());
+    expect(mockShowInputBox.mock.calls[0][0]).toMatchObject({
+      title: 'Enter a value',
+      prompt: undefined,
+      placeHolder: 'type...',
+    });
+  });
+
+  it('input: moves everything after the first block to the wrapping prompt', async () => {
+    // rpiv's multiple choice: question, option list and instruction in one
+    // string (rpc-fallback.ts askMultiSelect).
+    mockShowInputBox.mockResolvedValue('1,3');
+    const title = [
+      '[REST API] Which files should I touch?',
+      '',
+      '1. Router — Rewrite the routes.',
+      '2. Models — Convert the models.',
+      '',
+      'Enter the numbers of all that apply, comma-separated (e.g. "1,3").',
+    ].join('\n');
+    bridge.handleEvent(makeRequest('input', { title, placeholder: '1,3' }));
+    await vi.waitFor(() => expect(mockShowInputBox).toHaveBeenCalled());
+
+    const opts = mockShowInputBox.mock.calls[0][0] as { title: string; prompt: string; placeHolder: string };
+    expect(opts.title).toBe('[REST API] Which files should I touch?');
+    expect(opts.prompt).toBe([
+      '1. Router — Rewrite the routes.',
+      '2. Models — Convert the models.',
+      '',
+      'Enter the numbers of all that apply, comma-separated (e.g. "1,3").',
+    ].join('\n'));
+    // The sender's own placeholder stays in the box, where the user types.
+    expect(opts.placeHolder).toBe('1,3');
+  });
+
+  it('input: splits the free-text follow-up cleanly', async () => {
+    // rpiv's "Type something." escape (rpc-fallback.ts askSingleSelect):
+    // question, blank line, short instruction.
+    mockShowInputBox.mockResolvedValue('my own answer');
+    bridge.handleEvent(makeRequest('input', {
+      title: '[REST API] How should I handle it?\n\nType your answer:',
+    }));
+    await vi.waitFor(() => expect(mockShowInputBox).toHaveBeenCalled());
+    expect(mockShowInputBox.mock.calls[0][0]).toMatchObject({
+      title: '[REST API] How should I handle it?',
+      prompt: 'Type your answer:',
+    });
+  });
+
+  it('input: leaves a title with no blank line alone', async () => {
+    mockShowInputBox.mockResolvedValue('x');
+    bridge.handleEvent(makeRequest('input', { title: 'First line\nSecond line' }));
+    await vi.waitFor(() => expect(mockShowInputBox).toHaveBeenCalled());
+    expect(mockShowInputBox.mock.calls[0][0]).toMatchObject({
+      title: 'First line\nSecond line',
+      prompt: undefined,
+    });
+  });
+
+  it('input: survives a request with no title at all', async () => {
+    mockShowInputBox.mockResolvedValue('x');
+    bridge.handleEvent(makeRequest('input', { placeholder: 'type...' }));
+    await vi.waitFor(() => expect(mockShowInputBox).toHaveBeenCalled());
+    expect(mockShowInputBox.mock.calls[0][0]).toMatchObject({
+      title: undefined,
+      prompt: undefined,
+      placeHolder: 'type...',
+    });
+  });
+
   // ── editor ────────────────────────────────────────────────────────────
 
   it('editor: sends value response on Submit', async () => {
