@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-08-07
+
+### Fixed
+
+- **Long answer options are readable again.** pi's `select` dialog carries plain strings and
+  nothing else, so an extension that gives each option both a short label and a paragraph
+  explaining it has no choice but to flatten the two into one line. VS Code then truncated that
+  line with an ellipsis at the quick pick's fixed 600 px width — cutting off precisely the
+  explanation you needed to choose. The explanation now moves to a line of its own beneath the
+  option, and the highlighted option's **full** explanation is shown in the title, which wraps
+  onto as many lines as it needs; typing in the filter box matches the explanation too. Quick
+  pick rows themselves cannot be multi-line
+  ([microsoft/vscode#153095](https://github.com/microsoft/vscode/issues/153095), open since 2022),
+  so the title is the only surface that can show text that long in full. Which extension sent the
+  dialog makes no difference: a request carries no tool or extension name, so this keys on the
+  shape of the option text — meaning a renamed tool cannot break it, short prompts such as
+  `bash-restrictions`' *Allow once / Deny / Deny & suggest alternative* are left exactly as they
+  were, and the answer handed back to pi is byte-for-byte the string it offered.
+- **A two-part dialog title no longer runs together.** Both quick input surfaces render their
+  title as one line and collapse the newlines inside it, so `bash-restrictions` — which sends
+  "Bash restriction", a blank line, then the command it wants permission for — read as
+  `Bash restriction   rm -rf build` in one breath, with the command indistinguishable from the
+  heading. The second part now moves to a surface of its own: the placeholder for a quick pick
+  (only when it fits one line, so folded-in option previews stay in the wrapping title), and the
+  prompt beneath the box for an input, which wraps freely. This also separates the question from
+  the instructions when an extension asks you to type an answer.
+
+  Multiple-choice questions still list their options as one paragraph: no quick input surface
+  in VS Code honours a line break. Reading those properly needs checkboxes in the chat itself —
+  designed in `docs/design/in-chat-question-cards.md`, not yet built.
+
 ### Changed
 
 - **Verified against pi 0.84.0.** pi's v0.84.0 breaking change — `message_update` RPC events
@@ -319,7 +350,8 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/wingman/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/sqowe/wingman/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/sqowe/wingman/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sqowe/wingman/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/sqowe/wingman/compare/v0.1.10...v0.2.0
 [0.1.10]: https://github.com/sqowe/wingman/compare/v0.1.9...v0.1.10
