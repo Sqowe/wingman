@@ -128,6 +128,7 @@ interface FakePickItem {
 
 interface FakeQuickPick {
   title?: string;
+  placeholder?: string;
   items: FakePickItem[];
   selectedItems: FakePickItem[];
   ignoreFocusOut?: boolean;
@@ -309,9 +310,13 @@ describe('UiProtocolBridge', () => {
     }));
     const pick = lastQuickPick();
     expect(pick.items).toEqual(options.map((o) => ({ label: o, value: o })));
+    // The command moves to the placeholder, which is a line of its own; the
+    // title would have collapsed the newlines into "Bash restriction   rm -rf build".
+    expect(pick.title).toBe('Bash restriction');
+    expect(pick.placeholder).toBe('rm -rf build');
 
     pick.highlight(2);
-    expect(pick.title).toBe('Bash restriction\n\n  rm -rf build');
+    expect(pick.title).toBe('Bash restriction');
 
     pick.accept(2);
     await vi.waitFor(() => expect(transport.sentRaw.length).toBe(1));
@@ -371,6 +376,42 @@ describe('UiProtocolBridge', () => {
   it('select: falls back to a default title when pi sends none', () => {
     bridge.handleEvent(makeRequest('select', { options: ['Allow', 'Block'] }));
     expect(lastQuickPick().title).toBe('Select an option');
+  });
+
+  // ── select: multi-block titles ────────────────────────────────────────
+
+  it('select: leaves a single-block title whole', () => {
+    bridge.handleEvent(makeRequest('select', { title: 'Allow command?', options: ['Allow'] }));
+    const pick = lastQuickPick();
+    expect(pick.title).toBe('Allow command?');
+    expect(pick.placeholder).toBeUndefined();
+  });
+
+  it('select: leaves a title whole when it has newlines but no blank line', () => {
+    bridge.handleEvent(makeRequest('select', { title: 'First line\nSecond line', options: ['Allow'] }));
+    expect(lastQuickPick().title).toBe('First line\nSecond line');
+  });
+
+  it('select: keeps a long second block in the wrapping title, not the placeholder', () => {
+    // rpiv folds option previews into the title (up to 600 chars each).  The
+    // placeholder is one line and clips, so long blocks must stay in the title.
+    const preview = 'x'.repeat(150);
+    const title = `Which approach?\n\n--- 1. Rewrite preview ---\n${preview}`;
+    bridge.handleEvent(makeRequest('select', { title, options: ['1. Rewrite — Do it.'] }));
+    const pick = lastQuickPick();
+    expect(pick.title).toBe(title);
+    expect(pick.placeholder).toBeUndefined();
+  });
+
+  it('select: a split title still carries the highlighted option description', () => {
+    bridge.handleEvent(makeRequest('select', {
+      title: 'Bash restriction\n\n  rm -rf build',
+      options: ['1. Allow — Run it as written.'],
+    }));
+    const pick = lastQuickPick();
+    pick.highlight(0);
+    expect(pick.title).toBe('Bash restriction  ▸  Run it as written.');
+    expect(pick.placeholder).toBe('rm -rf build');
   });
 
   // ── confirm ───────────────────────────────────────────────────────────

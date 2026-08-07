@@ -126,6 +126,39 @@ const OPTION_DETAIL_SEPARATOR = ' — ';
 /** Shown between the question and the highlighted option's full explanation. */
 const ACTIVE_DETAIL_MARKER = '  ▸  ';
 
+/**
+ * Longest trailing title block still worth moving to the placeholder, which is
+ * one line and clips.  Above this the text is better off in the title, which
+ * wraps — see splitTitle.
+ */
+const MAX_PLACEHOLDER_CHARS = 100;
+
+/**
+ * A quick pick renders its title as a single text node, so newlines in it
+ * collapse into spaces: `bash-restrictions` sends "Bash restriction", a blank
+ * line, then the command it wants permission for, and the user reads
+ * "Bash restriction   rm -rf build" as one run.
+ *
+ * When the part after the first blank line is short enough for one line, move
+ * it to the placeholder — the greyed text inside the filter box — which is a
+ * separate line and keeps the command distinct from the headline.
+ *
+ * When it is long, leave the title whole. rpiv folds option previews into the
+ * title the same way (up to 600 characters each); those must stay in the title,
+ * because it wraps and the placeholder would clip them.
+ */
+function splitTitle(title: string): { title: string; placeholder?: string } {
+  const at = title.search(/\n[^\S\n]*\n/);
+  if (at < 0) return { title };
+
+  const head = title.slice(0, at).trim();
+  const rest = title.slice(at).trim();
+  if (head.length === 0 || rest.length === 0 || rest.length > MAX_PLACEHOLDER_CHARS) {
+    return { title };
+  }
+  return { title: head, placeholder: rest };
+}
+
 interface OptionPick extends vscode.QuickPickItem {
   /** The option string exactly as pi sent it — echoed back verbatim. */
   value: string;
@@ -305,16 +338,20 @@ export class UiProtocolBridge implements vscode.Disposable {
   // ─── Blocking dialog methods ───────────────────────────────────────────────
 
   /**
-   * `select` renders as a quick pick.  Two accommodations for options that
-   * carry a long explanation (see OPTION_DETAIL_SEPARATOR): the explanation
-   * moves to the row's `detail` line, and the highlighted option's *full*
-   * explanation is appended to the title, which — unlike a list row — wraps
-   * onto as many lines as it needs.  Quick pick rows cannot be multi-line
-   * (microsoft/vscode#153095, open since 2022), so the title is the only place
-   * text that long can be read in full.
+   * `select` renders as a quick pick.  Three accommodations for senders whose
+   * text does not fit the widget's single-line surfaces:
+   *
+   *  - an option's explanation (see OPTION_DETAIL_SEPARATOR) moves to the row's
+   *    own `detail` line rather than sharing one with the headline;
+   *  - the highlighted option's *full* explanation is appended to the title,
+   *    which — unlike a list row — wraps onto as many lines as it needs.  Quick
+   *    pick rows cannot be multi-line (microsoft/vscode#153095, open since
+   *    2022), so the title is the only place text that long reads in full;
+   *  - a short second block in the title moves to the placeholder (splitTitle),
+   *    because the title collapses its own newlines.
    */
   private async _handleSelect(req: SelectRequest): Promise<void> {
-    const baseTitle = req.title ?? 'Select an option';
+    const { title: baseTitle, placeholder } = splitTitle(req.title ?? 'Select an option');
     const items = req.options.map(toOptionPick);
     const anyDetail = items.some((it) => it.detail !== undefined);
 
@@ -323,6 +360,7 @@ export class UiProtocolBridge implements vscode.Disposable {
       picked = await new Promise<string | undefined>((resolve) => {
         const pick = vscode.window.createQuickPick<OptionPick>();
         pick.title = baseTitle;
+        if (placeholder !== undefined) pick.placeholder = placeholder;
         pick.items = items;
         pick.ignoreFocusOut = true;
         // The explanation lives on `detail`, so let typing filter on it too.
