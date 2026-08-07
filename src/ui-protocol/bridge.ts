@@ -103,6 +103,52 @@ type UiResponse =
   | { type: 'extension_ui_response'; id: string; confirmed: boolean }
   | { type: 'extension_ui_response'; id: string; cancelled: true };
 
+// ─── select option formatting ─────────────────────────────────────────────────
+
+/**
+ * Separator between an option's headline and its explanation.
+ *
+ * pi's `select` primitive only carries `string[]`, so an extension that has
+ * both a short label and a longer description has no choice but to flatten
+ * them into one line.  The convention (rpiv-ask-user-question's RPC fallback
+ * builds `"3. Rewrite for aiohttp — Replace the FastAPI stub…"`) is a spaced
+ * em dash.  A VS Code quick pick truncates a one-line label with an ellipsis
+ * at ~600px, so the explanation is the part that gets lost.
+ *
+ * There is no tool or extension name on the wire to key off — an
+ * `extension_ui_request` carries only id / method / title / options / timeout
+ * (pi docs/rpc.md §"Extension UI Requests").  Recognition is therefore by
+ * shape, which also means it survives the sending tool being renamed and
+ * benefits any extension that formats its options the same way.
+ */
+const OPTION_DETAIL_SEPARATOR = ' — ';
+
+/** Shown between the question and the highlighted option's full explanation. */
+const ACTIVE_DETAIL_MARKER = '  ▸  ';
+
+interface OptionPick extends vscode.QuickPickItem {
+  /** The option string exactly as pi sent it — echoed back verbatim. */
+  value: string;
+}
+
+/**
+ * Split `"3. Label — explanation"` into a headline and a `detail` line so the
+ * explanation gets a row of its own instead of sharing one with the headline.
+ * Options without the separator (`"Allow"`, `"5. Type something."`) are left
+ * as a plain one-line label.  Splitting is per option, never all-or-nothing:
+ * a list routinely mixes both kinds.
+ */
+function toOptionPick(option: string): OptionPick {
+  const at = option.indexOf(OPTION_DETAIL_SEPARATOR);
+  if (at <= 0) return { label: option, value: option };
+
+  const label = option.slice(0, at).trim();
+  const detail = option.slice(at + OPTION_DETAIL_SEPARATOR.length).trim();
+  if (label.length === 0 || detail.length === 0) return { label: option, value: option };
+
+  return { label, detail, value: option };
+}
+
 /** Narrow an RpcEvent to a UiRequest, or return null if it is not one. */
 function asUiRequest(event: RpcEvent): UiRequest | null {
   if (event.type !== 'extension_ui_request') return null;
@@ -258,15 +304,50 @@ export class UiProtocolBridge implements vscode.Disposable {
 
   // ─── Blocking dialog methods ───────────────────────────────────────────────
 
+  /**
+   * `select` renders as a quick pick.  Two accommodations for options that
+   * carry a long explanation (see OPTION_DETAIL_SEPARATOR): the explanation
+   * moves to the row's `detail` line, and the highlighted option's *full*
+   * explanation is appended to the title, which — unlike a list row — wraps
+   * onto as many lines as it needs.  Quick pick rows cannot be multi-line
+   * (microsoft/vscode#153095, open since 2022), so the title is the only place
+   * text that long can be read in full.
+   */
   private async _handleSelect(req: SelectRequest): Promise<void> {
+    const baseTitle = req.title ?? 'Select an option';
+    const items = req.options.map(toOptionPick);
+    const anyDetail = items.some((it) => it.detail !== undefined);
+
     let picked: string | undefined;
     try {
-      picked = await vscode.window.showQuickPick(req.options, {
-        title: req.title ?? 'Select an option',
-        ignoreFocusOut: true,
+      picked = await new Promise<string | undefined>((resolve) => {
+        const pick = vscode.window.createQuickPick<OptionPick>();
+        pick.title = baseTitle;
+        pick.items = items;
+        pick.ignoreFocusOut = true;
+        // The explanation lives on `detail`, so let typing filter on it too.
+        pick.matchOnDetail = true;
+
+        let accepted: string | undefined;
+        pick.onDidChangeActive((active) => {
+          if (!anyDetail) return;
+          const detail = active[0]?.detail;
+          pick.title = detail ? `${baseTitle}${ACTIVE_DETAIL_MARKER}${detail}` : baseTitle;
+        });
+        pick.onDidAccept(() => {
+          accepted = pick.selectedItems[0]?.value;
+          pick.hide();
+        });
+        // Fires on accept as well as on dismissal — the single resolve point,
+        // so the promise settles exactly once either way.
+        pick.onDidHide(() => {
+          pick.dispose();
+          resolve(accepted);
+        });
+        pick.show();
       });
     } catch {
-      // showQuickPick should not throw, but guard defensively.
+      // Quick pick creation should not throw, but guard defensively.
     }
 
     if (this._disposed) return; // transport gone while dialog was open

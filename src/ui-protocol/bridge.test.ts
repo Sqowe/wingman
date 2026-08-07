@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // runs.  This makes the hoisting intent explicit and avoids fragile ordering.
 
 const {
+  mockCreateQuickPick,
   mockShowQuickPick,
   mockShowWarningMessage,
   mockShowInputBox,
@@ -29,6 +30,7 @@ const {
   mockShowTextDocument,
   mockExecuteCommand,
 } = vi.hoisted(() => ({
+  mockCreateQuickPick: vi.fn<() => unknown>(),
   mockShowQuickPick: vi.fn<(items: string[], opts?: unknown) => Promise<string | undefined>>(),
   mockShowWarningMessage: vi.fn<(msg: string, ...rest: unknown[]) => Promise<string | undefined>>(),
   mockShowInputBox: vi.fn<(opts?: unknown) => Promise<string | undefined>>(),
@@ -41,6 +43,7 @@ const {
 
 vi.mock('vscode', () => ({
   window: {
+    createQuickPick: () => mockCreateQuickPick(),
     showQuickPick: (...args: unknown[]) => mockShowQuickPick(...(args as Parameters<typeof mockShowQuickPick>)),
     showWarningMessage: (...args: unknown[]) => mockShowWarningMessage(...(args as Parameters<typeof mockShowWarningMessage>)),
     showInputBox: (...args: unknown[]) => mockShowInputBox(...(args as Parameters<typeof mockShowInputBox>)),
@@ -113,15 +116,82 @@ function makeRequest(method: string, extra: Record<string, unknown> = {}): RpcEv
   return { type: 'extension_ui_request', id: 'test-id-1', method, ...extra } as RpcEvent;
 }
 
+// ─── Quick pick fake ──────────────────────────────────────────────────────────
+// _handleSelect drives a QuickPick object rather than showQuickPick(), so the
+// tests need a stand-in they can steer: highlight a row, accept it, or dismiss.
+
+interface FakePickItem {
+  label: string;
+  detail?: string;
+  value: string;
+}
+
+interface FakeQuickPick {
+  title?: string;
+  items: FakePickItem[];
+  selectedItems: FakePickItem[];
+  ignoreFocusOut?: boolean;
+  matchOnDetail?: boolean;
+  shown: boolean;
+  disposed: boolean;
+  onDidChangeActive(cb: (items: FakePickItem[]) => void): void;
+  onDidAccept(cb: () => void): void;
+  onDidHide(cb: () => void): void;
+  show(): void;
+  hide(): void;
+  dispose(): void;
+  /** Test driver: move the highlight to the row at `index`. */
+  highlight(index: number): void;
+  /** Test driver: pick the row at `index` (Enter). */
+  accept(index: number): void;
+}
+
+function installQuickPickFake(): () => FakeQuickPick {
+  let created: FakeQuickPick | undefined;
+
+  mockCreateQuickPick.mockImplementation(() => {
+    let onActive: ((items: FakePickItem[]) => void) | undefined;
+    let onAccept: (() => void) | undefined;
+    let onHide: (() => void) | undefined;
+
+    const pick: FakeQuickPick = {
+      items: [],
+      selectedItems: [],
+      shown: false,
+      disposed: false,
+      onDidChangeActive(cb) { onActive = cb; },
+      onDidAccept(cb) { onAccept = cb; },
+      onDidHide(cb) { onHide = cb; },
+      show() { this.shown = true; },
+      hide() { onHide?.(); },
+      dispose() { this.disposed = true; },
+      highlight(index) { onActive?.([this.items[index]]); },
+      accept(index) {
+        this.selectedItems = [this.items[index]];
+        onAccept?.();
+      },
+    };
+    created = pick;
+    return pick;
+  });
+
+  return () => {
+    if (created === undefined) throw new Error('createQuickPick was never called');
+    return created;
+  };
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('UiProtocolBridge', () => {
   let bridge: UiProtocolBridge;
   let transport: MockTransport;
   let provider: ReturnType<typeof makeProvider>;
+  let lastQuickPick: () => FakeQuickPick;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    lastQuickPick = installQuickPickFake();
     bridge = new UiProtocolBridge(makeOutputChannel());
     transport = makeTransport();
     provider = makeProvider();
@@ -160,14 +230,12 @@ describe('UiProtocolBridge', () => {
   // ── select ────────────────────────────────────────────────────────────
 
   it('select: consumed immediately (returns true)', () => {
-    mockShowQuickPick.mockResolvedValue('Allow');
     expect(bridge.handleEvent(makeRequest('select', { options: ['Allow', 'Block'] }))).toBe(true);
   });
 
   it('select: sends value response when user picks an option', async () => {
-    mockShowQuickPick.mockResolvedValue('Allow');
     bridge.handleEvent(makeRequest('select', { options: ['Allow', 'Block'] }));
-    // Let the microtask queue drain.
+    lastQuickPick().accept(0);
     await vi.waitFor(() => expect(transport.sentRaw.length).toBe(1));
     expect(transport.sentRaw[0]).toEqual({
       type: 'extension_ui_response',
@@ -177,14 +245,132 @@ describe('UiProtocolBridge', () => {
   });
 
   it('select: sends cancelled response when user dismisses', async () => {
-    mockShowQuickPick.mockResolvedValue(undefined);
     bridge.handleEvent(makeRequest('select', { options: ['Allow', 'Block'] }));
+    lastQuickPick().hide();
     await vi.waitFor(() => expect(transport.sentRaw.length).toBe(1));
     expect(transport.sentRaw[0]).toEqual({
       type: 'extension_ui_response',
       id: 'test-id-1',
       cancelled: true,
     });
+  });
+
+  it('select: disposes the quick pick after it closes', async () => {
+    bridge.handleEvent(makeRequest('select', { options: ['Allow', 'Block'] }));
+    const pick = lastQuickPick();
+    expect(pick.shown).toBe(true);
+    pick.accept(1);
+    await vi.waitFor(() => expect(transport.sentRaw.length).toBe(1));
+    expect(pick.disposed).toBe(true);
+  });
+
+  // ── select: long options ("N. Label — description") ────────────────────
+
+  it('select: moves an option description onto its own detail line', () => {
+    bridge.handleEvent(makeRequest('select', {
+      title: 'How should I handle it?',
+      options: [
+        '1. Rewrite for aiohttp — Replace the wrong FastAPI stub with real aiohttp patterns.',
+        '2. Leave it untouched — Keep the generic stub as-is.',
+      ],
+    }));
+    expect(lastQuickPick().items).toEqual([
+      {
+        label: '1. Rewrite for aiohttp',
+        detail: 'Replace the wrong FastAPI stub with real aiohttp patterns.',
+        value: '1. Rewrite for aiohttp — Replace the wrong FastAPI stub with real aiohttp patterns.',
+      },
+      {
+        label: '2. Leave it untouched',
+        detail: 'Keep the generic stub as-is.',
+        value: '2. Leave it untouched — Keep the generic stub as-is.',
+      },
+    ]);
+  });
+
+  it('select: leaves options without the separator on one line', () => {
+    bridge.handleEvent(makeRequest('select', { options: ['Allow', '3. Type something.'] }));
+    expect(lastQuickPick().items).toEqual([
+      { label: 'Allow', value: 'Allow' },
+      { label: '3. Type something.', value: '3. Type something.' },
+    ]);
+  });
+
+  it('select: leaves the bash-restrictions permission prompt untouched', async () => {
+    // Real payload from ~/.pi/agent/extensions/bash-restrictions (index.js:362-364,
+    // 410-416): a two-part title and three short choices, one of which contains an
+    // ampersand.  None carries the separator, so every option must survive as a
+    // plain one-line label and the title must never be rewritten.
+    const options = ['Allow once', 'Deny', 'Deny & suggest alternative'];
+    bridge.handleEvent(makeRequest('select', {
+      title: 'Bash restriction\n\n  rm -rf build',
+      options,
+      timeout: 30000,
+    }));
+    const pick = lastQuickPick();
+    expect(pick.items).toEqual(options.map((o) => ({ label: o, value: o })));
+
+    pick.highlight(2);
+    expect(pick.title).toBe('Bash restriction\n\n  rm -rf build');
+
+    pick.accept(2);
+    await vi.waitFor(() => expect(transport.sentRaw.length).toBe(1));
+    expect(transport.sentRaw[0]).toEqual({
+      type: 'extension_ui_response',
+      id: 'test-id-1',
+      value: 'Deny & suggest alternative',
+    });
+  });
+
+  it('select: splits per option -- a mixed list keeps both kinds', () => {
+    bridge.handleEvent(makeRequest('select', {
+      options: ['1. Rewrite — Fix the content.', '2. Type something.'],
+    }));
+    const items = lastQuickPick().items;
+    expect(items[0].detail).toBe('Fix the content.');
+    expect(items[1].detail).toBeUndefined();
+  });
+
+  it('select: answers with the original option string, not the split label', async () => {
+    const original = '1. Rewrite for aiohttp — Replace the wrong FastAPI stub.';
+    bridge.handleEvent(makeRequest('select', { options: [original, '2. Type something.'] }));
+    lastQuickPick().accept(0);
+    await vi.waitFor(() => expect(transport.sentRaw.length).toBe(1));
+    // The sending extension parses the leading index out of this string, so it
+    // must come back byte-for-byte.
+    expect(transport.sentRaw[0]).toEqual({
+      type: 'extension_ui_response',
+      id: 'test-id-1',
+      value: original,
+    });
+  });
+
+  it('select: shows the highlighted option full description in the title', () => {
+    bridge.handleEvent(makeRequest('select', {
+      title: 'How should I handle it?',
+      options: ['1. Rewrite — Replace the stub.', '2. Type something.'],
+    }));
+    const pick = lastQuickPick();
+    expect(pick.title).toBe('How should I handle it?');
+
+    pick.highlight(0);
+    expect(pick.title).toBe('How should I handle it?  ▸  Replace the stub.');
+
+    // An option with no description restores the bare question.
+    pick.highlight(1);
+    expect(pick.title).toBe('How should I handle it?');
+  });
+
+  it('select: leaves the title alone when no option has a description', () => {
+    bridge.handleEvent(makeRequest('select', { title: 'Allow command?', options: ['Allow', 'Block'] }));
+    const pick = lastQuickPick();
+    pick.highlight(1);
+    expect(pick.title).toBe('Allow command?');
+  });
+
+  it('select: falls back to a default title when pi sends none', () => {
+    bridge.handleEvent(makeRequest('select', { options: ['Allow', 'Block'] }));
+    expect(lastQuickPick().title).toBe('Select an option');
   });
 
   // ── confirm ───────────────────────────────────────────────────────────
@@ -430,8 +616,8 @@ describe('UiProtocolBridge', () => {
 
   it('does not crash when transport is not running at response time', async () => {
     transport.isRunning = false;
-    mockShowQuickPick.mockResolvedValue('Allow');
     bridge.handleEvent(makeRequest('select', { options: ['Allow'] }));
+    lastQuickPick().accept(0);
     await vi.waitFor(() =>
       (bridge as unknown as { _outputChannel: { appendLine: ReturnType<typeof vi.fn> } })
         ._outputChannel.appendLine.mock.calls.length > 0,
@@ -443,8 +629,8 @@ describe('UiProtocolBridge', () => {
   it('logs and does not crash when sendRaw throws even with running transport', async () => {
     // Force sendRaw to throw despite isRunning=true (simulates proc missing).
     transport.sendRaw = () => { throw new Error('stdin write error'); };
-    mockShowQuickPick.mockResolvedValue('Allow');
     bridge.handleEvent(makeRequest('select', { options: ['Allow'] }));
+    lastQuickPick().accept(0);
     const outputChannel = (bridge as unknown as { _outputChannel: { appendLine: ReturnType<typeof vi.fn> } })
       ._outputChannel;
     // Wait specifically for the 'sendResponse failed' log line (not just any log).
@@ -466,10 +652,8 @@ describe('UiProtocolBridge', () => {
     vi.useFakeTimers();
     // Simulate a select with a 100ms timeout.
     // The user responds *after* the timer fires.
-    let resolvePick!: (v: string | undefined) => void;
-    mockShowQuickPick.mockReturnValue(new Promise<string | undefined>((r) => { resolvePick = r; }));
-
     bridge.handleEvent(makeRequest('select', { options: ['Allow'], timeout: 100 }));
+    const pick = lastQuickPick();
 
     // Advance past the timeout — request id is now marked as expired.
     vi.advanceTimersByTime(150);
@@ -477,7 +661,7 @@ describe('UiProtocolBridge', () => {
     vi.useRealTimers();
 
     // Now the user picks an option — response must be suppressed.
-    resolvePick('Allow');
+    pick.accept(0);
     await Promise.resolve(); // drain microtask
     await new Promise((r) => setTimeout(r, 0));
 
@@ -486,9 +670,9 @@ describe('UiProtocolBridge', () => {
 
   it('allows a response when the user responds before the timeout fires', async () => {
     vi.useFakeTimers();
-    mockShowQuickPick.mockResolvedValue('Allow');
 
     bridge.handleEvent(makeRequest('select', { options: ['Allow'], timeout: 5000 }));
+    lastQuickPick().accept(0);
 
     // Advance time but NOT past the timeout — user responds before deadline.
     vi.advanceTimersByTime(10);
@@ -502,9 +686,10 @@ describe('UiProtocolBridge', () => {
   // ── dispose ───────────────────────────────────────────────────────────
 
   it('does not send response after dispose', async () => {
-    mockShowQuickPick.mockResolvedValue('Allow');
     bridge.handleEvent(makeRequest('select', { options: ['Allow'] }));
     bridge.dispose();
+    // The dialog was still open when the bridge went away.
+    lastQuickPick().accept(0);
     // Let the async handler finish — it should see _disposed = true.
     await new Promise((r) => setTimeout(r, 0));
     expect(transport.sentRaw.length).toBe(0);

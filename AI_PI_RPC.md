@@ -32,8 +32,14 @@ package). These rules capture the gotchas; consult `rpc.md` for the full command
 ## Extension UI sub-protocol
 
 - Blocking `extension_ui_request` (`select` / `confirm` / `input` / `editor`) must be answered with
-  a matching `extension_ui_response`. Map them to `showQuickPick` / `showInputBox` /
+  a matching `extension_ui_response`. Map them to a quick pick / `showInputBox` /
   `showWarningMessage`. Never leave a blocking request unanswered.
+- A request carries only `id` / `method` / `title` / `options` / `timeout` — **no tool or extension
+  name**. Anything that needs to treat one sender's dialogs specially must key on the *shape* of
+  the payload, never on an identity that is not on the wire.
+- Echo the user's choice back **verbatim**. Senders parse their own encoding out of the option
+  string (rpiv reads the leading `N.`), so reformatting an option for display must not change the
+  value returned. See `toOptionPick` in `src/ui-protocol/bridge.ts`.
 - Fire-and-forget `notify` / `setStatus` / `setWidget` / `setTitle` map to notifications, the
   status bar, and webview banners.
 
