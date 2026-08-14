@@ -123,28 +123,22 @@ type UiResponse =
  */
 const OPTION_DETAIL_SEPARATOR = ' — ';
 
-/** Shown between the question and the highlighted option's full explanation. */
-const ACTIVE_DETAIL_MARKER = '  ▸  ';
-
 /**
- * Longest trailing title block still worth moving to the placeholder, which is
- * one line and clips.  Above this the text is better off in the title, which
- * wraps — see splitTitle.
- */
-const MAX_PLACEHOLDER_CHARS = 100;
-
-/**
- * Both quick input surfaces render their title as a single text node, so
- * newlines in it collapse into spaces.  Senders that compose a title out of
- * several blocks separated by a blank line — `bash-restrictions` sends
- * "Bash restriction", a blank line, then the command it wants permission for —
- * therefore read as one run: "Bash restriction   rm -rf build".
+ * An input box renders its title as a single text node, so newlines in it
+ * collapse into spaces.  Senders that compose a title out of several blocks
+ * separated by a blank line — rpiv's multiple choice sends the question, the
+ * option list and "enter the numbers, comma-separated" as one string —
+ * therefore read as one centred run of text.
  *
- * Split at the first blank line so the caller can put the second block on a
- * surface of its own.  `rest` is undefined when the title is a single block.
- * Collapsed newlines *within* a block are not recoverable here: no quick input
- * surface honours a line break.  That ceiling is what the in-chat question
- * cards are for — see docs/design/in-chat-question-cards.md.
+ * Split at the first blank line so `_handleInput` can move the second block to
+ * `prompt`, which renders below the box and wraps.  `rest` is undefined when
+ * the title is a single block.  Collapsed newlines *within* a block are not
+ * recoverable here.  That ceiling is what the in-chat question cards are for —
+ * see docs/design/in-chat-question-cards.md.
+ *
+ * Quick picks are deliberately excluded: they have no surface below the widget,
+ * and the one alternative — the placeholder inside the filter box — was tried
+ * and taken back out (see the design doc §8).
  */
 function splitTitleBlocks(title: string): { head: string; rest?: string } {
   const at = title.search(/\n[^\S\n]*\n/);
@@ -154,19 +148,6 @@ function splitTitleBlocks(title: string): { head: string; rest?: string } {
   const rest = title.slice(at).trim();
   if (head.length === 0 || rest.length === 0) return { head: title };
   return { head, rest };
-}
-
-/**
- * Quick pick flavour of splitTitleBlocks: the second block moves to the
- * placeholder — the greyed text inside the filter box — but only when it fits
- * one line, because the placeholder clips.  rpiv folds option previews into the
- * title the same way (up to 600 characters each); those stay in the title,
- * which wraps.
- */
-function splitTitle(title: string): { title: string; placeholder?: string } {
-  const { head, rest } = splitTitleBlocks(title);
-  if (rest === undefined || rest.length > MAX_PLACEHOLDER_CHARS) return { title };
-  return { title: head, placeholder: rest };
 }
 
 interface OptionPick extends vscode.QuickPickItem {
@@ -348,40 +329,35 @@ export class UiProtocolBridge implements vscode.Disposable {
   // ─── Blocking dialog methods ───────────────────────────────────────────────
 
   /**
-   * `select` renders as a quick pick.  Three accommodations for senders whose
-   * text does not fit the widget's single-line surfaces:
+   * `select` renders as a quick pick.  The one accommodation for senders whose
+   * text does not fit the widget's single-line rows: an option's explanation
+   * (see OPTION_DETAIL_SEPARATOR) moves to the row's own `detail` line rather
+   * than sharing one with the headline.
    *
-   *  - an option's explanation (see OPTION_DETAIL_SEPARATOR) moves to the row's
-   *    own `detail` line rather than sharing one with the headline;
-   *  - the highlighted option's *full* explanation is appended to the title,
-   *    which — unlike a list row — wraps onto as many lines as it needs.  Quick
-   *    pick rows cannot be multi-line (microsoft/vscode#153095, open since
-   *    2022), so the title is the only place text that long reads in full;
-   *  - a short second block in the title moves to the placeholder (splitTitle),
-   *    because the title collapses its own newlines.
+   * The title is shown exactly as pi sent it.  Two attempts to squeeze more
+   * text out of the widget were tried and taken back out, because each made the
+   * dialog worse in practice — the highlighted option's full explanation in the
+   * title (it repeated the row right below it) and a second title block in the
+   * placeholder (it read as already-typed text and vanished on filtering).
+   * Both are recorded in docs/design/in-chat-question-cards.md §8.  A quick pick
+   * row cannot be multi-line (microsoft/vscode#153095, open since 2022) and the
+   * title collapses its own newlines; removing that ceiling needs the in-chat
+   * question cards, not another corner of this widget.
    */
   private async _handleSelect(req: SelectRequest): Promise<void> {
-    const { title: baseTitle, placeholder } = splitTitle(req.title ?? 'Select an option');
     const items = req.options.map(toOptionPick);
-    const anyDetail = items.some((it) => it.detail !== undefined);
 
     let picked: string | undefined;
     try {
       picked = await new Promise<string | undefined>((resolve) => {
         const pick = vscode.window.createQuickPick<OptionPick>();
-        pick.title = baseTitle;
-        if (placeholder !== undefined) pick.placeholder = placeholder;
+        pick.title = req.title ?? 'Select an option';
         pick.items = items;
         pick.ignoreFocusOut = true;
         // The explanation lives on `detail`, so let typing filter on it too.
         pick.matchOnDetail = true;
 
         let accepted: string | undefined;
-        pick.onDidChangeActive((active) => {
-          if (!anyDetail) return;
-          const detail = active[0]?.detail;
-          pick.title = detail ? `${baseTitle}${ACTIVE_DETAIL_MARKER}${detail}` : baseTitle;
-        });
         pick.onDidAccept(() => {
           accepted = pick.selectedItems[0]?.value;
           pick.hide();

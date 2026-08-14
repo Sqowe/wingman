@@ -310,13 +310,14 @@ describe('UiProtocolBridge', () => {
     }));
     const pick = lastQuickPick();
     expect(pick.items).toEqual(options.map((o) => ({ label: o, value: o })));
-    // The command moves to the placeholder, which is a line of its own; the
-    // title would have collapsed the newlines into "Bash restriction   rm -rf build".
-    expect(pick.title).toBe('Bash restriction');
-    expect(pick.placeholder).toBe('rm -rf build');
+    // The title goes through as sent.  Moving the command to the placeholder was
+    // tried and taken back out: inside the filter box it reads as already-typed
+    // text, clips, and disappears as soon as the user types (design doc §8).
+    expect(pick.title).toBe('Bash restriction\n\n  rm -rf build');
+    expect(pick.placeholder).toBeUndefined();
 
     pick.highlight(2);
-    expect(pick.title).toBe('Bash restriction');
+    expect(pick.title).toBe('Bash restriction\n\n  rm -rf build');
 
     pick.accept(2);
     await vi.waitFor(() => expect(transport.sentRaw.length).toBe(1));
@@ -350,7 +351,10 @@ describe('UiProtocolBridge', () => {
     });
   });
 
-  it('select: shows the highlighted option full description in the title', () => {
+  it('select: keeps the description in the list, never in the title', () => {
+    // Appending the highlighted option's full description to the title was tried
+    // and taken back out: the header then repeated the row right below it, in
+    // full above and clipped below (design doc §8).
     bridge.handleEvent(makeRequest('select', {
       title: 'How should I handle it?',
       options: ['1. Rewrite — Replace the stub.', '2. Type something.'],
@@ -359,9 +363,8 @@ describe('UiProtocolBridge', () => {
     expect(pick.title).toBe('How should I handle it?');
 
     pick.highlight(0);
-    expect(pick.title).toBe('How should I handle it?  ▸  Replace the stub.');
+    expect(pick.title).toBe('How should I handle it?');
 
-    // An option with no description restores the bare question.
     pick.highlight(1);
     expect(pick.title).toBe('How should I handle it?');
   });
@@ -392,26 +395,16 @@ describe('UiProtocolBridge', () => {
     expect(lastQuickPick().title).toBe('First line\nSecond line');
   });
 
-  it('select: keeps a long second block in the wrapping title, not the placeholder', () => {
-    // rpiv folds option previews into the title (up to 600 chars each).  The
-    // placeholder is one line and clips, so long blocks must stay in the title.
+  it('select: keeps a multi-block title in the wrapping title, not the placeholder', () => {
+    // rpiv folds option previews into the title (up to 600 chars each) after a
+    // blank line.  The title wraps; the placeholder is one line and clips, so
+    // nothing is moved out of the title at all.
     const preview = 'x'.repeat(150);
     const title = `Which approach?\n\n--- 1. Rewrite preview ---\n${preview}`;
     bridge.handleEvent(makeRequest('select', { title, options: ['1. Rewrite — Do it.'] }));
     const pick = lastQuickPick();
     expect(pick.title).toBe(title);
     expect(pick.placeholder).toBeUndefined();
-  });
-
-  it('select: a split title still carries the highlighted option description', () => {
-    bridge.handleEvent(makeRequest('select', {
-      title: 'Bash restriction\n\n  rm -rf build',
-      options: ['1. Allow — Run it as written.'],
-    }));
-    const pick = lastQuickPick();
-    pick.highlight(0);
-    expect(pick.title).toBe('Bash restriction  ▸  Run it as written.');
-    expect(pick.placeholder).toBe('rm -rf build');
   });
 
   // ── confirm ───────────────────────────────────────────────────────────
