@@ -15,6 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AgentTransport, RpcEvent } from '../agent/transport';
+import { parseOption, splitTitleBlocks } from '../shared/dialog-options';
 import type { InstructionFilesInfo, InstructionFileEntry, ClaudeMemoryInfo, ClaudeMemoryEntry } from '../shared/messages';
 import { isStrictlyWithinDir } from '../shared/path-guard';
 import type { WingmanViewProvider } from '../webview/provider';
@@ -106,49 +107,18 @@ type UiResponse =
 // ─── select option formatting ─────────────────────────────────────────────────
 
 /**
- * Separator between an option's headline and its explanation.
+ * How an option string is split into a headline and an explanation, how a
+ * multi-block title is split, and the em dash separator itself all live in
+ * `src/shared/dialog-options.ts` — the webview's question card must apply the
+ * identical rules, so there is one copy shared by both surfaces.
  *
- * pi's `select` primitive only carries `string[]`, so an extension that has
- * both a short label and a longer description has no choice but to flatten
- * them into one line.  The convention (rpiv-ask-user-question's RPC fallback
- * builds `"3. Rewrite for aiohttp — Replace the FastAPI stub…"`) is a spaced
- * em dash.  A VS Code quick pick truncates a one-line label with an ellipsis
- * at ~600px, so the explanation is the part that gets lost.
- *
- * There is no tool or extension name on the wire to key off — an
- * `extension_ui_request` carries only id / method / title / options / timeout
- * (pi docs/rpc.md §"Extension UI Requests").  Recognition is therefore by
- * shape, which also means it survives the sending tool being renamed and
- * benefits any extension that formats its options the same way.
+ * The short version of why the split exists at all: pi's `select` carries only
+ * `string[]`, so a sender with both a label and a longer description has to
+ * flatten them into one line, and a quick pick then truncates that line with an
+ * ellipsis at ~600 px — losing exactly the explanation. Recognition is by the
+ * *shape* of the payload because an `extension_ui_request` carries no tool or
+ * extension name (pi docs/rpc.md §"Extension UI Requests").
  */
-const OPTION_DETAIL_SEPARATOR = ' — ';
-
-/**
- * An input box renders its title as a single text node, so newlines in it
- * collapse into spaces.  Senders that compose a title out of several blocks
- * separated by a blank line — rpiv's multiple choice sends the question, the
- * option list and "enter the numbers, comma-separated" as one string —
- * therefore read as one centred run of text.
- *
- * Split at the first blank line so `_handleInput` can move the second block to
- * `prompt`, which renders below the box and wraps.  `rest` is undefined when
- * the title is a single block.  Collapsed newlines *within* a block are not
- * recoverable here.  That ceiling is what the in-chat question cards are for —
- * see docs/design/in-chat-question-cards.md.
- *
- * Quick picks are deliberately excluded: they have no surface below the widget,
- * and the one alternative — the placeholder inside the filter box — was tried
- * and taken back out (see the design doc §8).
- */
-function splitTitleBlocks(title: string): { head: string; rest?: string } {
-  const at = title.search(/\n[^\S\n]*\n/);
-  if (at < 0) return { head: title };
-
-  const head = title.slice(0, at).trim();
-  const rest = title.slice(at).trim();
-  if (head.length === 0 || rest.length === 0) return { head: title };
-  return { head, rest };
-}
 
 interface OptionPick extends vscode.QuickPickItem {
   /** The option string exactly as pi sent it — echoed back verbatim. */
@@ -161,16 +131,15 @@ interface OptionPick extends vscode.QuickPickItem {
  * Options without the separator (`"Allow"`, `"5. Type something."`) are left
  * as a plain one-line label.  Splitting is per option, never all-or-nothing:
  * a list routinely mixes both kinds.
+ *
+ * `value` is `raw`, never the reformatted label: senders parse their own
+ * encoding back out of the option string (rpiv reads the leading `N.` and
+ * treats an unrecognised answer as a dismissal).
  */
 function toOptionPick(option: string): OptionPick {
-  const at = option.indexOf(OPTION_DETAIL_SEPARATOR);
-  if (at <= 0) return { label: option, value: option };
-
-  const label = option.slice(0, at).trim();
-  const detail = option.slice(at + OPTION_DETAIL_SEPARATOR.length).trim();
-  if (label.length === 0 || detail.length === 0) return { label: option, value: option };
-
-  return { label, detail, value: option };
+  const { raw, label, description } = parseOption(option);
+  if (description === undefined) return { label: raw, value: raw };
+  return { label, detail: description, value: raw };
 }
 
 /** Narrow an RpcEvent to a UiRequest, or return null if it is not one. */
@@ -331,7 +300,8 @@ export class UiProtocolBridge implements vscode.Disposable {
   /**
    * `select` renders as a quick pick.  The one accommodation for senders whose
    * text does not fit the widget's single-line rows: an option's explanation
-   * (see OPTION_DETAIL_SEPARATOR) moves to the row's own `detail` line rather
+   * (see OPTION_DETAIL_SEPARATOR in src/shared/dialog-options.ts) moves to the
+   * row's own `detail` line rather
    * than sharing one with the headline.
    *
    * The title is shown exactly as pi sent it.  Two attempts to squeeze more

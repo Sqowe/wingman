@@ -337,6 +337,29 @@ describe('UiProtocolBridge', () => {
     expect(items[1].detail).toBeUndefined();
   });
 
+  it('select: maps the parsed option onto label/detail/value, keeping the "N. " prefix', () => {
+    // Pins the ParsedOption -> OptionPick mapping in toOptionPick().  parseOption()
+    // returns both `label` ("1. Rewrite", prefix kept) and `headline` ("Rewrite",
+    // prefix stripped); the quick pick must use `label`, because the list number is
+    // the user's visual link to a sender that talks in option numbers.  Using
+    // `headline` here would silently drop it, which no other test would catch.
+    const raw = '1. Rewrite for aiohttp — Replace the wrong FastAPI stub.';
+    bridge.handleEvent(makeRequest('select', { options: [raw] }));
+    expect(lastQuickPick().items[0]).toEqual({
+      label: '1. Rewrite for aiohttp',
+      detail: 'Replace the wrong FastAPI stub.',
+      value: raw,
+    });
+  });
+
+  it('select: uses the untrimmed raw as the label when there is no description', () => {
+    // A description-less option carries no display split, so `label` must be the
+    // raw string rather than a tidied copy -- and `value` must equal it exactly.
+    const raw = '  Allow once  ';
+    bridge.handleEvent(makeRequest('select', { options: [raw] }));
+    expect(lastQuickPick().items[0]).toEqual({ label: raw, value: raw });
+  });
+
   it('select: answers with the original option string, not the split label', async () => {
     const original = '1. Rewrite for aiohttp — Replace the wrong FastAPI stub.';
     bridge.handleEvent(makeRequest('select', { options: [original, '2. Type something.'] }));
