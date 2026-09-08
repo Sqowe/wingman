@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import type { RpcEvent } from '../../../src/agent/transport';
-import type { PiCommand, ModelState, InstructionFilesInfo, ClaudeMemoryInfo } from '../../../src/shared/messages';
+import type { PiCommand, ModelState, InstructionFilesInfo, ClaudeMemoryInfo, UiDialogMessage, UiDialogOption } from '../../../src/shared/messages';
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -58,7 +58,52 @@ export interface SystemItem {
   level: 'info' | 'warning' | 'error';
 }
 
-export type ChatItem = UserItem | AssistantItem | ToolRunItem | SystemItem;
+/**
+ * A blocking question from a pi extension, rendered as a card in the transcript
+ * instead of a native quick pick (docs/design/in-chat-question-cards.md).
+ *
+ * The card is interactive while `status` is `'open'` and becomes a record of what
+ * happened once it is not. It stays in the transcript either way — the question
+ * belongs with the turn that raised it.
+ *
+ * pi is *blocked* on an open card, so exactly one answer may leave the webview.
+ * `status` is what enforces that: every send path checks it first, and the store
+ * flips it in the same update that queues the outgoing answer.
+ */
+export interface QuestionCardItem {
+  itemKind: 'question';
+  /** pi's request id. Opaque here; echoed back so the host can correlate. */
+  id: string;
+  kind: 'select' | 'multiSelect';
+  question: string;
+  header?: string;
+  options: UiDialogOption[];
+  instructions?: string;
+  /**
+   * `open`      — awaiting the user; the only state that accepts input.
+   * `answered`  — the user chose; `answer` holds what was sent.
+   * `dismissed` — the user declined, cancelling the sender's questionnaire.
+   * `withdrawn` — the host took it back (timeout / reset / agent stopped).
+   */
+  status: 'open' | 'answered' | 'dismissed' | 'withdrawn';
+  /** Why the host withdrew the card. Only set when `status` is `'withdrawn'`. */
+  withdrawnReason?: 'timeout' | 'sessionReset' | 'agentStopped';
+  /**
+   * What was sent back, kept for the transcript record. For `select` this is the
+   * chosen option's `raw`; for `multiSelect`, the comma-separated indices.
+   */
+  answer?: string;
+  /** Indices (1-based) ticked so far on a multiSelect card, before submitting. */
+  selected: number[];
+  /**
+   * True once the answered card has been re-expanded by the user. An answered
+   * card collapses to the question plus the chosen row; this reveals the rest.
+   */
+  expanded: boolean;
+  timestamp: number;
+}
+
+export type ChatItem = UserItem | AssistantItem | ToolRunItem | SystemItem | QuestionCardItem;
 
 // ── Restoring a stored session into ChatItems ───────────────────────
 //
@@ -205,6 +250,15 @@ export interface UiWidget {
   placement: 'aboveEditor' | 'belowEditor';
 }
 
+/**
+ * An answer the store has decided on, waiting to be posted to the host.
+ * Mirrors `UiDialogAnswerMessage`'s payload without the `type` tag, which
+ * App.tsx adds when it posts.
+ */
+export type UiDialogAnswer =
+  | { id: string; value: string }
+  | { id: string; cancelled: true };
+
 interface ChatState {
   items: ChatItem[];
   isStreaming: boolean;
@@ -246,6 +300,16 @@ interface ChatState {
    * during streaming — otherwise auto-scroll would wipe a manual toggle.
    */
   toolCardExpanded: Record<string, boolean>;
+  /**
+   * Answers ready to be posted to the host, oldest first.
+   *
+   * The store stays pure — it never calls `vscode.postMessage` itself, so it
+   * remains testable without a host and matches how every other outbound message
+   * is sent from a component. App.tsx drains this after each update and clears it
+   * via `flushDialogAnswers`. Queued (not a single slot) because two cards can be
+   * settled in one update when a session reset withdraws a backlog.
+   */
+  pendingDialogAnswers: UiDialogAnswer[];
 }
 
 interface ChatActions {
@@ -257,6 +321,38 @@ interface ChatActions {
   setDiffError: (toolCallId: string, message: string) => void;
   /** Record a manual expand/collapse override for a tool card (keyed by toolCallId). */
   setToolCardExpanded: (toolCallId: string, expanded: boolean) => void;
+
+  // ── Question cards ────────────────────────────────────────────────
+
+  /**
+   * Add a question card to the transcript (from a `uiDialog` host message).
+   * A card whose id is already present is ignored rather than duplicated — the
+   * host re-posts open cards when the webview reloads.
+   */
+  addQuestionCard: (dialog: UiDialogMessage) => void;
+  /** Toggle one option on a multiSelect card. No-op unless the card is open. */
+  toggleQuestionOption: (id: string, index: number) => void;
+  /**
+   * Answer a card and queue the reply for the host.
+   *
+   * `value` must be the chosen option's `raw` for a `select` card, or
+   * comma-separated 1-based indices for a `multiSelect` — senders parse their own
+   * encoding back out and read anything else as a dismissal. Callers should use
+   * `submitQuestionSelection` for multiSelect rather than building the string.
+   *
+   * No-op unless the card is open, so a double click cannot answer twice.
+   */
+  answerQuestionCard: (id: string, value: string) => void;
+  /** Submit a multiSelect card's ticked options as comma-separated indices. */
+  submitQuestionSelection: (id: string) => void;
+  /** Dismiss a card, cancelling the sender's whole questionnaire. */
+  dismissQuestionCard: (id: string) => void;
+  /** Mark a card withdrawn by the host; sends nothing (the host already settled it). */
+  withdrawQuestionCard: (id: string, reason: 'timeout' | 'sessionReset' | 'agentStopped') => void;
+  /** Expand or collapse an answered card's full option list. */
+  setQuestionCardExpanded: (id: string, expanded: boolean) => void;
+  /** Drop the queued answers App.tsx has just posted. */
+  flushDialogAnswers: () => void;
   /** Replace the current slash commands list. */
   setCommands: (commands: PiCommand[]) => void;
   /** Update model capabilities from a modelState host message. */
@@ -556,6 +652,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   uiTitle: null,
   uiEditorText: null,
   toolCardExpanded: {},
+  pendingDialogAnswers: [],
   instructionFiles: undefined,
   claudeMemory: undefined,
 
@@ -597,6 +694,125 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
     set((state) => ({
       toolCardExpanded: { ...state.toolCardExpanded, [toolCallId]: expanded },
     })),
+
+  // ── Question cards ────────────────────────────────────────────────
+
+  addQuestionCard: (dialog: UiDialogMessage) =>
+    set((state) => {
+      // The host re-posts open cards on reload; keep the existing item so any
+      // ticked checkboxes survive rather than resetting the user's progress.
+      if (state.items.some((i) => i.itemKind === 'question' && i.id === dialog.id)) {
+        return {};
+      }
+      const card: QuestionCardItem = {
+        itemKind: 'question',
+        id: dialog.id,
+        kind: dialog.kind,
+        question: dialog.question,
+        ...(dialog.header !== undefined ? { header: dialog.header } : {}),
+        // Copy the array: the incoming message is host-owned, and the store must
+        // not alias state to something outside it.
+        options: [...dialog.options],
+        ...(dialog.instructions !== undefined ? { instructions: dialog.instructions } : {}),
+        status: 'open',
+        selected: [],
+        expanded: false,
+        timestamp: Date.now(),
+      };
+      return { items: [...state.items, card] };
+    }),
+
+  toggleQuestionOption: (id: string, index: number) =>
+    set((state) => ({
+      items: state.items.map((item) => {
+        if (item.itemKind !== 'question' || item.id !== id) return item;
+        if (item.status !== 'open') return item;
+        // Only tick an index the sender actually offered. An out-of-range index
+        // would be submitted as a token the sender cannot map back to an option,
+        // and rpiv reacts to that by keeping the *entire* reply as free text — so
+        // one bad index would silently turn a selection into gibberish.
+        if (!item.options.some((o) => o.index === index)) return item;
+        const selected = item.selected.includes(index)
+          ? item.selected.filter((i) => i !== index)
+          : [...item.selected, index].sort((a, b) => a - b);
+        return { ...item, selected };
+      }),
+    })),
+
+  answerQuestionCard: (id: string, value: string) =>
+    set((state) => {
+      const card = state.items.find(
+        (i): i is QuestionCardItem => i.itemKind === 'question' && i.id === id,
+      );
+      // Guard here, not in the component: pi is blocked on this request and will
+      // accept exactly one response, so a second answer must never be queued.
+      if (!card || card.status !== 'open') return {};
+      return {
+        items: state.items.map((item) =>
+          item.itemKind === 'question' && item.id === id
+            ? { ...item, status: 'answered' as const, answer: value }
+            : item,
+        ),
+        pendingDialogAnswers: [...state.pendingDialogAnswers, { id, value }],
+      };
+    }),
+
+  submitQuestionSelection: (id: string) =>
+    set((state) => {
+      const card = state.items.find(
+        (i): i is QuestionCardItem => i.itemKind === 'question' && i.id === id,
+      );
+      if (!card || card.status !== 'open') return {};
+      // Bare 1-based indices, comma-separated. Senders require every token to
+      // parse as an in-range index and keep the whole reply as free text if any
+      // does not, so labels must never appear here. An empty selection sends an
+      // empty string, which is the sender's "none of these".
+      const value = card.selected.join(',');
+      return {
+        items: state.items.map((item) =>
+          item.itemKind === 'question' && item.id === id
+            ? { ...item, status: 'answered' as const, answer: value }
+            : item,
+        ),
+        pendingDialogAnswers: [...state.pendingDialogAnswers, { id, value }],
+      };
+    }),
+
+  dismissQuestionCard: (id: string) =>
+    set((state) => {
+      const card = state.items.find(
+        (i): i is QuestionCardItem => i.itemKind === 'question' && i.id === id,
+      );
+      if (!card || card.status !== 'open') return {};
+      return {
+        items: state.items.map((item) =>
+          item.itemKind === 'question' && item.id === id
+            ? { ...item, status: 'dismissed' as const }
+            : item,
+        ),
+        pendingDialogAnswers: [...state.pendingDialogAnswers, { id, cancelled: true }],
+      };
+    }),
+
+  withdrawQuestionCard: (id: string, reason: 'timeout' | 'sessionReset' | 'agentStopped') =>
+    set((state) => ({
+      // No answer is queued: the host settled the request before telling us, so
+      // replying would risk a second response reaching pi.
+      items: state.items.map((item) => {
+        if (item.itemKind !== 'question' || item.id !== id) return item;
+        if (item.status !== 'open') return item; // already settled; leave the record
+        return { ...item, status: 'withdrawn' as const, withdrawnReason: reason };
+      }),
+    })),
+
+  setQuestionCardExpanded: (id: string, expanded: boolean) =>
+    set((state) => ({
+      items: state.items.map((item) =>
+        item.itemKind === 'question' && item.id === id ? { ...item, expanded } : item,
+      ),
+    })),
+
+  flushDialogAnswers: () => set(() => ({ pendingDialogAnswers: [] })),
 
   setCommands: (commands: PiCommand[]) => set(() => ({ commands })),
 
@@ -659,6 +875,11 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
       uiTitle: null,
       uiEditorText: null,
       toolCardExpanded: {},
+      // Open cards belong to the conversation being cleared. The host has already
+      // answered pi for each of them (it settles pending dialogs on reset), so
+      // nothing is queued here — dropping the queue also discards any answer that
+      // had not been posted yet, which is correct: it refers to a dead request.
+      pendingDialogAnswers: [],
     })),
 
   setMessages: (messages: unknown[]) =>
@@ -675,6 +896,9 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         isStreaming: false,
         _currentAssistantId: null,
         toolCardExpanded: {},
+        // A restored transcript has no live questions: any card in the old session
+        // was settled by the host before the switch.
+        pendingDialogAnswers: [],
         // Preserve UI protocol state across session switches.
       };
     }),
@@ -699,6 +923,10 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         instructionFiles: state.instructionFiles,
         claudeMemory: state.claudeMemory,
         toolCardExpanded: state.toolCardExpanded,
+        // Carried through untouched: dispatchEvents only folds agent render
+        // events, and a question card never arrives that way (the bridge
+        // intercepts extension_ui_request before the event stream).
+        pendingDialogAnswers: state.pendingDialogAnswers,
       };
       // Deep-clone items array elements that will be mutated so React
       // detects the change correctly.

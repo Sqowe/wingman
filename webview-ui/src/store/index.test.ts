@@ -14,10 +14,12 @@ import { useChatStore, normalizeShowViewDiffButton } from './index';
 import type {
   AssistantItem,
   ChatItem,
+  QuestionCardItem,
   SystemItem,
   ToolRunItem,
   UserItem,
 } from './index';
+import type { UiDialogMessage } from '../../../src/shared/messages';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -58,6 +60,7 @@ beforeEach(() => {
     uiTitle: null,
     uiEditorText: null,
     toolCardExpanded: {},
+    pendingDialogAnswers: [],
   });
 });
 
@@ -795,5 +798,312 @@ describe('store.normalizeShowViewDiffButton', () => {
     { show: false },
   ])('coerces non-false / malformed values to true (%j)', (raw) => {
     expect(normalizeShowViewDiffButton(raw)).toBe(true);
+  });
+});
+
+// ─── Question cards ───────────────────────────────────────────────────────────
+//
+// pi is BLOCKED on an open card, so the invariant these tests defend is that
+// exactly one answer can ever be queued per card. Everything else (checkbox
+// state, collapse) is presentation. See docs/design/in-chat-question-cards.md.
+
+describe('question cards', () => {
+  const SELECT_DIALOG: UiDialogMessage = {
+    type: 'uiDialog',
+    id: 'req-1',
+    kind: 'select',
+    question: 'How should I handle it?',
+    header: 'REST API file',
+    options: [
+      { raw: '1. Keep — Leave it.', index: 1, headline: 'Keep', description: 'Leave it.' },
+      { raw: '2. Rewrite — Replace it.', index: 2, headline: 'Rewrite', description: 'Replace it.' },
+      { raw: '3. Type something.', index: 3, headline: 'Type something.' },
+    ],
+  };
+
+  const MULTI_DIALOG: UiDialogMessage = {
+    type: 'uiDialog',
+    id: 'req-2',
+    kind: 'multiSelect',
+    question: 'Which files should I touch?',
+    options: [
+      { raw: '1. Router — Rewrite.', index: 1, headline: 'Router', description: 'Rewrite.' },
+      { raw: '2. Models — Convert.', index: 2, headline: 'Models', description: 'Convert.' },
+      { raw: '3. Tests — Update.', index: 3, headline: 'Tests', description: 'Update.' },
+    ],
+    instructions: 'Enter the numbers of all that apply.',
+  };
+
+  const cards = () => items().filter((i): i is QuestionCardItem => i.itemKind === 'question');
+  const onlyCard = () => {
+    const found = cards();
+    expect(found).toHaveLength(1);
+    return found[0];
+  };
+  const answers = () => useChatStore.getState().pendingDialogAnswers;
+
+  // ── Adding ────────────────────────────────────────────────────────────────
+
+  it('addQuestionCard appends an open card to the transcript', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    const card = onlyCard();
+    expect(card).toMatchObject({
+      itemKind: 'question',
+      id: 'req-1',
+      kind: 'select',
+      question: 'How should I handle it?',
+      header: 'REST API file',
+      status: 'open',
+      selected: [],
+      expanded: false,
+    });
+    expect(card.options).toHaveLength(3);
+  });
+
+  it('addQuestionCard keeps the card in transcript order', () => {
+    useChatStore.getState().addUserMessage('do the thing');
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    expect(items().map((i) => i.itemKind)).toEqual(['user', 'question']);
+  });
+
+  it('addQuestionCard ignores a re-post of the same id', () => {
+    // The host re-posts open cards when the webview reloads.
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().toggleQuestionOption('req-1', 2);
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+
+    expect(cards()).toHaveLength(1);
+    // Ticked state survives the re-post rather than being reset.
+    expect(onlyCard().selected).toEqual([2]);
+  });
+
+  it('addQuestionCard carries instructions through for multiSelect', () => {
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    expect(onlyCard().instructions).toBe('Enter the numbers of all that apply.');
+  });
+
+  // ── Single choice ─────────────────────────────────────────────────────────
+
+  it('answerQuestionCard queues the raw option string verbatim', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().answerQuestionCard('req-1', '2. Rewrite — Replace it.');
+
+    // Verbatim: the sender parses its own encoding back out of this string.
+    expect(answers()).toEqual([{ id: 'req-1', value: '2. Rewrite — Replace it.' }]);
+    expect(onlyCard()).toMatchObject({ status: 'answered', answer: '2. Rewrite — Replace it.' });
+  });
+
+  it('answerQuestionCard is a no-op on an already-answered card', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().answerQuestionCard('req-1', '1. Keep — Leave it.');
+    useChatStore.getState().answerQuestionCard('req-1', '2. Rewrite — Replace it.');
+
+    // pi accepts exactly one response; a double click must not queue a second.
+    expect(answers()).toHaveLength(1);
+    expect(onlyCard().answer).toBe('1. Keep — Leave it.');
+  });
+
+  it('answerQuestionCard ignores an unknown id', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().answerQuestionCard('nope', 'x');
+    expect(answers()).toHaveLength(0);
+    expect(onlyCard().status).toBe('open');
+  });
+
+  // ── Multiple choice ───────────────────────────────────────────────────────
+
+  it('toggleQuestionOption accumulates ticks in ascending order', () => {
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    useChatStore.getState().toggleQuestionOption('req-2', 3);
+    useChatStore.getState().toggleQuestionOption('req-2', 1);
+    expect(onlyCard().selected).toEqual([1, 3]);
+  });
+
+  it('toggleQuestionOption unticks a selected option', () => {
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    useChatStore.getState().toggleQuestionOption('req-2', 2);
+    useChatStore.getState().toggleQuestionOption('req-2', 2);
+    expect(onlyCard().selected).toEqual([]);
+  });
+
+  it('toggleQuestionOption ignores an index the sender never offered', () => {
+    // An out-of-range token makes rpiv keep the WHOLE reply as free text rather
+    // than a selection, so a bad index must never reach `selected`.
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    useChatStore.getState().toggleQuestionOption('req-2', 999);
+    useChatStore.getState().toggleQuestionOption('req-2', 0);
+    expect(onlyCard().selected).toEqual([]);
+  });
+
+  it('toggleQuestionOption ignores an unknown card id', () => {
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    useChatStore.getState().toggleQuestionOption('nope', 1);
+    expect(onlyCard().selected).toEqual([]);
+  });
+
+  it('submitQuestionSelection sends bare comma-separated indices', () => {
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    useChatStore.getState().toggleQuestionOption('req-2', 1);
+    useChatStore.getState().toggleQuestionOption('req-2', 3);
+    useChatStore.getState().submitQuestionSelection('req-2');
+
+    // Indices, never labels: the sender keeps the whole reply as free text if any
+    // token is not an in-range index.
+    expect(answers()).toEqual([{ id: 'req-2', value: '1,3' }]);
+    expect(onlyCard()).toMatchObject({ status: 'answered', answer: '1,3' });
+  });
+
+  it('submitQuestionSelection sends an empty string for no selection', () => {
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    useChatStore.getState().submitQuestionSelection('req-2');
+    // The sender reads this as a deliberate "none of these".
+    expect(answers()).toEqual([{ id: 'req-2', value: '' }]);
+  });
+
+  it('toggleQuestionOption is a no-op once the card is answered', () => {
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    useChatStore.getState().toggleQuestionOption('req-2', 1);
+    useChatStore.getState().submitQuestionSelection('req-2');
+    useChatStore.getState().toggleQuestionOption('req-2', 2);
+
+    expect(onlyCard().selected).toEqual([1]);
+    expect(answers()).toHaveLength(1);
+  });
+
+  // ── Dismissal and withdrawal ──────────────────────────────────────────────
+
+  it('dismissQuestionCard queues a cancellation', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().dismissQuestionCard('req-1');
+
+    expect(answers()).toEqual([{ id: 'req-1', cancelled: true }]);
+    expect(onlyCard().status).toBe('dismissed');
+  });
+
+  it('dismissQuestionCard is a no-op on a settled card', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().answerQuestionCard('req-1', '1. Keep — Leave it.');
+    useChatStore.getState().dismissQuestionCard('req-1');
+
+    expect(answers()).toHaveLength(1);
+    expect(onlyCard().status).toBe('answered');
+  });
+
+  it('withdrawQuestionCard records the reason and sends nothing', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().withdrawQuestionCard('req-1', 'timeout');
+
+    // The host already settled the request; replying would double-respond.
+    expect(answers()).toHaveLength(0);
+    expect(onlyCard()).toMatchObject({ status: 'withdrawn', withdrawnReason: 'timeout' });
+  });
+
+  it('withdrawQuestionCard leaves an answered card as answered', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().answerQuestionCard('req-1', '1. Keep — Leave it.');
+    useChatStore.getState().withdrawQuestionCard('req-1', 'sessionReset');
+
+    // A late withdrawal must not rewrite the record of what the user chose.
+    expect(onlyCard()).toMatchObject({ status: 'answered', answer: '1. Keep — Leave it.' });
+    expect(onlyCard().withdrawnReason).toBeUndefined();
+  });
+
+  // ── Presentation ──────────────────────────────────────────────────────────
+
+  it('setQuestionCardExpanded toggles the answered card record', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().answerQuestionCard('req-1', '1. Keep — Leave it.');
+    expect(onlyCard().expanded).toBe(false);
+
+    useChatStore.getState().setQuestionCardExpanded('req-1', true);
+    expect(onlyCard().expanded).toBe(true);
+  });
+
+  it('setQuestionCardExpanded ignores an unknown card id', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    expect(() => useChatStore.getState().setQuestionCardExpanded('nope', true)).not.toThrow();
+    expect(onlyCard().expanded).toBe(false);
+  });
+
+  it('answerQuestionCard accepts an empty value on a select card', () => {
+    // Not a shape the current senders produce, but the store must record and
+    // queue whatever it is given rather than treating '' as "no answer" and
+    // leaving pi blocked.
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().answerQuestionCard('req-1', '');
+    expect(answers()).toEqual([{ id: 'req-1', value: '' }]);
+    expect(onlyCard().status).toBe('answered');
+  });
+
+  it('does not alias the options array from the host message', () => {
+    const dialog: UiDialogMessage = {
+      ...SELECT_DIALOG,
+      options: [...SELECT_DIALOG.options],
+    };
+    useChatStore.getState().addQuestionCard(dialog);
+    const before = onlyCard().options.length;
+    // Mutating the caller's array must not reach into store state.
+    dialog.options.push({ raw: '9. Injected', index: 9, headline: 'Injected' });
+    expect(onlyCard().options).toHaveLength(before);
+  });
+
+  // ── Outbox ────────────────────────────────────────────────────────────────
+
+  it('flushDialogAnswers empties the queue', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().answerQuestionCard('req-1', '1. Keep — Leave it.');
+    expect(answers()).toHaveLength(1);
+
+    useChatStore.getState().flushDialogAnswers();
+    expect(answers()).toHaveLength(0);
+    // Flushing is about delivery only — the transcript record stays.
+    expect(onlyCard().status).toBe('answered');
+  });
+
+  it('queues answers for two cards independently', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    useChatStore.getState().answerQuestionCard('req-1', '3. Type something.');
+    useChatStore.getState().toggleQuestionOption('req-2', 2);
+    useChatStore.getState().submitQuestionSelection('req-2');
+
+    expect(answers()).toEqual([
+      { id: 'req-1', value: '3. Type something.' },
+      { id: 'req-2', value: '2' },
+    ]);
+  });
+
+  // ── Session lifecycle ─────────────────────────────────────────────────────
+
+  it('resetSession clears cards and the outbox', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().answerQuestionCard('req-1', '1. Keep — Leave it.');
+
+    useChatStore.getState().resetSession();
+
+    expect(cards()).toHaveLength(0);
+    // A queued answer refers to a request the host already settled on reset.
+    expect(answers()).toHaveLength(0);
+  });
+
+  it('setMessages clears cards from the previous session', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    useChatStore.getState().setMessages([
+      { role: 'user', content: 'hello', timestamp: 1 },
+    ]);
+    expect(cards()).toHaveLength(0);
+    expect(answers()).toHaveLength(0);
+  });
+
+  it('dispatchEvents leaves an open card untouched', () => {
+    useChatStore.getState().addQuestionCard(SELECT_DIALOG);
+    dispatch(
+      { type: 'message_start', message: { role: 'assistant' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'hi' } },
+    );
+    // A card never arrives through the event stream, and streaming must not
+    // disturb one that is open.
+    expect(onlyCard().status).toBe('open');
+    expect(answers()).toHaveLength(0);
   });
 });

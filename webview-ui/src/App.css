@@ -1259,3 +1259,42 @@ code {
   background: var(--vscode-editor-background);
   color: var(--vscode-editor-foreground);
 }
+
+/* ─── Question cards ──────────────────────────────────────────────────────────
+   A blocking question from a pi extension, rendered in the transcript instead of
+   a native quick pick. Stage 4 ships only the placeholder shell; Stage 5 adds the
+   interactive rows, previews and checkboxes. All colours come from theme
+   variables so the card matches the user's editor theme. */
+
+.question-card {
+  margin: 4px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+}
+
+.question-card__chip {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.85em;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+.question-card__question {
+  margin: 0;
+  /* The whole point of the card: the question wraps instead of being clipped. */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Stage 4 shell: the question renders but has no controls yet, so it is marked
+   as visibly provisional. Stage 5 replaces the placeholder with the interactive
+   card (option rows, previews, checkboxes, Submit / Dismiss) and drops this rule. */
+.question-card--placeholder {
+  border-style: dashed;
+}

@@ -64,6 +64,7 @@ export function MessageList({ items, height, width }: Props) {
       const item = items[index];
       if (!item) return index;
       if (item.itemKind === 'tool') return `tool-${item.toolCallId}`;
+      if (item.itemKind === 'question') return `question-${item.id}`;
       if (item.itemKind === 'assistant' || item.itemKind === 'user') return item.id;
       return item.id;
     },
@@ -156,6 +157,17 @@ function ItemRenderer({ item }: { item: ChatItem }) {
 
     case 'tool':
       return <ToolCard item={item} />;
+
+    case 'question':
+      // Stage 5 replaces this with the real QuestionCard component. Rendering the
+      // question now (rather than null) means a routed dialog is at least visible
+      // and traceable in the transcript while the component is being built.
+      return (
+        <div className="question-card question-card--placeholder" aria-label="Question">
+          {item.header && <span className="question-card__chip">{item.header}</span>}
+          <p className="question-card__question">{item.question}</p>
+        </div>
+      );
 
     case 'system':
       return (

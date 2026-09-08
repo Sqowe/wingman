@@ -10,6 +10,7 @@ import React, { useEffect, useRef, useCallback, useState } from 'react';
 import type { HostMessage, PiStatus, AttachedImage, InstructionFileEntry, InstructionFilesInfo, ClaudeMemoryInfo } from '@shared/messages';
 import { vscode } from './vscodeApi';
 import { useChatStore, normalizeShowViewDiffButton } from './store';
+import { useDialogOutbox } from './store/useDialogOutbox';
 import type { UiWidget } from './store';
 import { MessageList } from './components/MessageList';
 import { Composer } from './components/Composer';
@@ -57,6 +58,8 @@ export default function App() {
   const setInstructionFiles = useChatStore((s) => s.setInstructionFiles);
   const claudeMemory = useChatStore((s) => s.claudeMemory);
   const setClaudeMemory = useChatStore((s) => s.setClaudeMemory);
+  const addQuestionCard = useChatStore((s) => s.addQuestionCard);
+  const withdrawQuestionCard = useChatStore((s) => s.withdrawQuestionCard);
 
   // rAF coalescer: buffer incoming agentEvent messages and flush per frame.
   const pendingEvents = useRef<RpcEvent[]>([]);
@@ -175,12 +178,25 @@ export default function App() {
         case 'claudeMemory':
           setClaudeMemory(msg.info);
           break;
+
+        case 'uiDialog':
+          addQuestionCard(msg);
+          break;
+
+        case 'uiDialogCancel':
+          // The host has already answered pi; the card only needs to stop
+          // accepting input and leave a note.
+          withdrawQuestionCard(msg.id, msg.reason);
+          break;
       }
     };
 
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
   }, [scheduleFlush]);
+
+  // Deliver question-card answers the store has queued (see useDialogOutbox).
+  useDialogOutbox();
 
   // Forward the New Session shortcut (Cmd/Ctrl+Alt+N) to the host. VS Code
   // keybindings do not reach the extension while the webview iframe has focus,
