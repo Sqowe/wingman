@@ -11,6 +11,7 @@
  * `src/shared/limits.ts` — import from there, not here.
  */
 
+import type { ParsedOption } from './dialog-options';
 import type { AllowedImageMimeType } from './limits';
 
 // ─── Shared types ────────────────────────────────────────────────────────────
@@ -209,6 +210,84 @@ export interface UiSetEditorTextMessage {
   text: string;
 }
 
+// ─── In-chat question cards ──────────────────────────────────────────
+//
+// A blocking `select` / `input` request whose options would be truncated by a
+// quick pick is rendered as a card in the chat transcript instead, where the
+// question, every option and its explanation can wrap freely.  See
+// docs/design/in-chat-question-cards.md; the routing rule lives in
+// src/shared/dialog-options.ts (`shouldRouteToCard`).
+//
+// The host stays the authority on the pi protocol: it decides the surface, owns
+// the request `id`, and is the only side that writes an `extension_ui_response`.
+// The webview never learns the id's meaning — it echoes it back.
+
+/**
+ * One selectable row on a question card.
+ *
+ * Derived from `ParsedOption` so the wire shape cannot drift from the parser
+ * that produces it.  `label` is deliberately dropped: it retains the `"N. "`
+ * prefix for a quick pick row, whereas a card numbers its own rows and wants
+ * `headline`.  `preview` is added because it does not come from the option
+ * string at all — pi's `select` has no field for it, so the sender folds it
+ * into the title and the host parses it back out.
+ */
+export interface UiDialogOption extends Omit<ParsedOption, 'label'> {
+  /**
+   * Per-option preview (code or markdown), rendered as a collapsed block.
+   * Recovered from the title — pi's `select` has no field for it.
+   */
+  preview?: string;
+}
+
+/**
+ * Sent by UiProtocolBridge when a blocking dialog is routed to the chat instead
+ * of a native quick pick / input box.
+ *
+ * Exactly one `UiDialogAnswerMessage` must come back per `id`.  If the webview
+ * cannot answer (reload, reset, dispose), the host answers pi itself — a
+ * blocking request is never left hanging.
+ */
+export interface UiDialogMessage {
+  type: 'uiDialog';
+  /** pi's request id.  Opaque to the webview; echo it back unchanged. */
+  id: string;
+  /**
+   * Which card to draw:
+   *  - `select` — single choice; answering sends one option's `raw`.
+   *  - `multiSelect` — checkboxes; answering sends comma-separated indices
+   *    (`"1,3"`), because that is what the sender parses.  Arrives as an
+   *    `input` request whose title carries the option list, not as a `select`.
+   */
+  kind: 'select' | 'multiSelect';
+  /** The question, chip prefix and folded-in previews already removed. */
+  question: string;
+  /** Short chip label (rpiv's `[REST API file]` prefix), when present. */
+  header?: string;
+  /** The options to render, in the order the sender listed them. */
+  options: UiDialogOption[];
+  /**
+   * The sender's how-to-answer instructions, when it supplied any.  Display
+   * only: the card provides checkboxes, so "type the numbers" no longer
+   * applies, but the text can carry other detail worth showing.
+   */
+  instructions?: string;
+}
+
+/**
+ * Sent by the host to withdraw a pending question card — pi's own timeout fired,
+ * the session was reset, or the agent went away.  The card stops accepting input
+ * and collapses to a note that the question expired.  The host has already
+ * answered (or deliberately suppressed) the underlying request by this point, so
+ * the webview must NOT send an answer for this id afterwards.
+ */
+export interface UiDialogCancelMessage {
+  type: 'uiDialogCancel';
+  id: string;
+  /** Why the card was withdrawn, for the note left in the transcript. */
+  reason: 'timeout' | 'sessionReset' | 'agentStopped';
+}
+
 /**
  * Sent by the host when switching to a different session.
  * The webview should replace its transcript with these messages.
@@ -323,6 +402,8 @@ export type HostMessage =
   | UiWidgetMessage
   | UiTitleMessage
   | UiSetEditorTextMessage
+  | UiDialogMessage
+  | UiDialogCancelMessage
   | SessionMessagesMessage
   | ModelStateMessage
   | ChatConfigMessage
@@ -430,6 +511,36 @@ export interface OpenFolderMessage {
   path: string;
 }
 
+/**
+ * Sent by the webview when the user answers or dismisses a question card.
+ *
+ * The host correlates by `id` and translates this into pi's
+ * `extension_ui_response`.  Exactly one of these is expected per `uiDialog`;
+ * later duplicates for the same id are dropped by the host, as are answers for
+ * an id it has already withdrawn (see `UiDialogCancelMessage`).
+ *
+ * `value` semantics depend on the card's `kind`:
+ *  - `select` — one option's `raw`, byte-for-byte as pi sent it.  The card must
+ *    not trim, renumber or re-label it; the sender parses its own encoding back
+ *    out and reads an unrecognised value as a dismissal.
+ *  - `multiSelect` — the chosen options' 1-based indices, comma-separated
+ *    (`"1,3"`).  Bare indices, never labels: the sender requires every token to
+ *    parse as an in-range index, and keeps the whole reply as free text if any
+ *    token does not.  An empty string is a deliberate "none selected".
+ *
+ * `cancelled: true` is the Dismiss control, equivalent to Escape on a quick
+ * pick.  Senders treat it as cancelling the entire questionnaire.
+ *
+ * The two branches share the same `type`, so narrowing is on the presence of
+ * `cancelled` rather than on a discriminant.  The `?: never` members make that
+ * exclusivity a compile-time guarantee: an object carrying both `value` and
+ * `cancelled` is rejected, so the host's `'cancelled' in answer` branch cannot
+ * silently discard a value.
+ */
+export type UiDialogAnswerMessage =
+  | { type: 'uiDialogAnswer'; id: string; value: string; cancelled?: never }
+  | { type: 'uiDialogAnswer'; id: string; cancelled: true; value?: never };
+
 /** Union of every message the webview can send to the host. */
 export type WebviewMessage =
   | ReadyMessage
@@ -441,5 +552,6 @@ export type WebviewMessage =
   | RequestCommandsMessage
   | RequestNewSessionMessage
   | OpenFileMessage
-  | OpenFolderMessage;
+  | OpenFolderMessage
+  | UiDialogAnswerMessage;
 
