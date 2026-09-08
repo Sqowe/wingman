@@ -73,6 +73,7 @@ vi.mock('vscode', () => ({
 
 import { UiProtocolBridge } from './bridge';
 import type { RpcEvent } from '../agent/transport';
+import type { UiDialogAnswerMessage, UiDialogMessage } from '../shared/messages';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -103,13 +104,69 @@ function makeTransport(running = true): MockTransport {
   return t;
 }
 
+/**
+ * Provider double.
+ *
+ * `postUiDialog` returns undefined by default, so a bridge under test falls back
+ * to the native dialog unless a test opts into the card path with
+ * `provider.acceptCards()`. That keeps the pre-existing quick pick assertions
+ * meaningful: they exercise the fallback that ships whenever the webview is not
+ * available.
+ */
 function makeProvider() {
-  return {
+  /** Resolvers for cards the fake accepted, keyed by request id. */
+  const openCards = new Map<string, (answer: UiDialogAnswerMessage) => void>();
+  /** Every card the bridge tried to post, in order. */
+  const posted: UiDialogMessage[] = [];
+  let accepting = false;
+
+  const provider = {
     postUiStatus: vi.fn<(label: string, value: string | null) => void>(),
     postUiWidget: vi.fn<(id: string, options: string[] | null, value: string) => void>(),
     postUiTitle: vi.fn<(title: string) => void>(),
     postUiSetEditorText: vi.fn<(text: string) => void>(),
+    postUiDialogCancel: vi.fn<(id: string, reason: 'timeout' | 'sessionReset' | 'agentStopped') => void>(),
+
+    // Mirrors the real provider: withdraw the card AND settle its promise, so a
+    // bridge awaiting it does not leak the frame. Typed to the same narrow reason
+    // union as the real signature, so a bad reason fails the build here too.
+    cancelPendingDialog: vi.fn((id: string, _reason: 'timeout' | 'sessionReset' | 'agentStopped') => {
+      const resolve = openCards.get(id);
+      if (!resolve) return;
+      openCards.delete(id);
+      resolve({ type: 'uiDialogAnswer', id, cancelled: true });
+    }),
+
+    postUiDialog(card: UiDialogMessage): Promise<UiDialogAnswerMessage> | undefined {
+      posted.push(card);
+      if (!accepting) return undefined; // webview unavailable -> host falls back
+      return new Promise<UiDialogAnswerMessage>((resolve) => {
+        openCards.set(card.id, resolve);
+      });
+    },
+
+    /** Behave like a ready webview: cards are shown and await an answer. */
+    acceptCards() {
+      accepting = true;
+    },
+    /** The cards the bridge posted (whether or not they were accepted). */
+    postedCards: posted,
+    /** Answer an open card the way the webview would. */
+    answerCard(id: string, value: string) {
+      const resolve = openCards.get(id);
+      if (!resolve) throw new Error(`no open card for id ${id}`);
+      openCards.delete(id);
+      resolve({ type: 'uiDialogAnswer', id, value });
+    },
+    /** Dismiss an open card the way the webview's Dismiss control would. */
+    dismissCard(id: string) {
+      const resolve = openCards.get(id);
+      if (!resolve) throw new Error(`no open card for id ${id}`);
+      openCards.delete(id);
+      resolve({ type: 'uiDialogAnswer', id, cancelled: true });
+    },
   };
+  return provider;
 }
 
 function makeRequest(method: string, extra: Record<string, unknown> = {}): RpcEvent {
@@ -266,8 +323,19 @@ describe('UiProtocolBridge', () => {
   });
 
   // ── select: long options ("N. Label — description") ────────────────────
+  //
+  // These assert the QUICK PICK rendering of a long-option payload. Such a
+  // payload now routes to an in-chat question card by default, so each test
+  // below forces `quickPick` — this is the surface that still ships whenever the
+  // card cannot be shown (no webview, not ready, or the user set
+  // `sqoweWingman.dialogStyle` to `quickPick`), and it must keep working.
+  // The card routing itself is covered in its own describe block below.
+  //
+  // Forced per-test rather than with a bare `beforeEach`, which would also
+  // silently apply to the confirm / input / editor tests further down.
 
   it('select: moves an option description onto its own detail line', () => {
+    bridge.setDialogStyle('quickPick');
     bridge.handleEvent(makeRequest('select', {
       title: 'How should I handle it?',
       options: [
@@ -329,6 +397,7 @@ describe('UiProtocolBridge', () => {
   });
 
   it('select: splits per option -- a mixed list keeps both kinds', () => {
+    bridge.setDialogStyle('quickPick');
     bridge.handleEvent(makeRequest('select', {
       options: ['1. Rewrite — Fix the content.', '2. Type something.'],
     }));
@@ -338,6 +407,7 @@ describe('UiProtocolBridge', () => {
   });
 
   it('select: maps the parsed option onto label/detail/value, keeping the "N. " prefix', () => {
+    bridge.setDialogStyle('quickPick');
     // Pins the ParsedOption -> OptionPick mapping in toOptionPick().  parseOption()
     // returns both `label` ("1. Rewrite", prefix kept) and `headline` ("Rewrite",
     // prefix stripped); the quick pick must use `label`, because the list number is
@@ -361,6 +431,7 @@ describe('UiProtocolBridge', () => {
   });
 
   it('select: answers with the original option string, not the split label', async () => {
+    bridge.setDialogStyle('quickPick');
     const original = '1. Rewrite for aiohttp — Replace the wrong FastAPI stub.';
     bridge.handleEvent(makeRequest('select', { options: [original, '2. Type something.'] }));
     lastQuickPick().accept(0);
@@ -375,6 +446,7 @@ describe('UiProtocolBridge', () => {
   });
 
   it('select: keeps the description in the list, never in the title', () => {
+    bridge.setDialogStyle('quickPick');
     // Appending the highlighted option's full description to the title was tried
     // and taken back out: the header then repeated the row right below it, in
     // full above and clipped below (design doc §8).
@@ -419,6 +491,7 @@ describe('UiProtocolBridge', () => {
   });
 
   it('select: keeps a multi-block title in the wrapping title, not the placeholder', () => {
+    bridge.setDialogStyle('quickPick');
     // rpiv folds option previews into the title (up to 600 chars each) after a
     // blank line.  The title wraps; the placeholder is one line and clips, so
     // nothing is moved out of the title at all.
@@ -1074,5 +1147,320 @@ describe('UiProtocolBridge — reserved setStatus key (wingman:claudeMemory)', (
     expect(provider.postUiStatus).toHaveBeenCalledWith('some-other-key', 'hi');
     expect(received).toHaveLength(0);
     bridge2.dispose();
+  });
+});
+
+// ─── In-chat question cards ───────────────────────────────────────────────────
+//
+// Routing a blocking dialog to the webview instead of a native widget
+// (docs/design/in-chat-question-cards.md). The contract that matters most is
+// the one pi enforces: exactly one extension_ui_response per request, on every
+// path — answer, dismissal, fallback, timeout, reset, dispose.
+
+describe('UiProtocolBridge — question cards', () => {
+  let bridge: UiProtocolBridge;
+  let transport: ReturnType<typeof makeTransport>;
+  let provider: ReturnType<typeof makeProvider>;
+  let lastQuickPick: () => FakeQuickPick;
+
+  /** rpiv's single-choice payload: descriptions flattened in, plus the sentinel. */
+  const LONG_OPTIONS = [
+    '1. Keep the stub — Leave it untouched and document the mismatch.',
+    '2. Rewrite for aiohttp — Replace the FastAPI stub with real aiohttp patterns.',
+    '3. Type something.',
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    lastQuickPick = installQuickPickFake();
+    bridge = new UiProtocolBridge(makeOutputChannel());
+    transport = makeTransport();
+    provider = makeProvider();
+    bridge.setTransport(transport as unknown as import('../agent/transport').AgentTransport);
+    bridge.setProvider(provider as unknown as import('../webview/provider').WingmanViewProvider);
+  });
+
+  // ── Routing per signal (design doc §4) ──────────────────────────────────
+
+  it('routes a select whose options carry the separator to a card', async () => {
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('select', {
+      title: '[REST API file] How should I handle it?',
+      options: LONG_OPTIONS,
+    }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+    const card = provider.postedCards[0];
+    expect(card.kind).toBe('select');
+    expect(card.header).toBe('REST API file');
+    expect(card.question).toBe('How should I handle it?');
+    expect(card.options.map((o) => o.raw)).toEqual(LONG_OPTIONS);
+    // No native widget was opened.
+    expect(mockCreateQuickPick).not.toHaveBeenCalled();
+  });
+
+  it('routes a select whose option exceeds the quick pick row width', async () => {
+    provider.acceptCards();
+    // No separator anywhere — the length signal alone must carry it.
+    const long = `1. ${'x'.repeat(120)}`;
+    bridge.handleEvent(makeRequest('select', { options: [long, '2. Short'] }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+    expect(mockCreateQuickPick).not.toHaveBeenCalled();
+  });
+
+  it('keeps the bash-restrictions prompt on the quick pick', () => {
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('select', {
+      title: 'Bash restriction\n\n  rm -rf build',
+      options: ['Allow once', 'Deny', 'Deny & suggest alternative'],
+    }));
+    // The product's most frequent dialog stays native — a card would make it slower.
+    expect(provider.postedCards).toHaveLength(0);
+    expect(lastQuickPick().shown).toBe(true);
+  });
+
+  it('lifts option previews out of the title and onto their option', async () => {
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('select', {
+      title: [
+        'How should I handle it?',
+        '',
+        '--- 2. Rewrite for aiohttp preview ---',
+        'async def handler(request):',
+        '    return web.json_response({})',
+      ].join('\n'),
+      options: LONG_OPTIONS,
+    }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+    const card = provider.postedCards[0];
+    // The preview is the only place pi can carry it — it must not stay in the question.
+    expect(card.question).toBe('How should I handle it?');
+    expect(card.options[1].preview).toBe(
+      'async def handler(request):\n    return web.json_response({})',
+    );
+    expect(card.options[0].preview).toBeUndefined();
+  });
+
+  // ── The answer goes back byte-for-byte (design doc §1) ───────────────────
+
+  it('answers with the option string exactly as pi sent it', async () => {
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('select', { options: LONG_OPTIONS }));
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+
+    provider.answerCard('test-id-1', LONG_OPTIONS[1]);
+
+    await vi.waitFor(() => expect(transport.sentRaw).toHaveLength(1));
+    expect(transport.sentRaw[0]).toEqual({
+      type: 'extension_ui_response',
+      id: 'test-id-1',
+      value: '2. Rewrite for aiohttp — Replace the FastAPI stub with real aiohttp patterns.',
+    });
+  });
+
+  it('sends cancelled when the card is dismissed', async () => {
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('select', { options: LONG_OPTIONS }));
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+
+    provider.dismissCard('test-id-1');
+
+    await vi.waitFor(() => expect(transport.sentRaw).toHaveLength(1));
+    expect(transport.sentRaw[0]).toEqual({
+      type: 'extension_ui_response',
+      id: 'test-id-1',
+      cancelled: true,
+    });
+  });
+
+  // ── Fallback when the card cannot be shown (design doc §3) ───────────────
+
+  it('falls back to the quick pick when the webview is unavailable', async () => {
+    // provider.acceptCards() NOT called: postUiDialog returns undefined.
+    bridge.handleEvent(makeRequest('select', { options: LONG_OPTIONS }));
+
+    // It tried the card first, then opened the native widget. The fallback
+    // happens after an await inside _handleSelect, so wait for the widget
+    // rather than asserting synchronously.
+    expect(provider.postedCards).toHaveLength(1);
+    await vi.waitFor(() => expect(mockCreateQuickPick).toHaveBeenCalled());
+    const pick = lastQuickPick();
+    expect(pick.shown).toBe(true);
+
+    pick.accept(1);
+    await vi.waitFor(() => expect(transport.sentRaw).toHaveLength(1));
+    // Still verbatim through the fallback path.
+    expect(transport.sentRaw[0]).toMatchObject({ value: LONG_OPTIONS[1] });
+  });
+
+  it('falls back when postUiDialog throws', async () => {
+    // An older or partially-initialised provider must not strand pi.
+    const throwing = {
+      postUiDialog: () => { throw new Error('provider exploded'); },
+    };
+    bridge.setProvider(throwing as never);
+    bridge.handleEvent(makeRequest('select', { options: LONG_OPTIONS }));
+
+    await vi.waitFor(() => expect(mockCreateQuickPick).toHaveBeenCalled());
+    const pick = lastQuickPick();
+    expect(pick.shown).toBe(true);
+    pick.accept(0);
+    await vi.waitFor(() => expect(transport.sentRaw).toHaveLength(1));
+  });
+
+  // ── The dialogStyle setting (design doc §4) ──────────────────────────────
+
+  it('quickPick style never routes to a card', () => {
+    provider.acceptCards();
+    bridge.setDialogStyle('quickPick');
+    bridge.handleEvent(makeRequest('select', { options: LONG_OPTIONS }));
+    expect(provider.postedCards).toHaveLength(0);
+    expect(lastQuickPick().shown).toBe(true);
+  });
+
+  it('chat style routes even a short prompt to a card', async () => {
+    provider.acceptCards();
+    bridge.setDialogStyle('chat');
+    bridge.handleEvent(makeRequest('select', { options: ['Allow once', 'Deny'] }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+    expect(mockCreateQuickPick).not.toHaveBeenCalled();
+  });
+
+  // ── Multiple choice arrives as `input`, not `select` (design doc §8) ─────
+
+  it('routes a multiple-choice input title to a checkbox card', async () => {
+    provider.acceptCards();
+    const title = [
+      '[REST API] Which files should I touch?',
+      '',
+      '1. Router — Rewrite the routes.',
+      '2. Models — Convert the models.',
+      '3. Tests — Update the fixtures.',
+      '',
+      'Enter the numbers of all that apply, comma-separated (e.g. "1,3").',
+    ].join('\n');
+    bridge.handleEvent(makeRequest('input', { title, placeholder: '1,3' }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+    const card = provider.postedCards[0];
+    expect(card.kind).toBe('multiSelect');
+    expect(card.header).toBe('REST API');
+    expect(card.question).toBe('Which files should I touch?');
+    expect(card.options.map((o) => o.index)).toEqual([1, 2, 3]);
+    expect(card.instructions).toContain('comma-separated');
+    expect(mockShowInputBox).not.toHaveBeenCalled();
+  });
+
+  it('sends the indices a multi-select card collected', async () => {
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('input', {
+      title: 'Which files?\n\n1. Router — Rewrite.\n2. Models — Convert.\n\nEnter numbers.',
+    }));
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+
+    provider.answerCard('test-id-1', '1,2');
+
+    await vi.waitFor(() => expect(transport.sentRaw).toHaveLength(1));
+    // Bare indices: rpiv keeps the whole reply as free text if any token is not one.
+    expect(transport.sentRaw[0]).toEqual({
+      type: 'extension_ui_response',
+      id: 'test-id-1',
+      value: '1,2',
+    });
+  });
+
+  it('routes a multiple choice with short options too', async () => {
+    // The multiple-choice title format is the signal by itself: no quick input
+    // surface honours a line break, so even short options collapse into one run
+    // of text there. `shouldRouteToCard`'s row-width heuristic does not apply.
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('input', {
+      title: 'Which files?\n\n1. Router\n2. Models\n\nEnter numbers.',
+    }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+    expect(provider.postedCards[0].kind).toBe('multiSelect');
+    expect(mockShowInputBox).not.toHaveBeenCalled();
+  });
+
+  it('leaves a plain input prompt as an input box', async () => {
+    provider.acceptCards();
+    mockShowInputBox.mockResolvedValue('typed');
+    bridge.handleEvent(makeRequest('input', { title: 'Enter a value' }));
+
+    await vi.waitFor(() => expect(mockShowInputBox).toHaveBeenCalled());
+    expect(provider.postedCards).toHaveLength(0);
+  });
+
+  it('leaves the free-text follow-up as an input box', async () => {
+    // rpiv's "Type something." escape sends question + "Type your answer:" —
+    // two blocks, but no option list, so there is nothing for a card to draw.
+    provider.acceptCards();
+    mockShowInputBox.mockResolvedValue('my own answer');
+    bridge.handleEvent(makeRequest('input', {
+      title: '[REST API] How should I handle it?\n\nType your answer:',
+    }));
+
+    await vi.waitFor(() => expect(mockShowInputBox).toHaveBeenCalled());
+    expect(provider.postedCards).toHaveLength(0);
+  });
+
+  // ── Exactly one response on every path (design doc §1) ───────────────────
+
+  it('withdraws the card on timeout and suppresses the late answer', async () => {
+    vi.useFakeTimers();
+    try {
+      provider.acceptCards();
+      bridge.handleEvent(makeRequest('select', { options: LONG_OPTIONS, timeout: 5_000 }));
+      await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+
+      vi.advanceTimersByTime(5_001);
+      // The card is withdrawn AND its promise settled, so the await in
+      // _askViaCard completes rather than leaking. pi auto-resolved its own side,
+      // and the expired-id marker makes the resulting response a no-op.
+      expect(provider.cancelPendingDialog).toHaveBeenCalledWith('test-id-1', 'timeout');
+      await Promise.resolve();
+      expect(transport.sentRaw).toHaveLength(0);
+
+      // The card is gone, so a racing answer has nothing to resolve.
+      expect(() => provider.answerCard('test-id-1', LONG_OPTIONS[0])).toThrow();
+      expect(transport.sentRaw).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends no response when the bridge is disposed while a card is open', async () => {
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('select', { options: LONG_OPTIONS }));
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+
+    bridge.dispose();
+    provider.answerCard('test-id-1', LONG_OPTIONS[0]);
+    await Promise.resolve();
+
+    // The transport is gone; nothing is written and nothing throws.
+    expect(transport.sentRaw).toHaveLength(0);
+  });
+
+  it('answers exactly once when a card is answered twice', async () => {
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('select', { options: LONG_OPTIONS }));
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+
+    provider.answerCard('test-id-1', LONG_OPTIONS[0]);
+    await vi.waitFor(() => expect(transport.sentRaw).toHaveLength(1));
+    // A second resolve of the same promise is a no-op (the fake throws if the id
+    // is gone, which is itself the guarantee we want).
+    expect(() => provider.answerCard('test-id-1', LONG_OPTIONS[1])).toThrow();
+    expect(transport.sentRaw).toHaveLength(1);
+  });
+
+  it('consumes the request either way, so it never leaks to the webview', () => {
+    provider.acceptCards();
+    expect(bridge.handleEvent(makeRequest('select', { options: LONG_OPTIONS }))).toBe(true);
   });
 });

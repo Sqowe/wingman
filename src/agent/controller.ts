@@ -14,6 +14,7 @@ import type { AgentTransport, RpcEvent } from './transport';
 import type { WingmanViewProvider } from '../webview/provider';
 import type { PiStatus, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo, ClaudeMemoryInfo } from '../shared/messages';
 import { UiProtocolBridge } from '../ui-protocol/bridge';
+import type { DialogStyle } from '../ui-protocol/bridge';
 import { normalizeBundledExtensionPaths, buildExtraArgs } from './spawn-args';
 import type { TrustDecision } from '../trust/project-trust';
 
@@ -214,6 +215,16 @@ export class AgentController implements vscode.Disposable {
   public setProvider(provider: WingmanViewProvider): void {
     this._provider = provider;
     this._uiBridge.setProvider(provider);
+  }
+
+  /**
+   * Choose the surface blocking `select` / `input` dialogs are drawn on — an
+   * in-chat question card or a native quick pick. Backs the
+   * `sqoweWingman.dialogStyle` setting; the bridge owns the decision, so this is
+   * a pass-through (the bridge is not exposed directly).
+   */
+  public setDialogStyle(style: DialogStyle): void {
+    this._uiBridge.setDialogStyle(style);
   }
 
   /**

@@ -89,6 +89,7 @@ The extension exposes only Wingman-side GUI settings; everything else belongs to
 | `sqoweWingman.piExecutablePath` | `""` | Path to the `pi` executable (a leading `~` is expanded). Empty = auto-detect from `PATH`, npm-global, Homebrew, and Volta. |
 | `sqoweWingman.showViewDiffButton` | `true` | Show the *View Diff* button on completed `edit` tool cards (read-only before↔after preview). Set to `false` to hide it. Changes apply to the running chat immediately. |
 | `sqoweWingman.shareClaudeMemory` | `true` | Share Claude Code's project memory (read-only) with pi — injects the facts Claude Code recorded for the project into pi's prompt and lists them in the status banner (click a memory to open it). Only active when a Claude Code memory folder exists for the project. Toggling reloads the agent. |
+| `sqoweWingman.dialogStyle` | `auto` | Where an extension's question appears when it asks you to choose. `auto` puts it in the chat when its options are too long for a quick pick row — they wrap in full there, previews render as code blocks, and multiple choice gets checkboxes — and keeps short prompts (allow/deny) on the faster quick pick. `quickPick` always uses the native widget; `chat` always uses the card. Applies to the next question asked. |
 
 ### pi's configuration (shared with the CLI)
 

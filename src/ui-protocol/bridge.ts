@@ -15,8 +15,8 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AgentTransport, RpcEvent } from '../agent/transport';
-import { parseOption, splitTitleBlocks } from '../shared/dialog-options';
-import type { InstructionFilesInfo, InstructionFileEntry, ClaudeMemoryInfo, ClaudeMemoryEntry } from '../shared/messages';
+import { parseMultiSelectTitle, parseOption, parseQuestionHeader, parseTitlePreviews, shouldRouteToCard, splitTitleBlocks } from '../shared/dialog-options';
+import type { InstructionFilesInfo, InstructionFileEntry, ClaudeMemoryInfo, ClaudeMemoryEntry, UiDialogMessage, UiDialogOption, UiDialogAnswerMessage } from '../shared/messages';
 import { isStrictlyWithinDir } from '../shared/path-guard';
 import type { WingmanViewProvider } from '../webview/provider';
 
@@ -142,6 +142,62 @@ function toOptionPick(option: string): OptionPick {
   return { label, detail: description, value: raw };
 }
 
+// ─── Question card assembly ──────────────────────────────────────────────
+
+/**
+ * Map a parsed option onto the wire shape, attaching the preview whose banner
+ * named its index.
+ *
+ * `label` is dropped: it keeps the `"N. "` prefix a quick pick row wants, while
+ * a card numbers its own rows and renders `headline`.  `raw` is carried through
+ * untouched — it is the only value that may go back to pi.
+ */
+function toDialogOption(raw: string, previews: Record<number, string>): UiDialogOption {
+  const { label: _label, ...rest } = parseOption(raw);
+  const preview = rest.index !== undefined ? previews[rest.index] : undefined;
+  return { ...rest, ...(preview !== undefined ? { preview } : {}) };
+}
+
+/**
+ * Build a single-choice card from a `select` request.
+ *
+ * Previews arrive folded into the title (pi's `select` has no field for them),
+ * so they are parsed out first and the remaining text becomes the question.
+ */
+function buildSelectCard(id: string, req: SelectRequest): UiDialogMessage {
+  const { question: withoutPreviews, previews } = parseTitlePreviews(req.title ?? '');
+  const { header, question } = parseQuestionHeader(withoutPreviews);
+  return {
+    type: 'uiDialog',
+    id,
+    kind: 'select',
+    question,
+    ...(header !== undefined ? { header } : {}),
+    options: req.options.map((raw) => toDialogOption(raw, previews)),
+  };
+}
+
+/**
+ * Build a multiple-choice card from an `input` request, or return null when the
+ * title is not a multiple-choice list (a plain prompt, or rpiv's own free-text
+ * follow-up — both of which an input box handles well).
+ */
+function buildMultiSelectCard(id: string, req: InputRequest): UiDialogMessage | null {
+  if (req.title === undefined) return null;
+  const parsed = parseMultiSelectTitle(req.title);
+  if (!parsed) return null;
+  const { header, question } = parseQuestionHeader(parsed.question);
+  return {
+    type: 'uiDialog',
+    id,
+    kind: 'multiSelect',
+    question,
+    ...(header !== undefined ? { header } : {}),
+    options: parsed.options.map((raw) => toDialogOption(raw, {})),
+    ...(parsed.instructions !== undefined ? { instructions: parsed.instructions } : {}),
+  };
+}
+
 /** Narrow an RpcEvent to a UiRequest, or return null if it is not one. */
 function asUiRequest(event: RpcEvent): UiRequest | null {
   if (event.type !== 'extension_ui_request') return null;
@@ -157,6 +213,18 @@ export const INSTRUCTION_FILES_STATUS_KEY = 'wingman:instructionFiles';
 
 /** Reserved status key for the Claude Code memory report — see claude-memory ext. */
 export const CLAUDE_MEMORY_STATUS_KEY = 'wingman:claudeMemory';
+
+/**
+ * Which surface a blocking `select` / `input` dialog is drawn on.
+ *
+ * - `auto` — the default: a card when the payload would be truncated by a quick
+ *   pick (see `shouldRouteToCard`), the native widget otherwise.
+ * - `quickPick` — always native, for a developer who dislikes the card.
+ * - `chat` — always a card, for anyone who prefers it even for short prompts.
+ *
+ * Backs the `sqoweWingman.dialogStyle` setting.
+ */
+export type DialogStyle = 'auto' | 'quickPick' | 'chat';
 
 export class UiProtocolBridge implements vscode.Disposable {
   private _transport: AgentTransport | undefined;
@@ -178,6 +246,8 @@ export class UiProtocolBridge implements vscode.Disposable {
    *  - `null`                          — timer already fired (request expired)
    */
   private _requestTimers = new Map<string, ReturnType<typeof setTimeout> | null>();
+  /** Which surface blocking dialogs are drawn on (`sqoweWingman.dialogStyle`). */
+  private _dialogStyle: DialogStyle = 'auto';
 
   constructor(
     outputChannel: vscode.OutputChannel,
@@ -195,6 +265,14 @@ export class UiProtocolBridge implements vscode.Disposable {
 
   public setProvider(provider: WingmanViewProvider): void {
     this._provider = provider;
+  }
+
+  /**
+   * Set the surface blocking dialogs are drawn on. Applies to dialogs opened
+   * from now on; one already on screen is left alone.
+   */
+  public setDialogStyle(style: DialogStyle): void {
+    this._dialogStyle = style;
   }
 
   /**
@@ -298,6 +376,58 @@ export class UiProtocolBridge implements vscode.Disposable {
   // ─── Blocking dialog methods ───────────────────────────────────────────────
 
   /**
+   * Whether a `select` payload should be drawn as an in-chat card.
+   *
+   * `auto` defers to the payload's shape (`shouldRouteToCard`), so short prompts
+   * such as `bash-restrictions`' Allow once / Deny stay on the quick pick where
+   * they are answered in a keystroke.
+   */
+  private _prefersCard(options: readonly string[]): boolean {
+    if (this._dialogStyle === 'quickPick') return false;
+    if (this._dialogStyle === 'chat') return true;
+    return shouldRouteToCard(options);
+  }
+
+  /**
+   * Put a question card in the chat and answer pi with the result.
+   *
+   * Returns true when the request has been answered (so the caller must not open
+   * a native dialog), false when the card could not be shown and the caller
+   * should fall back. A card the user dismisses still counts as answered —
+   * dismissal is a real answer, and senders read it as cancelling the whole
+   * questionnaire.
+   */
+  private async _askViaCard(card: UiDialogMessage): Promise<boolean> {
+    // Guard the call itself, not just its result: an older/partial provider (or a
+    // test double) may not implement postUiDialog at all, and a throw here must
+    // degrade to the quick pick rather than leave pi blocked.
+    let pending: Promise<UiDialogAnswerMessage> | undefined;
+    try {
+      pending = this._provider?.postUiDialog?.(card);
+    } catch (err) {
+      this._outputChannel.appendLine(
+        `[UiProtocolBridge] postUiDialog(${card.id}) threw — falling back to the native dialog: ${String(err)}`,
+      );
+      return false;
+    }
+    if (!pending) return false;
+
+    const answer = await pending;
+
+    // The bridge may have been torn down while the card was open. _sendResponse
+    // would drop the write anyway, but returning true keeps the caller from
+    // opening a native dialog against a dead transport.
+    if (this._disposed) return true;
+
+    if ('cancelled' in answer) {
+      this._sendResponse({ type: 'extension_ui_response', id: card.id, cancelled: true });
+    } else {
+      this._sendResponse({ type: 'extension_ui_response', id: card.id, value: answer.value });
+    }
+    return true;
+  }
+
+  /**
    * `select` renders as a quick pick.  The one accommodation for senders whose
    * text does not fit the widget's single-line rows: an option's explanation
    * (see OPTION_DETAIL_SEPARATOR in src/shared/dialog-options.ts) moves to the
@@ -315,6 +445,14 @@ export class UiProtocolBridge implements vscode.Disposable {
    * question cards, not another corner of this widget.
    */
   private async _handleSelect(req: SelectRequest): Promise<void> {
+    // Try the card first when the payload (or the setting) calls for it. A
+    // `undefined` return means the webview cannot show it, so fall through to
+    // the quick pick rather than blocking pi.
+    if (this._prefersCard(req.options)) {
+      const answered = await this._askViaCard(buildSelectCard(req.id, req));
+      if (answered) return;
+    }
+
     const items = req.options.map(toOptionPick);
 
     let picked: string | undefined;
@@ -396,6 +534,23 @@ export class UiProtocolBridge implements vscode.Disposable {
    * placeholder stays in the box, where the user types.
    */
   private async _handleInput(req: InputRequest): Promise<void> {
+    // Multiple choice arrives here, not as a `select`: the sender packs the
+    // question, the numbered option list and "enter the numbers,
+    // comma-separated" into one title.  A successfully parsed multiple-choice
+    // title is itself the routing signal — no length heuristic is applied.  No
+    // quick input surface in VS Code honours a line break, so the option list
+    // always collapses into one run of text there, and the user is asked to type
+    // numbers for a list they cannot read (design doc §8).  That holds however
+    // short the individual options are, which is why `shouldRouteToCard` (built
+    // for a quick pick's row width) does not apply here.
+    if (this._dialogStyle !== 'quickPick') {
+      const card = buildMultiSelectCard(req.id, req);
+      if (card) {
+        const answered = await this._askViaCard(card);
+        if (answered) return;
+      }
+    }
+
     const blocks = req.title === undefined ? undefined : splitTitleBlocks(req.title);
 
     let value: string | undefined;
@@ -649,6 +804,14 @@ export class UiProtocolBridge implements vscode.Disposable {
       this._outputChannel.appendLine(
         `[UiProtocolBridge] request ${req.id} (${req.method}) timed out after ${req.timeout}ms — late response will be suppressed`,
       );
+      // Withdraw any question card for this request so it stops accepting input
+      // and leaves a note that the question expired.  Settling its promise here
+      // is deliberate: pi has already auto-resolved its own side, and the `null`
+      // marker set above makes `_sendResponse` drop the resulting response.  The
+      // alternative — leaving the promise dangling — would retain the awaiting
+      // frame in `_askViaCard` and risk a late resolve *after* the marker's own
+      // cleanup below, which would then reach pi as a second response.
+      this._provider?.cancelPendingDialog(req.id, 'timeout');
       // Schedule a secondary cleanup so the null entry doesn't accumulate
       // indefinitely when the user never interacts after the deadline.
       // 10 seconds is generous: if the user responds within that window we

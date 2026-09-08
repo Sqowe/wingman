@@ -19,6 +19,7 @@ import { registerCommands } from './commands/index';
 import { reloadAgent } from './commands/reload';
 import { registerSessions } from './sessions';
 import { promptForTrust, registerTrustCommands } from './trust/trust-commands';
+import type { DialogStyle } from './ui-protocol/bridge';
 import type { PiStatus } from './shared/messages';
 
 // Module-level controller and piStatus so deactivate() and trust commands can reach them.
@@ -78,6 +79,19 @@ function readShareClaudeMemory(): boolean {
   return vscode.workspace
     .getConfiguration('sqoweWingman')
     .get<boolean>('shareClaudeMemory', true);
+}
+
+/**
+ * Read the `sqoweWingman.dialogStyle` setting (defaults to `auto`).
+ * Chooses the surface a blocking `select` / `input` dialog is drawn on — an
+ * in-chat question card or a native quick pick. An unrecognised value (hand-edited
+ * settings.json) falls back to `auto` rather than disabling either surface.
+ */
+function readDialogStyle(): DialogStyle {
+  const raw = vscode.workspace
+    .getConfiguration('sqoweWingman')
+    .get<string>('dialogStyle', 'auto');
+  return raw === 'quickPick' || raw === 'chat' ? raw : 'auto';
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -158,10 +172,16 @@ export function activate(context: vscode.ExtensionContext): void {
   // button on completed `edit` tool cards) and keep it in sync if the user
   // changes the setting while the extension is running.
   provider.postChatConfig(readShowViewDiffButton());
+  // Tell the bridge which surface to draw blocking dialogs on.
+  controller.setDialogStyle(readDialogStyle());
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('sqoweWingman.showViewDiffButton')) {
         provider.postChatConfig(readShowViewDiffButton());
+      }
+      if (e.affectsConfiguration('sqoweWingman.dialogStyle')) {
+        // Applies to the next dialog; one already on screen is left alone.
+        controller.setDialogStyle(readDialogStyle());
       }
       if (e.affectsConfiguration('sqoweWingman.shareClaudeMemory')) {
         // Recompute the -e set and respawn pi so the gate takes effect. When the

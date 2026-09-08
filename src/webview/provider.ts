@@ -12,7 +12,7 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { AgentController } from '../agent/controller';
-import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo, ClaudeMemoryInfo } from '../shared/messages';
+import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo, ClaudeMemoryInfo, UiDialogMessage, UiDialogAnswerMessage } from '../shared/messages';
 import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES, MAX_PATCH_BYTES, MAX_IMAGE_BYTES, MAX_IMAGES_PER_PROMPT, MAX_TOTAL_IMAGE_BYTES, ALLOWED_IMAGE_MIME_TYPES, type AllowedImageMimeType } from '../shared/limits';
 import { isWithinOrEqualDir, isSameDir } from '../shared/path-guard';
 import type { RpcEvent } from '../agent/transport';
@@ -26,6 +26,16 @@ const COPY_RATE_LIMIT_MS = 200;
 
 /** Maximum openExternal calls per window (prevents browser-window spam). */
 const OPEN_EXTERNAL_RATE_LIMIT_MS = 500;
+
+/**
+ * Maximum characters accepted in a question-card answer.
+ *
+ * A single-choice answer echoes back an option pi itself sent, and a
+ * multiple-choice answer is a short list of indices, so anything larger than
+ * this is malformed or hostile. Generous enough for a long option string that
+ * carried a folded-in description.
+ */
+const MAX_DIALOG_ANSWER_CHARS = 8_192;
 
 export class WingmanViewProvider implements vscode.WebviewViewProvider {
   /** Must match the `id` in package.json contributes.views. */
@@ -68,6 +78,19 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   private _lastOpenExternalAt = 0;
   /** True while a prompt is in-flight — prevents concurrent sends. */
   private _promptInFlight = false;
+  /**
+   * Question cards awaiting an answer from the webview, keyed by pi's request id.
+   *
+   * `resolve` settles the promise `postUiDialog` returned to the bridge, which
+   * then writes the single `extension_ui_response` pi is blocking on. An entry
+   * lives here only while the question is open; every exit path (answer,
+   * dismissal, withdrawal, webview teardown) removes it and resolves exactly
+   * once, so a blocking request can never be orphaned.
+   */
+  private _pendingDialogs = new Map<string, {
+    resolve: (answer: UiDialogAnswerMessage) => void;
+    message: UiDialogMessage;
+  }>();
 
   constructor(private readonly _extensionUri: vscode.Uri) {}
 
@@ -169,6 +192,12 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
             if (this._lastClaudeMemory !== undefined) {
               this._postMessage({ type: 'claudeMemory', info: this._lastClaudeMemory });
             }
+            // Re-post any question card still awaiting an answer. The request id
+            // is unchanged, so an answer after a webview reload still correlates
+            // (design doc §6). pi is blocked on these, so they must not be lost.
+            for (const [, pending] of this._pendingDialogs) {
+              this._postMessage(pending.message);
+            }
             break;
 
           case 'sendPrompt':
@@ -208,6 +237,10 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
           case 'openFolder':
             void this._handleOpenFolder(message.path);
             break;
+
+          case 'uiDialogAnswer':
+            this._handleUiDialogAnswer(message);
+            break;
         }
       }),
     );
@@ -217,6 +250,9 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
       this._view = undefined;
       this._pendingEvents = [];
       this._pendingEventBytes = 0;
+      // The surface that was going to answer these is gone. Cancel them so the
+      // bridge answers pi rather than leaving it blocked on a dead webview.
+      this._cancelPendingDialogs('webview disposed');
       for (const d of this._viewDisposables) d.dispose();
       this._viewDisposables = [];
     });
@@ -385,6 +421,40 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
           return null;
         }
         return { type: 'openFolder', path: msg['path'] };
+      }
+
+      case 'uiDialogAnswer': {
+        if (typeof msg['id'] !== 'string' || msg['id'].length === 0) {
+          this._controller?.outputChannel?.appendLine(
+            '[WingmanViewProvider] dropped uiDialogAnswer: missing/invalid id field',
+          );
+          return null;
+        }
+        // A dismissal carries no value; anything else must be a bounded string.
+        // Checked before `value` so a message with both cannot smuggle one past
+        // the union's mutual exclusivity.
+        if (msg['cancelled'] === true) {
+          if (msg['value'] !== undefined) {
+            this._controller?.outputChannel?.appendLine(
+              '[WingmanViewProvider] dropped uiDialogAnswer: cancelled answer must not carry a value',
+            );
+            return null;
+          }
+          return { type: 'uiDialogAnswer', id: msg['id'], cancelled: true };
+        }
+        if (typeof msg['value'] !== 'string') {
+          this._controller?.outputChannel?.appendLine(
+            '[WingmanViewProvider] dropped uiDialogAnswer: missing/invalid value field',
+          );
+          return null;
+        }
+        if (msg['value'].length > MAX_DIALOG_ANSWER_CHARS) {
+          this._controller?.outputChannel?.appendLine(
+            `[WingmanViewProvider] dropped uiDialogAnswer: value exceeds ${MAX_DIALOG_ANSWER_CHARS} chars`,
+          );
+          return null;
+        }
+        return { type: 'uiDialogAnswer', id: msg['id'], value: msg['value'] };
       }
 
       default:
@@ -562,6 +632,10 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     this._pendingUiWidgets.clear();
     this._pendingUiTitle = null;
     this._pendingUiEditorText = null;
+    // A card belongs to the conversation being replaced. Answer pi with a
+    // cancellation and clear it, rather than leaving a question from the old
+    // session live in the new one (design doc §6).
+    this._cancelPendingDialogs('session reset');
     if (this._webviewReady) {
       this._postMessage({ type: 'sessionReset' });
     }
@@ -627,6 +701,112 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     } else {
       this._pendingUiEditorText = text;
     }
+  }
+
+  // ─── Question cards (blocking, answer-bearing) ────────────────────────────
+
+  /**
+   * Render a blocking dialog as a question card in the chat and resolve with the
+   * user's answer.
+   *
+   * Returns `undefined` when the card cannot be shown — no webview, or one that
+   * has not signalled `ready`. The bridge then falls back to a native quick pick
+   * rather than blocking pi (design doc §3, "When the card cannot be shown").
+   * This is the safety net for the whole feature: any unexpected state resolves
+   * to the path that already works.
+   *
+   * Unlike the fire-and-forget `postUi*` methods, a card is never buffered for
+   * later replay. Those carry display state where the last value wins; this one
+   * carries a question pi is *blocked* on, so a delayed card would strand the
+   * agent behind a view the user may never open. Buffering only makes sense once
+   * the question is already live — hence the `ready` re-post, not a queue.
+   */
+  public postUiDialog(message: UiDialogMessage): Promise<UiDialogAnswerMessage> | undefined {
+    if (!this._view || !this._webviewReady) {
+      this._controller?.outputChannel?.appendLine(
+        `[WingmanViewProvider] postUiDialog(${message.id}): webview not ready — host will fall back`,
+      );
+      return undefined;
+    }
+    // Defend against an id collision: pi ids are uuids, so this means a protocol
+    // fault. Settle the older entry rather than silently replacing (and thus
+    // orphaning) its promise.
+    const existing = this._pendingDialogs.get(message.id);
+    if (existing) {
+      this._controller?.outputChannel?.appendLine(
+        `[WingmanViewProvider] postUiDialog(${message.id}): duplicate id — cancelling the earlier card`,
+      );
+      this._pendingDialogs.delete(message.id);
+      existing.resolve({ type: 'uiDialogAnswer', id: message.id, cancelled: true });
+    }
+
+    return new Promise<UiDialogAnswerMessage>((resolve) => {
+      this._pendingDialogs.set(message.id, { resolve, message });
+      this._postMessage(message);
+    });
+  }
+
+  /**
+   * Withdraw a pending question card and settle its promise as a dismissal.
+   *
+   * Both halves matter. The webview needs to stop accepting input and leave a
+   * note that the question is gone; the awaiting caller needs its promise
+   * settled, or the `await` in `UiProtocolBridge._askViaCard` never completes and
+   * its frame is retained for the life of the session.
+   *
+   * Settling is safe on the timeout path because the bridge marks the request
+   * expired *before* calling here, and `_sendResponse` drops a response for an
+   * expired id. That suppression is time-limited (the marker is cleaned up ~10s
+   * later), which is the reason to settle promptly rather than leave the promise
+   * dangling for a late resolve that would slip past the marker and send pi a
+   * second response.
+   */
+  public cancelPendingDialog(id: string, reason: 'timeout' | 'sessionReset' | 'agentStopped'): void {
+    const pending = this._pendingDialogs.get(id);
+    if (!pending) return;
+    this._pendingDialogs.delete(id);
+    if (this._webviewReady) {
+      this._postMessage({ type: 'uiDialogCancel', id, reason });
+    }
+    pending.resolve({ type: 'uiDialogAnswer', id, cancelled: true });
+  }
+
+  /**
+   * Settle every open card as a dismissal. Called when the surface that would
+   * answer them goes away (webview disposed) or the conversation they belong to
+   * is replaced (session reset), so pi is answered instead of left blocked.
+   */
+  private _cancelPendingDialogs(why: string): void {
+    if (this._pendingDialogs.size === 0) return;
+    this._controller?.outputChannel?.appendLine(
+      `[WingmanViewProvider] cancelling ${this._pendingDialogs.size} open question card(s): ${why}`,
+    );
+    // Snapshot first: resolving runs bridge continuations that may re-enter.
+    const pending = [...this._pendingDialogs.values()];
+    this._pendingDialogs.clear();
+    for (const { message, resolve } of pending) {
+      resolve({ type: 'uiDialogAnswer', id: message.id, cancelled: true });
+    }
+  }
+
+  /**
+   * Route a webview answer to the promise the bridge is awaiting.
+   *
+   * An answer for an unknown id is dropped: the card was already withdrawn
+   * (timeout / reset) and pi has been answered, so forwarding it would risk a
+   * double response. Deleting before resolving makes a duplicate answer for the
+   * same id a no-op.
+   */
+  private _handleUiDialogAnswer(answer: UiDialogAnswerMessage): void {
+    const pending = this._pendingDialogs.get(answer.id);
+    if (!pending) {
+      this._controller?.outputChannel?.appendLine(
+        `[WingmanViewProvider] uiDialogAnswer(${answer.id}): no open card — dropped`,
+      );
+      return;
+    }
+    this._pendingDialogs.delete(answer.id);
+    pending.resolve(answer);
   }
 
   /** Push the active model's capabilities to the webview (and cache for replay on ready). */

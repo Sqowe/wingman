@@ -25,6 +25,7 @@ import * as os from 'os';
 import * as nodePath from 'path';
 import { WingmanViewProvider } from './provider';
 import type { AgentController } from '../agent/controller';
+import type { UiDialogMessage } from '../shared/messages';
 
 // ─── Helpers: flush microtask queue ──────────────────────────────────────────
 
@@ -969,5 +970,284 @@ describe('WingmanViewProvider — openFile / openFolder', () => {
     sendMessage({ type: 'openFolder', path: memDir });
     await flushMicrotasks();
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Question cards (blocking, answer-bearing) ────────────────────────────────
+//
+// A card carries a question pi is BLOCKED on, so the invariant under test is
+// that postUiDialog's promise always settles exactly once — on an answer, a
+// dismissal, a withdrawal, a session reset, or webview teardown. A leak here
+// deadlocks the agent (docs/design/in-chat-question-cards.md §1, §6).
+
+describe('WingmanViewProvider — question cards', () => {
+  const CARD: UiDialogMessage = {
+    type: 'uiDialog',
+    id: 'req-1',
+    kind: 'select',
+    question: 'How should I handle it?',
+    header: 'REST API file',
+    options: [
+      { raw: '1. Keep — Leave it.', index: 1, headline: 'Keep', description: 'Leave it.' },
+      { raw: '2. Rewrite — Replace it.', index: 2, headline: 'Rewrite', description: 'Replace it.' },
+    ],
+  };
+
+  it('posts the card to the webview and resolves with the answer', async () => {
+    const { provider, sendMessage, postMessage } = resolveProvider();
+
+    const pending = provider.postUiDialog(CARD);
+    expect(pending).toBeDefined();
+    expect(postMessage).toHaveBeenCalledWith(CARD);
+
+    sendMessage({ type: 'uiDialogAnswer', id: 'req-1', value: '2. Rewrite — Replace it.' });
+
+    await expect(pending).resolves.toEqual({
+      type: 'uiDialogAnswer',
+      id: 'req-1',
+      value: '2. Rewrite — Replace it.',
+    });
+  });
+
+  it('resolves with a dismissal', async () => {
+    const { provider, sendMessage } = resolveProvider();
+    const pending = provider.postUiDialog(CARD);
+
+    sendMessage({ type: 'uiDialogAnswer', id: 'req-1', cancelled: true });
+
+    await expect(pending).resolves.toEqual({
+      type: 'uiDialogAnswer',
+      id: 'req-1',
+      cancelled: true,
+    });
+  });
+
+  it('returns undefined when the webview has not signalled ready', () => {
+    // The host must fall back to a native dialog rather than block pi.
+    const { view } = makeWebviewView();
+    const provider = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    provider.setController(makeController() as unknown as AgentController);
+    provider.resolveWebviewView(
+      view,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    // No `ready` sent.
+    expect(provider.postUiDialog(CARD)).toBeUndefined();
+  });
+
+  it('returns undefined when there is no webview at all', () => {
+    const provider = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    provider.setController(makeController() as unknown as AgentController);
+    expect(provider.postUiDialog(CARD)).toBeUndefined();
+  });
+
+  it('re-posts an open card when the webview reloads', () => {
+    const { provider, sendMessage, postMessage } = resolveProvider();
+    void provider.postUiDialog(CARD);
+    postMessage.mockClear();
+
+    // A reloaded webview signals ready again; the request id is unchanged, so a
+    // later answer still correlates (design doc §6).
+    sendMessage({ type: 'ready' });
+    expect(postMessage).toHaveBeenCalledWith(CARD);
+  });
+
+  it('drops an answer for an unknown id', async () => {
+    const { provider, sendMessage } = resolveProvider();
+    const pending = provider.postUiDialog(CARD);
+
+    // Wrong id: must not settle the open card.
+    sendMessage({ type: 'uiDialogAnswer', id: 'someone-else', value: 'x' });
+
+    let settled = false;
+    void pending!.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    // The real answer still works.
+    sendMessage({ type: 'uiDialogAnswer', id: 'req-1', value: '1. Keep — Leave it.' });
+    await expect(pending).resolves.toMatchObject({ value: '1. Keep — Leave it.' });
+  });
+
+  it('ignores a duplicate answer for the same card', async () => {
+    const { provider, sendMessage } = resolveProvider();
+    const pending = provider.postUiDialog(CARD);
+
+    sendMessage({ type: 'uiDialogAnswer', id: 'req-1', value: '1. Keep — Leave it.' });
+    await expect(pending).resolves.toMatchObject({ value: '1. Keep — Leave it.' });
+
+    // A second answer has no card to route to — it must be dropped silently,
+    // because the bridge has already written pi's single response.
+    expect(() => sendMessage({ type: 'uiDialogAnswer', id: 'req-1', value: 'other' })).not.toThrow();
+  });
+
+  it('cancels an open card on session reset', async () => {
+    const { provider, postMessage } = resolveProvider();
+    const pending = provider.postUiDialog(CARD);
+
+    provider.postSessionReset();
+
+    // pi gets an answer rather than being left blocked on a cleared transcript.
+    await expect(pending).resolves.toEqual({
+      type: 'uiDialogAnswer',
+      id: 'req-1',
+      cancelled: true,
+    });
+    expect(postMessage).toHaveBeenCalledWith({ type: 'sessionReset' });
+  });
+
+  it('withdraws a card and settles it as cancelled', async () => {
+    const { provider, postMessage } = resolveProvider();
+    const pending = provider.postUiDialog(CARD);
+
+    // The timeout path. Settling is required: the bridge is awaiting this promise,
+    // and leaving it dangling retains that frame for the session. Safe because the
+    // bridge marks the request expired first, so the resulting response is dropped.
+    provider.cancelPendingDialog('req-1', 'timeout');
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'uiDialogCancel',
+      id: 'req-1',
+      reason: 'timeout',
+    });
+    await expect(pending).resolves.toEqual({
+      type: 'uiDialogAnswer',
+      id: 'req-1',
+      cancelled: true,
+    });
+  });
+
+  it('is a no-op for an id with no open card', async () => {
+    const { provider, postMessage } = resolveProvider();
+    const pending = provider.postUiDialog(CARD);
+
+    expect(() => provider.cancelPendingDialog('no-such-id', 'timeout')).not.toThrow();
+    expect(postMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'uiDialogCancel', id: 'no-such-id' }),
+    );
+
+    // The real card is untouched.
+    let settled = false;
+    void pending!.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+  });
+
+  it('settles an earlier card when a duplicate id arrives', async () => {
+    const { provider } = resolveProvider();
+    const first = provider.postUiDialog(CARD);
+    // pi ids are uuids, so this is a protocol fault — but the first promise must
+    // not be orphaned by being silently replaced.
+    const second = provider.postUiDialog(CARD);
+
+    await expect(first).resolves.toMatchObject({ cancelled: true });
+    expect(second).toBeDefined();
+  });
+
+  it('rejects a malformed answer: no id', () => {
+    const { provider, sendMessage } = resolveProvider();
+    const pending = provider.postUiDialog(CARD);
+    expect(() => sendMessage({ type: 'uiDialogAnswer', value: 'x' })).not.toThrow();
+    expect(pending).toBeDefined();
+  });
+
+  it('rejects an answer carrying both value and cancelled', async () => {
+    const { provider, sendMessage } = resolveProvider();
+    const pending = provider.postUiDialog(CARD);
+
+    // The wire type forbids this; the validator must too, or the bridge's
+    // `'cancelled' in answer` branch would discard a real value.
+    sendMessage({ type: 'uiDialogAnswer', id: 'req-1', value: 'x', cancelled: true });
+
+    let settled = false;
+    void pending!.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+  });
+
+  it('rejects an oversized answer value', async () => {
+    const { provider, sendMessage } = resolveProvider();
+    const pending = provider.postUiDialog(CARD);
+
+    sendMessage({ type: 'uiDialogAnswer', id: 'req-1', value: 'x'.repeat(8_193) });
+
+    let settled = false;
+    void pending!.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+  });
+
+  it('accepts an empty answer value as "none selected"', async () => {
+    const { provider, sendMessage } = resolveProvider();
+    const pending = provider.postUiDialog(CARD);
+    sendMessage({ type: 'uiDialogAnswer', id: 'req-1', value: '' });
+    await expect(pending).resolves.toMatchObject({ value: '' });
+  });
+});
+
+describe('WingmanViewProvider — question cards on webview teardown', () => {
+  /** Like makeWebviewView, but captures the onDidDispose callback so it can fire. */
+  function makeDisposableWebviewView() {
+    let messageHandler: ((msg: unknown) => void) | undefined;
+    let disposeCb: (() => void) | undefined;
+    const postMessage = vi.fn();
+
+    const webview = {
+      options: {} as vscode.WebviewOptions,
+      html: '',
+      cspSource: 'vscode-resource:',
+      asWebviewUri: (uri: vscode.Uri) => uri,
+      onDidReceiveMessage: (handler: (msg: unknown) => void) => {
+        messageHandler = handler;
+        return new vscode.Disposable(() => { messageHandler = undefined; });
+      },
+      postMessage,
+    };
+
+    const view = {
+      webview,
+      onDidDispose: (cb: () => void) => {
+        disposeCb = cb;
+        return new vscode.Disposable(() => {});
+      },
+    } as unknown as vscode.WebviewView;
+
+    return {
+      view,
+      postMessage,
+      sendMessage: (msg: unknown) => { if (messageHandler) messageHandler(msg); },
+      dispose: () => { disposeCb?.(); },
+    };
+  }
+
+  it('cancels open cards when the webview is disposed', async () => {
+    const { view, sendMessage, dispose } = makeDisposableWebviewView();
+    const provider = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    provider.setController(makeController() as unknown as AgentController);
+    provider.resolveWebviewView(
+      view,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    sendMessage({ type: 'ready' });
+
+    const pending = provider.postUiDialog({
+      type: 'uiDialog',
+      id: 'req-9',
+      kind: 'select',
+      question: 'Which one?',
+      options: [{ raw: '1. A — a.', index: 1, headline: 'A', description: 'a.' }],
+    });
+    expect(pending).toBeDefined();
+
+    // The surface that was going to answer is gone. pi must still get a response.
+    dispose();
+
+    await expect(pending).resolves.toEqual({
+      type: 'uiDialogAnswer',
+      id: 'req-9',
+      cancelled: true,
+    });
   });
 });
