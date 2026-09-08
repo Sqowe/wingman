@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-09-08
+
+### Added
+
+- **Questions with real options are now asked in the chat, not in a quick pick.** When an
+  extension asks you to choose — several options, each with a sentence or two explaining it,
+  sometimes a code preview — the question now appears as a card in the conversation. Everything
+  wraps: the question, every option, and every explanation, in full. Previews render as
+  expandable code blocks. Multiple choice gets real checkboxes and a **Submit** button instead
+  of asking you to type `1,3` into a text box whose title had already run the options together
+  into one unreadable paragraph. The card stays in the transcript afterwards as a record of what
+  you chose, collapsed to the question and your answer, with the other options one click away.
+
+  This removes a ceiling rather than working around it. A VS Code quick pick row cannot be
+  multi-line ([microsoft/vscode#153095](https://github.com/microsoft/vscode/issues/153095), open
+  since 2022) and the widget is a fixed 600 px, so the explanation you needed in order to choose
+  was always the part clipped by the ellipsis. Two earlier attempts to squeeze more text out of
+  that widget shipped in 0.2.2 and were taken back out, because each made the dialog worse in
+  practice. The chat has none of those constraints.
+
+  Short prompts are deliberately left alone: `bash-restrictions`' *Allow once / Deny / Deny &
+  suggest alternative* is three short labels answered in a keystroke, and it stays on the quick
+  pick, which is faster. The choice is made from the shape of the question itself — a request
+  carries no tool or extension name — so a renamed tool cannot break it, and any extension that
+  formats its options the same way benefits with no changes. Your answer goes back to the
+  extension byte-for-byte, so senders that encode meaning into the option text keep working.
+
+- **`sqoweWingman.dialogStyle`** — choose where questions appear: `auto` (the default: chat when
+  a quick pick would clip the options, native otherwise), `quickPick` (always native), or `chat`
+  (always in the conversation).
+
 ## [0.2.2] - 2026-08-07
 
 ### Fixed
@@ -350,7 +381,8 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/wingman/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/sqowe/wingman/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/sqowe/wingman/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/sqowe/wingman/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sqowe/wingman/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/sqowe/wingman/compare/v0.1.10...v0.2.0

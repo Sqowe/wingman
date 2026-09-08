@@ -2,7 +2,7 @@
   "name": "sqowe-wingman",
   "displayName": "Sqowe Wingman",
   "description": "A VS Code client for the pi coding agent",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publisher": "sqowe",
   "license": "MIT",
   "repository": {
@@ -266,7 +266,11 @@
         },
         "sqoweWingman.dialogStyle": {
           "type": "string",
-          "enum": ["auto", "quickPick", "chat"],
+          "enum": [
+            "auto",
+            "quickPick",
+            "chat"
+          ],
           "default": "auto",
           "enumDescriptions": [
             "Show a question in the chat when its options are too long to fit a quick pick row, and use the native quick pick otherwise.",

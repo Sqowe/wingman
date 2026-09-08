@@ -20,7 +20,7 @@ one show up in the other.
 - **Run commands** — type `/` for pi's slash commands, or use native VS Code commands for model, thinking level, compact, fork/clone, and export → [guide](features/commands.md)
 - **Manage sessions** — a Sessions tree for the current workspace, with switch, resume, and rename → [guide](features/sessions.md)
 - **Track context usage** — a status bar item showing tokens used against the model's context window → [guide](features/session-stats.md)
-- **Answer prompts natively** — pi's permission and input prompts render as VS Code dialogs → [guide](features/dialogs.md)
+- **Answer the agent's questions** — short permission prompts render as native VS Code dialogs; a real question with several explained options becomes a readable card in the chat, with previews and checkboxes → [guide](features/dialogs.md)
 - **Control project trust** — approve project `.pi/` resources before they load, and pick a folder in multi-root workspaces → [guide](features/trust.md)
 - **See which instruction files are active** — the status banner lists the files pi loaded for the session → [guide](features/instruction-files.md)
 - **Share Claude Code's memory** — if a project also has a Claude Code memory folder, its facts are shared read-only with the pi agent and surfaced in the status banner → [guide](features/claude-memory.md)
