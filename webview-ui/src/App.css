@@ -1262,22 +1262,37 @@ code {
 
 /* ─── Question cards ──────────────────────────────────────────────────────────
    A blocking question from a pi extension, rendered in the transcript instead of
-   a native quick pick. Stage 4 ships only the placeholder shell; Stage 5 adds the
-   interactive rows, previews and checkboxes. All colours come from theme
-   variables so the card matches the user's editor theme. */
+   a native quick pick. Every colour comes from a theme variable so the card
+   matches the user's editor theme; nothing here is hardcoded.
+
+   The layout requirement that motivates the whole feature: option text must WRAP.
+   A quick pick row cannot, which is why long explanations were unreadable there. */
 
 .question-card {
-  margin: 4px 0;
-  padding: 8px 10px;
+  margin: 6px 0;
+  padding: 10px 12px;
   border: 1px solid var(--vscode-focusBorder);
   border-radius: 4px;
   background: var(--vscode-editorWidget-background);
   color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
 }
 
+/* A settled card is a record, not a prompt — recede it. */
+.question-card--answered,
+.question-card--dismissed,
+.question-card--withdrawn {
+  border-color: var(--vscode-widget-border, var(--vscode-panel-border));
+  opacity: 0.9;
+}
+
+.question-card__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
 .question-card__chip {
-  display: inline-block;
-  margin-bottom: 4px;
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 0.85em;
@@ -1285,16 +1300,216 @@ code {
   color: var(--vscode-badge-foreground);
 }
 
+.question-card__badge {
+  margin-left: auto;
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+.question-card__badge--answered { color: var(--vscode-charts-green, var(--vscode-foreground)); }
+.question-card__badge--dismissed,
+.question-card__badge--withdrawn { color: var(--vscode-descriptionForeground); }
+
 .question-card__question {
+  font-weight: 600;
+  /* Markdown paragraphs inside the question should not add their own margins. */
+  margin-bottom: 8px;
+}
+
+.question-card__question > :first-child { margin-top: 0; }
+.question-card__question > :last-child { margin-bottom: 0; }
+
+.question-card__instructions,
+.question-card__note {
+  margin: 0 0 8px;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* ── Options ── */
+
+.question-card__options {
+  list-style: none;
   margin: 0;
-  /* The whole point of the card: the question wraps instead of being clipped. */
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.question-card__options--rest {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+}
+
+/* Shared row shape. A button for single choice, a label for a checkbox row. */
+.question-card__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--vscode-list-hoverBackground);
+  cursor: pointer;
+}
+
+/* Hover/focus affordances are for rows that can actually be actioned. An
+   unnumbered multi-select option is rendered but not selectable, so it must not
+   light up as though it were. */
+button.question-card__option:hover,
+.question-card__option--check:not(.question-card__option--disabled):hover {
+  border-color: var(--vscode-focusBorder);
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+button.question-card__option:focus-visible,
+.question-card__option--check:not(.question-card__option--disabled):focus-within {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+.question-card__option--disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.question-card__option--chosen,
+.question-card__option--muted {
+  cursor: default;
+  background: transparent;
+}
+
+.question-card__option--muted {
+  color: var(--vscode-descriptionForeground);
+}
+
+.question-card__tick {
+  color: var(--vscode-charts-green, var(--vscode-foreground));
+  font-weight: 600;
+}
+
+.question-card__option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0; /* let the flex child shrink so long words wrap instead of overflow */
+}
+
+.question-card__option-headline {
+  /* This is the point of the card: full text, wrapped, never clipped. */
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-/* Stage 4 shell: the question renders but has no controls yet, so it is marked
-   as visibly provisional. Stage 5 replaces the placeholder with the interactive
-   card (option rows, previews, checkboxes, Submit / Dismiss) and drops this rule. */
-.question-card--placeholder {
-  border-style: dashed;
+.question-card__option-number {
+  color: var(--vscode-descriptionForeground);
+}
+
+.question-card__option-description {
+  font-size: 0.92em;
+  color: var(--vscode-descriptionForeground);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Previews ── */
+
+.question-card__preview {
+  margin: 2px 0 2px 26px;
+}
+
+.question-card__preview-toggle,
+.question-card__more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.9em;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+}
+
+.question-card__preview-toggle:hover,
+.question-card__more:hover {
+  text-decoration: underline;
+}
+
+.question-card__preview-body {
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  overflow: auto;
+  max-height: 300px;
+}
+
+.question-card__preview-body pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.question-card__chevron {
+  display: inline-block;
+  transition: transform 0.1s ease;
+}
+
+.question-card__chevron--open {
+  transform: rotate(90deg);
+}
+
+/* ── Actions ── */
+
+.question-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.question-card__submit {
+  padding: 4px 12px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  font: inherit;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+}
+
+.question-card__submit:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.question-card__dismiss {
+  margin-left: auto;
+  padding: 4px 12px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  font: inherit;
+  /* Fall back to the primary button colours: not every theme defines the
+     secondary set, and an unstyled Dismiss button would be near-invisible. */
+  background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+  cursor: pointer;
+}
+
+.question-card__dismiss:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-hoverBackground));
+}
+
+.question-card__submit:focus-visible,
+.question-card__dismiss:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
 }

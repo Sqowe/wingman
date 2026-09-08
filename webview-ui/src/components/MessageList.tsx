@@ -10,6 +10,7 @@ import { VariableSizeList, type ListChildComponentProps } from 'react-window';
 import type { ChatItem, UserItem } from '../store';
 import { AssistantBlock } from './AssistantBlock';
 import { ToolCard } from './ToolCard';
+import { QuestionCard } from './QuestionCard';
 import { splitUserMessage } from '../lib/skill-blocks';
 import { CollapsibleText } from './CollapsibleText';
 
@@ -159,15 +160,7 @@ function ItemRenderer({ item }: { item: ChatItem }) {
       return <ToolCard item={item} />;
 
     case 'question':
-      // Stage 5 replaces this with the real QuestionCard component. Rendering the
-      // question now (rather than null) means a routed dialog is at least visible
-      // and traceable in the transcript while the component is being built.
-      return (
-        <div className="question-card question-card--placeholder" aria-label="Question">
-          {item.header && <span className="question-card__chip">{item.header}</span>}
-          <p className="question-card__question">{item.question}</p>
-        </div>
-      );
+      return <QuestionCard item={item} />;
 
     case 'system':
       return (

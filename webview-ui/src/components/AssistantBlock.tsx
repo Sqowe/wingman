@@ -3,130 +3,21 @@
  * Text blocks use react-markdown; thinking blocks are collapsible.
  * A copy button on each block copies the clean source string (not rendered HTML).
  *
- * Link safety: all anchor elements are intercepted and posted to the host
- * as `openExternal` messages (scheme validation happens host-side). No
- * `javascript:` / `data:` URIs can navigate the webview.
+ * Markdown rendering (including link interception and the raw-HTML block) lives
+ * in ./Markdown, shared with the question card so both apply the same rules.
  *
  * Performance: each text block's markdown output is memoized by content
  * so it is not re-parsed on every render during streaming of other blocks.
  */
-import React, { useMemo } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import type { Components } from 'react-markdown';
+import { useMemo } from 'react';
 import type { AssistantItem } from '../store';
 import { useChatStore } from '../store';
 import { CopyButton } from './CopyButton';
-import { vscode } from '../vscodeApi';
+import { MemoMarkdown } from './Markdown';
 
 interface Props {
   item: AssistantItem;
 }
-
-/** Schemes the webview will forward to the host openExternal handler. */
-const ALLOWED_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
-
-
-
-/** Intercept all links: validate scheme webview-side, then post to host for safe external opening. */
-const markdownComponents: Components = {
-  a({ href, children }) {
-    const handleClick = (e: React.MouseEvent) => {
-      e.preventDefault();
-      if (!href) return;
-      // Webview-side scheme check (defense-in-depth — host also validates).
-      try {
-        const { protocol } = new URL(href);
-        if (!ALLOWED_SCHEMES.has(protocol)) return;
-      } catch {
-        return; // not a valid URL
-      }
-      vscode.postMessage({ type: 'openExternal', url: href });
-    };
-    return (
-      <a
-        href={href}
-        onClick={handleClick}
-        style={{ cursor: 'pointer' }}
-        rel="noopener noreferrer"
-      >
-        {children}
-      </a>
-    );
-  },
-
-  /**
-   * Render fenced code blocks with a hover-reveal copy button.
-   * Overriding `code` (not `pre`) gives direct access to the string
-   * children, so the copy button copies clean source without backtick
-   * fences. Inline code (no className) is left untouched.
-   */
-  /**
-   * Block code: wrap in a div with a copy button. The copy text is
-   * extracted here where `children` is still a plain string — no
-   * backtick fences, no language tag.
-   * react-markdown passes className="language-*" for language-tagged
-   * fences. Plain fences (no language) have no className but are still
-   * wrapped in <pre> by the default renderer — we let `pre` handle the
-   * layout and only inject the copy button here when className is present.
-   * For plain fences we fall through to the `pre` override which calls
-   * back into this via nodeToText.
-   */
-  code({ children, className, node: _node, ...rest }) {
-    const isBlock = /language-/.test(className ?? '');
-    if (!isBlock) {
-      // inline code or plain-fence code — render normally, let `pre` wrap it
-      return <code className={className} {...rest}>{children}</code>;
-    }
-    const code = String(children ?? '').replace(/\n$/, '');
-    return (
-      <div className="code-block">
-        <CopyButton text={code} label="Copy code" className="code-block__copy" />
-        <pre><code className={className} {...rest}>{children}</code></pre>
-      </div>
-    );
-  },
-
-  /**
-   * Plain-fence fallback: a <pre> whose <code> child has no language
-   * className. Extract text from children (a React element tree) to
-   * get clean source for the copy button.
-   */
-  pre({ children }) {
-    // Only wrap with copy UI if the code override didn't already do it
-    // (language-tagged blocks render their own wrapping div inside `code`).
-    const codeText = (() => {
-      if (!React.isValidElement(children)) return null;
-      const child = children as React.ReactElement<{ className?: string; children?: React.ReactNode }>;
-      if (/language-/.test(child.props.className ?? '')) return null; // already handled
-      return String(child.props.children ?? '').replace(/\n$/, '');
-    })();
-    if (codeText === null) return <pre>{children}</pre>;
-    return (
-      <div className="code-block">
-        <CopyButton text={codeText} label="Copy code" className="code-block__copy" />
-        <pre>{children}</pre>
-      </div>
-    );
-  },
-};
-
-/**
- * MemoMarkdown — memoized markdown block, only re-renders when `text` changes.
- * Raw HTML is explicitly disabled (skipHtml) as defense-in-depth against
- * XSS in assistant-provided content rendered inside the webview.
- */
-const MemoMarkdown = React.memo(function MemoMarkdown({ text }: { text: string }) {
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={markdownComponents}
-      skipHtml
-    >
-      {text}
-    </ReactMarkdown>
-  );
-});
 
 export function AssistantBlock({ item }: Props) {
   const toggleThinking = useChatStore((s) => s.toggleThinking);
