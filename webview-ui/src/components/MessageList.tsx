@@ -30,6 +30,8 @@ export function MessageList({ items, height, width }: Props) {
   const listRef = useRef<VariableSizeList>(null);
   const rowHeights = useRef<Record<number, number>>({});
   const isAtBottom = useRef(true);
+  const itemCountRef = useRef(items.length);
+  itemCountRef.current = items.length;
 
   const getItemSize = useCallback((index: number) => {
     return rowHeights.current[index] ?? DEFAULT_ROW_HEIGHT;
@@ -44,6 +46,15 @@ export function MessageList({ items, height, width }: Props) {
     // on the next scroll. The height-changed guard above keeps this from firing
     // on steady-state streaming ticks where the measured height is unchanged.
     listRef.current?.resetAfterIndex(index, true);
+    // The first measurement of a new row (e.g. a question card) replaces the
+    // DEFAULT_ROW_HEIGHT guess used by the scroll-to-bottom effects below with
+    // its real, often much larger, height. Those effects already scrolled
+    // using the wrong guess, so without this the view is left stuck wherever
+    // that guess put it — typically showing just the card's title with the
+    // rest of it below the fold. Re-scroll now that the true size is known.
+    if (isAtBottom.current && index === itemCountRef.current - 1) {
+      listRef.current?.scrollToItem(index, 'end');
+    }
   }, []);
 
   // Scroll to bottom when new items arrive (only when already pinned to bottom).
