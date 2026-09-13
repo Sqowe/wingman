@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-09-13
+
+### Fixed
+
+- **A question no longer lands far up the conversation.** If the Wingman view was out of sight
+  while the agent worked — behind another editor tab, for example — the question it then asked
+  could appear in the middle of the transcript, among earlier tool calls, with everything that
+  had happened since added below it. You came back to the bottom of the chat and saw no question
+  at all, while the agent sat waiting for an answer. The chat applies the agent's updates once per
+  screen refresh, and a hidden view gets no screen refreshes, so those updates were still waiting
+  when the question arrived, and the question was placed ahead of them. The waiting updates are
+  now applied first, so a question always appears after everything that came before it. This also
+  fixes a smaller slip with the same cause, where a card could sit just above the
+  `ask_user_question` tool call that asked it.
+- **The chat scrolls all the way to the next question.** After you answered one question, the
+  chat scrolled to the next card but stopped at its title, leaving the options below the edge of
+  the view. The scroll position was worked out before the card had been measured, from a
+  placeholder height far smaller than the real one. The chat now scrolls again once the card's
+  real height is known.
+
 ## [0.2.3] - 2026-09-08
 
 ### Added
@@ -381,7 +401,8 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/wingman/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/sqowe/wingman/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/sqowe/wingman/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/sqowe/wingman/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/sqowe/wingman/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/sqowe/wingman/compare/v0.2.0...v0.2.1
