@@ -180,6 +180,12 @@ export default function App() {
           break;
 
         case 'uiDialog':
+          // Buffered events wait for a frame (none arrive while the view is
+          // hidden); apply them first so the card lands below them.
+          if (rafId.current !== undefined) {
+            cancelAnimationFrame(rafId.current);
+          }
+          flushEvents();
           addQuestionCard(msg);
           break;
 
@@ -193,7 +199,7 @@ export default function App() {
 
     window.addEventListener('message', handler);
     return () => window.removeEventListener('message', handler);
-  }, [scheduleFlush]);
+  }, [scheduleFlush, flushEvents]);
 
   // Deliver question-card answers the store has queued (see useDialogOutbox).
   useDialogOutbox();
