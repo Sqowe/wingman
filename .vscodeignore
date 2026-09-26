@@ -5,6 +5,7 @@ webview-ui/
 # Config / tooling
 tsconfig.json
 tsconfig.test.json
+vitest.config.ts
 esbuild.mjs
 .eslintrc*
 .prettierrc*
@@ -37,14 +38,16 @@ test/
 **/*.spec.ts
 .vscode-test/
 
-# VCS
+# VCS / CI
 .git/
 .gitignore
+.github/
 
 # Agent / editor tooling — not part of the extension
 .claude/
 .kiro/
 .agents/
+.pi/
 .vscode/
 
 # Semantic-index skill artifacts — local dev index, not for end users (~80 MB)
