@@ -18,6 +18,7 @@ import {
   splitModelRef,
   buildShortlistItems,
   buildCatalogItems,
+  readCycledModelRef,
 } from './model-picker';
 
 describe('normalizeModels', () => {
@@ -164,5 +165,52 @@ describe('buildCatalogItems', () => {
     expect(buildCatalogItems([{ id: 'openrouter/foo/bar' }])).toEqual([
       { label: 'openrouter/foo/bar', description: undefined, provider: 'openrouter', modelId: 'foo/bar' },
     ]);
+  });
+});
+
+// ─── readCycledModelRef ──────────────────────────────────────────────────────
+//
+// pi's cycleModel answers `{ model: <Model>, thinkingLevel, isScoped }` — the
+// `model` field is an object, which the string-only readCurrentModel cannot
+// see. readCycledModelRef exists so the cycled-to model can be remembered for
+// the next new_session (pi's RPC cannot persist it — see agent/model-memory.ts).
+
+describe('readCycledModelRef', () => {
+  it('reads the canonical nested { model: { provider, id } } shape', () => {
+    expect(readCycledModelRef({
+      model: { id: 'claude-opus-5', provider: 'local-claude' },
+      thinkingLevel: 'high',
+      isScoped: true,
+    })).toEqual({ provider: 'local-claude', modelId: 'claude-opus-5' });
+  });
+
+  it('reads a flat { provider, modelId } shape', () => {
+    expect(readCycledModelRef({ provider: 'p', modelId: 'm' }))
+      .toEqual({ provider: 'p', modelId: 'm' });
+  });
+
+  it('reads a flat { provider, id } shape', () => {
+    expect(readCycledModelRef({ provider: 'p', id: 'm' }))
+      .toEqual({ provider: 'p', modelId: 'm' });
+  });
+
+  it('returns undefined when the provider is missing (set_model needs both)', () => {
+    expect(readCycledModelRef({ model: { id: 'm' } })).toBeUndefined();
+    expect(readCycledModelRef({ id: 'm' })).toBeUndefined();
+  });
+
+  it('returns undefined when the id is missing', () => {
+    expect(readCycledModelRef({ model: { provider: 'p' } })).toBeUndefined();
+  });
+
+  it('returns undefined for a null / non-object payload (cycle past the end)', () => {
+    expect(readCycledModelRef(null)).toBeUndefined();
+    expect(readCycledModelRef(undefined)).toBeUndefined();
+    expect(readCycledModelRef('nope')).toBeUndefined();
+  });
+
+  it('returns undefined when the model field is a bare string', () => {
+    // readCurrentModel's shape — usable for the message, but not for set_model.
+    expect(readCycledModelRef({ model: 'some-model' })).toBeUndefined();
   });
 });

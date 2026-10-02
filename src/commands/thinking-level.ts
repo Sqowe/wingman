@@ -33,6 +33,9 @@ export async function setThinkingLevel(controller: AgentController): Promise<voi
       );
       return;
     }
+    // Remember the level so a later new_session restores it — pi's RPC has no
+    // way to persist a selection (see agent/model-memory.ts).
+    controller.rememberThinkingLevel(picked.label);
     void vscode.window.showInformationMessage(
       `Sqowe Wingman: thinking level set to "${picked.label}".`,
     );
@@ -63,6 +66,9 @@ export async function cycleThinkingLevel(controller: AgentController): Promise<v
       return;
     }
     const level = readCurrentLevel(response.data);
+    // A cycle is an explicit user choice — remember it like a pick, so the
+    // next new_session lands back on the level the user cycled to.
+    if (level) controller.rememberThinkingLevel(level);
     void vscode.window.showInformationMessage(
       level
         ? `Sqowe Wingman: thinking level set to "${level}".`

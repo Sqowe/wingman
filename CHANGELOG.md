@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A new session no longer forgets your model and thinking level.** Pressing **New Session** used
+  to drop the model and thinking level you had picked and quietly put you back on pi's default —
+  the status bar jumped to some other model than the one you were just using. pi rebuilds its
+  whole agent runtime on a new session and works the model and thinking level out again from its
+  own global settings, and it offers no way over its command channel to make your current choice
+  the new default. Wingman now remembers the model and thinking level you pick — per workspace, so
+  each one keeps its own — and puts them back for you straight after the new session is created.
+  Setting a model also remembers the thinking level you were on at the time, so the pair always
+  comes back together. Sessions you switch **to** are untouched: those already restore the model
+  recorded in that conversation.
+
 ## [0.2.4] - 2026-09-13
 
 ### Fixed

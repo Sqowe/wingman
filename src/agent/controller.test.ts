@@ -15,6 +15,7 @@ import * as vscode from 'vscode';
 import { AgentController } from './controller';
 import type { WingmanViewProvider } from '../webview/provider';
 import type { SessionStats, PiCommand, ModelState } from '../shared/messages';
+import { newSession } from '../commands/new-session';
 
 // ─── Stub transport ───────────────────────────────────────────────────────────
 
@@ -905,5 +906,826 @@ describe('AgentController — claudeMemory bridge report', () => {
       statusText: 'NOT JSON',
     });
     expect(provider.postClaudeMemory).toHaveBeenCalledWith(null);
+  });
+});
+
+// ─── Model / thinking memory (new_session restore) ───────────────────────────
+//
+// pi's new_session rebuilds the runtime and re-resolves model + thinking from
+// its global settings, and its RPC exposes no way to persist a selection. These
+// tests pin the Wingman-side memory that compensates for that.
+
+describe('AgentController model memory', () => {
+  async function flush() {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  }
+
+  function makeMemento() {
+    const store: Record<string, unknown> = {};
+    return {
+      store,
+      get: <T,>(key: string) => store[key] as T | undefined,
+      update: async (key: string, value: unknown) => { store[key] = value; },
+    };
+  }
+
+  /** Records every command type sent, so we can assert the exact RPC sequence. */
+  function recorder(state: {
+    provider?: string;
+    modelId?: string;
+    thinkingLevel?: string;
+  }) {
+    const sent: string[] = [];
+    const send = (cmd: { type: string; [k: string]: unknown }) => {
+      sent.push(cmd.type);
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: {
+            model: state.modelId
+              ? { id: state.modelId, name: state.modelId, provider: state.provider ?? 'p', input: ['text'] }
+              : null,
+            thinkingLevel: state.thinkingLevel ?? null,
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    };
+    return { sent, send };
+  }
+
+  // ── Seeding ───────────────────────────────────────────────────────────────
+
+  it('seeds the memory from the first get_state so a first-run new_session keeps the model', async () => {
+    const { controller } = makeController(recorder({ provider: 'p', modelId: 'm', thinkingLevel: 'high' }).send);
+    controller.setStateStorage(makeMemento());
+
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+
+    expect(controller.modelMemory).toEqual({ provider: 'p', modelId: 'm', thinkingLevel: 'high' });
+  });
+
+  it('does not let a later get_state overwrite a recorded choice', async () => {
+    // Mutable so we can simulate switching onto a session whose own model
+    // differs — the case that must not become "the" remembered choice.
+    const state = { provider: 'p', modelId: 'm', thinkingLevel: 'high' };
+    const { controller } = makeController(recorder(state).send);
+    controller.setStateStorage(makeMemento());
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+    expect(controller.modelMemory).toEqual({ provider: 'p', modelId: 'm', thinkingLevel: 'high' });
+
+    // The user switches to another session that recorded a different model.
+    state.provider = 'other';
+    state.modelId = 'other-m';
+    state.thinkingLevel = 'low';
+    await controller.sendCommand({ type: 'switch_session' });
+    await flush();
+
+    expect(controller.modelMemory).toEqual({ provider: 'p', modelId: 'm', thinkingLevel: 'high' });
+  });
+
+  it('does not adopt the default that new_session just resolved to', async () => {
+    const state = { provider: 'anthropic', modelId: 'claude', thinkingLevel: 'high' };
+    const { controller } = makeController(recorder(state).send);
+    controller.setStateStorage(makeMemento());
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+    controller.rememberModelChoice('anthropic', 'claude');
+    await flush();
+
+    // pi rebuilds the runtime and hands back its global default instead.
+    state.provider = 'openrouter';
+    state.modelId = 'some-default';
+    state.thinkingLevel = 'medium';
+    await controller.sendCommand({ type: 'new_session' });
+    await flush();
+
+    expect(controller.modelMemory).toEqual({
+      provider: 'anthropic', modelId: 'claude', thinkingLevel: 'high',
+    });
+  });
+
+  it('reads a pre-existing memory out of the injected memento', () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'saved', modelId: 'saved-m' };
+    const { controller } = makeController(recorder({}).send);
+    controller.setStateStorage(memento);
+    expect(controller.modelMemory).toEqual({ provider: 'saved', modelId: 'saved-m' });
+  });
+
+  it('ignores a corrupted stored value', () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = 'nonsense';
+    const { controller } = makeController(recorder({}).send);
+    controller.setStateStorage(memento);
+    expect(controller.modelMemory).toBeUndefined();
+  });
+
+  it('works with no memento injected (no persistence, no throw)', async () => {
+    const { controller } = makeController(recorder({ provider: 'p', modelId: 'm' }).send);
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+    expect(controller.modelMemory).toEqual({ provider: 'p', modelId: 'm', thinkingLevel: undefined });
+  });
+
+  // ── rememberModelChoice / rememberThinkingLevel ───────────────────────────
+
+  it('persists a model pick to workspace state', async () => {
+    const memento = makeMemento();
+    const { controller } = makeController(recorder({ provider: 'p', modelId: 'm', thinkingLevel: 'high' }).send);
+    controller.setStateStorage(memento);
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+
+    controller.rememberModelChoice('anthropic', 'claude');
+    await flush();
+
+    expect(memento.store['sqoweWingman.modelMemory']).toEqual({
+      provider: 'anthropic', modelId: 'claude', thinkingLevel: 'high',
+    });
+  });
+
+  it('backfills the thinking level from the live session on a model pick', async () => {
+    const memento = makeMemento();
+    const { controller } = makeController(recorder({ provider: 'p', modelId: 'm', thinkingLevel: 'max' }).send);
+    controller.setStateStorage(memento);
+    // Start with a model but no recorded level (a model-only write path).
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (controller as any)._modelMemory = { provider: 'p', modelId: 'm' };
+
+    controller.rememberModelChoice('anthropic', 'claude');
+    await flush();
+
+    expect(memento.store['sqoweWingman.modelMemory']).toEqual({
+      provider: 'anthropic', modelId: 'claude', thinkingLevel: 'max',
+    });
+  });
+
+  it('a thinking-only write keeps the model half intact', async () => {
+    const memento = makeMemento();
+    const { controller } = makeController(recorder({}).send);
+    controller.setStateStorage(memento);
+    controller.rememberModelChoice('p', 'm');
+
+    controller.rememberThinkingLevel('low');
+    await flush();
+
+    expect(memento.store['sqoweWingman.modelMemory']).toEqual({
+      provider: 'p', modelId: 'm', thinkingLevel: 'low',
+    });
+  });
+
+  it('ignores empty provider / modelId / level arguments', () => {
+    const { controller } = makeController(recorder({}).send);
+    controller.setStateStorage(makeMemento());
+    controller.rememberModelChoice('', 'm');
+    controller.rememberModelChoice('p', '');
+    controller.rememberThinkingLevel('');
+    expect(controller.modelMemory).toBeUndefined();
+  });
+
+  // ── restoreModelChoice ────────────────────────────────────────────────────
+
+  it('re-applies both halves after new_session', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'claude', thinkingLevel: 'high' };
+    const { sent, send } = recorder({ provider: 'p', modelId: 'm', thinkingLevel: 'low' });
+    const { controller } = makeController(send);
+    controller.setStateStorage(memento);
+
+    await controller.restoreModelChoice();
+
+    expect(sent).toContain('set_model');
+    expect(sent).toContain('set_thinking_level');
+  });
+
+  it('sends the remembered provider/modelId pair, not the current one', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'claude', thinkingLevel: 'high' };
+    const params: unknown[] = [];
+    const { controller } = makeController((cmd) => {
+      params.push(cmd);
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: { id: 'm', name: 'm', provider: 'p', input: ['text'] }, thinkingLevel: 'low' },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    controller.setStateStorage(memento);
+
+    await controller.restoreModelChoice();
+
+    const setModel = params.find((c) => (c as { type: string }).type === 'set_model');
+    expect(setModel).toMatchObject({ provider: 'anthropic', modelId: 'claude' });
+    const setLevel = params.find((c) => (c as { type: string }).type === 'set_thinking_level');
+    expect(setLevel).toMatchObject({ level: 'high' });
+  });
+
+  it('re-applies even when the pre-new_session cache already matches (the primary path)', async () => {
+    // This is the bug the reviewer caught: new_session runs with the refresh
+    // suppressed, so _lastModelState is still the PREVIOUS session's value. The
+    // user is on their remembered model, presses New Session, the cache looks
+    // like a match — and a skip-if-matches check then re-applies nothing, so the
+    // trailing get_state publishes pi's default and the feature no-ops on the
+    // exact case it exists for.
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'claude', thinkingLevel: 'high' };
+    const { sent, send } = recorder({ provider: 'anthropic', modelId: 'claude', thinkingLevel: 'high' });
+    const { controller } = makeController(send);
+    controller.setStateStorage(memento);
+    // Last state == memory.
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+    sent.length = 0;
+
+    // The exact sequence newSession() drives.
+    await controller.runSuppressingModelRefresh(async () => {
+      await controller.sendCommand({ type: 'new_session' });
+      await controller.restoreModelChoice();
+    });
+
+    expect(sent).toContain('set_model');
+    expect(sent).toContain('set_thinking_level');
+  });
+
+  it('sends the remembered pair, not whatever the cache holds, when they differ', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'claude', thinkingLevel: 'high' };
+    // pi resolved a *different* default after new_session.
+    const { sent, send } = recorder({ provider: 'openrouter', modelId: 'some-default', thinkingLevel: 'medium' });
+    const { controller } = makeController(send);
+    controller.setStateStorage(memento);
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+    sent.length = 0;
+
+    await controller.runSuppressingModelRefresh(async () => {
+      await controller.sendCommand({ type: 'new_session' });
+      await controller.restoreModelChoice();
+    });
+
+    expect(sent).toContain('set_model');
+    expect(sent).toContain('set_thinking_level');
+  });
+
+  it('re-applies nothing when nothing is remembered, but still owes one refresh', async () => {
+    const { sent, send } = recorder({ provider: 'p', modelId: 'm', thinkingLevel: 'high' });
+    const { controller } = makeController(send);
+    // Never let a get_state seed the memory for this case.
+    await controller.sendCommand({ type: 'get_state' });
+    await flush();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (controller as any)._modelMemory = undefined;
+    sent.length = 0;
+
+    await controller.restoreModelChoice();
+
+    // No re-apply, but the caller suppressed new_session's automatic refresh,
+    // so the single get_state here is what keeps onModelState from going stale.
+    expect(sent).not.toContain('set_model');
+    expect(sent).not.toContain('set_thinking_level');
+    expect(sent.filter((t) => t === 'get_state')).toHaveLength(1);
+  });
+
+  it('skips the model half when only a thinking level is remembered', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { thinkingLevel: 'max' };
+    const { sent, send } = recorder({ provider: 'p', modelId: 'm', thinkingLevel: 'low' });
+    const { controller } = makeController(send);
+    controller.setStateStorage(memento);
+
+    await controller.restoreModelChoice();
+
+    expect(sent).not.toContain('set_model');
+    expect(sent).toContain('set_thinking_level');
+  });
+
+  it('ends on exactly one get_state refresh (no default-value flicker)', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'claude', thinkingLevel: 'high' };
+    const { sent, send } = recorder({ provider: 'p', modelId: 'm', thinkingLevel: 'low' });
+    const { controller } = makeController(send);
+    controller.setStateStorage(memento);
+
+    await controller.restoreModelChoice();
+
+    expect(sent.filter((t) => t === 'get_state')).toHaveLength(1);
+  });
+
+  it('refreshes even when the re-apply is rejected, so the bar shows the truth', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'claude' };
+    const { sent, send } = recorder({ provider: 'p', modelId: 'm', thinkingLevel: 'low' });
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'set_model') {
+        return { type: 'response', success: false, command: 'set_model', error: 'Model not found' };
+      }
+      return send(cmd);
+    });
+    controller.setStateStorage(memento);
+
+    await expect(controller.restoreModelChoice()).rejects.toThrow('Model not found');
+
+    expect(sent).toContain('get_state');
+  });
+
+  // ── rejected re-apply ───────────────────────────────────────────────────
+
+  it('skips the thinking level when the model was rejected, and throws', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'gone', thinkingLevel: 'high' };
+    const { sent, send } = recorder({ provider: 'p', modelId: 'm', thinkingLevel: 'low' });
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'set_model') {
+        return { type: 'response', success: false, command: 'set_model', error: 'Model not found: anthropic/gone' };
+      }
+      return send(cmd);
+    });
+    controller.setStateStorage(memento);
+
+    await expect(controller.restoreModelChoice()).rejects.toThrow(/Model not found/);
+
+    // pi clamps the level to the active model, so sending it after a rejected
+    // model would report a success that does not describe the chosen pair.
+    expect(sent).not.toContain('set_thinking_level');
+  });
+
+  it('throws and reports the level when only set_thinking_level is rejected', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'p', modelId: 'm', thinkingLevel: 'max' };
+    const send = (cmd: { type: string; [k: string]: unknown }) => {
+      if (cmd.type === 'set_thinking_level') {
+        return { type: 'response', success: false, command: 'set_thinking_level', error: 'not supported' };
+      }
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: { id: 'm', name: 'm', provider: 'p', input: ['text'] }, thinkingLevel: 'low' },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    };
+    const { controller } = makeController(send);
+    controller.setStateStorage(memento);
+
+    await expect(controller.restoreModelChoice()).rejects.toThrow(/not supported/);
+  });
+
+  it('keeps the memory after a rejected re-apply (a transient failure is not a lost choice)', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'claude' };
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'set_model') {
+        return { type: 'response', success: false, command: 'set_model', error: 'no auth' };
+      }
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: null, thinkingLevel: null },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    controller.setStateStorage(memento);
+
+    await expect(controller.restoreModelChoice()).rejects.toThrow();
+    await flush();
+
+    expect(controller.modelMemory).toEqual({ provider: 'anthropic', modelId: 'claude' });
+    expect(memento.store['sqoweWingman.modelMemory']).toEqual({
+      provider: 'anthropic', modelId: 'claude',
+    });
+  });
+
+  it('clears the suppression flag even when a re-apply throws', async () => {
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: null, thinkingLevel: null },
+        };
+      }
+      if (cmd.type === 'set_model') throw new Error('pi died');
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'claude' };
+    controller.setStateStorage(memento);
+
+    await expect(controller.restoreModelChoice()).rejects.toThrow('pi died');
+
+    // The flag must be back to false, so ordinary commands refresh again.
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+    expect(states.length).toBeGreaterThan(0);
+  });
+});
+
+// ─── runSuppressingModelRefresh ──────────────────────────────────────────────
+
+describe('AgentController.runSuppressingModelRefresh', () => {
+  async function flush() {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  }
+
+  it('suppresses the automatic refresh inside the callback', async () => {
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: null, thinkingLevel: null },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    const result = await controller.runSuppressingModelRefresh(async () => {
+      await controller.sendCommand({ type: 'new_session' });
+      return 'done';
+    });
+    await flush();
+
+    expect(result).toBe('done');
+    expect(states).toHaveLength(0);
+  });
+
+  it('restores the previous flag value afterwards', async () => {
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: null, thinkingLevel: null },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await controller.runSuppressingModelRefresh(async () => {
+      await controller.sendCommand({ type: 'new_session' });
+    });
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+
+    expect(states.length).toBeGreaterThan(0);
+  });
+
+  it('does not leak suppression out of a nested call', async () => {
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: null, thinkingLevel: null },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await controller.runSuppressingModelRefresh(async () => {
+      await controller.runSuppressingModelRefresh(async () => {
+        await controller.sendCommand({ type: 'new_session' });
+      });
+      // Inner scope exited — the outer suppression must still hold.
+      await controller.sendCommand({ type: 'new_session' });
+    });
+    await flush();
+
+    expect(states).toHaveLength(0);
+  });
+});
+
+// ─── newSession integration (real controller, real restore) ─────────────────
+//
+// These drive the actual `newSession()` command against a real AgentController
+// so the interaction between the suppress window, the restore, and the
+// compensating refresh is exercised end to end. The command-level tests stub
+// restoreModelChoice, which hides exactly this interaction.
+
+describe('newSession() — end-to-end refresh guarantee', () => {
+  async function flush() {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  }
+
+  function makeMemento() {
+    const store: Record<string, unknown> = {};
+    return {
+      store,
+      get: <T,>(key: string) => store[key] as T | undefined,
+      update: async (key: string, value: unknown) => { store[key] = value; },
+    };
+  }
+
+  it('still refreshes the model state when nothing is remembered', async () => {
+    // Nothing in the memento: restoreModelChoice has no re-apply to do, but the
+    // refresh it owes the caller is what keeps onModelState from going stale —
+    // it also drives the webview's supportsImages gate.
+    const sent: string[] = [];
+    const { controller, provider } = makeController((cmd) => {
+      sent.push(cmd.type);
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: {
+            model: { id: 'new-default', name: 'New Default', provider: 'openrouter', input: ['text'] },
+            thinkingLevel: 'medium',
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    controller.setStateStorage(makeMemento());
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await newSession(controller as never);
+    await flush();
+
+    // The suppressed automatic refresh was replaced, not lost.
+    expect(sent).toContain('get_state');
+    expect(states.at(-1)?.modelId).toBe('new-default');
+    expect(provider.postSessionReset).toHaveBeenCalled();
+  });
+
+  it('refreshes the model state when a memento exists but is corrupted', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = 'not-a-memory';
+    const sent: string[] = [];
+    const { controller } = makeController((cmd) => {
+      sent.push(cmd.type);
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: { id: 'd', name: 'D', provider: 'p', input: ['text'] }, thinkingLevel: null },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    controller.setStateStorage(memento);
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await newSession(controller as never);
+    await flush();
+
+    expect(sent).toContain('get_state');
+    expect(states.at(-1)?.modelId).toBe('d');
+  });
+
+  it('re-applies the remembered pair and ends on exactly one refresh', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'claude', thinkingLevel: 'high' };
+    const sent: string[] = [];
+    const { controller, provider } = makeController((cmd) => {
+      sent.push(cmd.type);
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: {
+            model: { id: 'claude', name: 'Claude', provider: 'anthropic', input: ['text'] },
+            thinkingLevel: 'high',
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    controller.setStateStorage(memento);
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    await newSession(controller as never);
+    await flush();
+
+    expect(sent).toContain('set_model');
+    expect(sent).toContain('set_thinking_level');
+    expect(sent.filter((t) => t === 'get_state')).toHaveLength(1);
+    expect(states.at(-1)?.modelId).toBe('claude');
+    expect(provider.postSessionReset).toHaveBeenCalled();
+  });
+
+  it('resets the view even when the re-apply is rejected', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'gone' };
+    const { controller, provider } = makeController((cmd) => {
+      if (cmd.type === 'set_model') {
+        return { type: 'response', success: false, command: 'set_model', error: 'Model not found' };
+      }
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: { id: 'd', name: 'D', provider: 'p', input: ['text'] }, thinkingLevel: null },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    controller.setStateStorage(memento);
+
+    await newSession(controller as never);
+    await flush();
+
+    // The session exists, so the view must be reset despite the rejection.
+    expect(provider.postSessionReset).toHaveBeenCalled();
+  });
+
+  it('still refreshes when the re-apply throws, then resets the view', async () => {
+    const memento = makeMemento();
+    memento.store['sqoweWingman.modelMemory'] = { provider: 'anthropic', modelId: 'claude' };
+    const sent: string[] = [];
+    const { controller, provider } = makeController((cmd) => {
+      sent.push(cmd.type);
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: { id: 'd', name: 'D', provider: 'p', input: ['text'] }, thinkingLevel: null },
+        };
+      }
+      if (cmd.type === 'set_model') throw new Error('pi died');
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    controller.setStateStorage(memento);
+
+    await newSession(controller as never);
+    await flush();
+
+    // The finally block must publish the truth even on the throw path.
+    expect(sent).toContain('get_state');
+    expect(provider.postSessionReset).toHaveBeenCalled();
+  });
+
+  it('does not restore or reset the view when new_session itself fails', async () => {
+    const { controller, provider } = makeController((cmd) => (
+      cmd.type === 'new_session'
+        ? { type: 'response', success: false, command: 'new_session', error: 'cancelled' }
+        : { type: 'response', success: true, command: cmd.type }
+    ));
+    controller.setStateStorage(makeMemento());
+
+    await newSession(controller as never);
+    await flush();
+
+    expect(provider.postSessionReset).not.toHaveBeenCalled();
+  });
+});
+
+// ─── memory write ordering ───────────────────────────────────────────────────
+
+describe('AgentController model memory — write ordering', () => {
+  async function flush() {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  }
+
+  it('serializes two back-to-back commits so the last one wins on disk', async () => {
+    // cycleModel records the model and the level with two commits. Each
+    // memento.update is held on a manually resolved promise, so the ordering is
+    // proven by which writes are *issued* — no wall-clock timing, no flake.
+    const store: Record<string, unknown> = {};
+    const issued: unknown[] = [];
+    const gates: Array<() => void> = [];
+    const memento = {
+      get: <T,>(key: string) => store[key] as T | undefined,
+      update: (key: string, value: unknown) => new Promise<void>((resolve) => {
+        issued.push(value);
+        gates.push(() => { store[key] = value; resolve(); });
+      }),
+    };
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: null, thinkingLevel: null },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    controller.setStateStorage(memento);
+
+    controller.rememberModelChoice('p', 'm');
+    controller.rememberThinkingLevel('max');
+    // The chain starts from an already-resolved promise, so the first write is
+    // issued on a microtask rather than synchronously.
+    await flush();
+
+    // Only the first write may be in flight; the second is not even issued
+    // until the first settles. Unserialized, both would appear here.
+    expect(issued).toHaveLength(1);
+    expect(issued[0]).toEqual({ provider: 'p', modelId: 'm' });
+
+    gates[0]();
+    await flush();
+    expect(issued).toHaveLength(2);
+    expect(issued[1]).toEqual({ provider: 'p', modelId: 'm', thinkingLevel: 'max' });
+
+    gates[1]();
+    await flush();
+
+    // The complete pair is what persisted, not the model-only snapshot.
+    expect(store['sqoweWingman.modelMemory']).toEqual({ provider: 'p', modelId: 'm', thinkingLevel: 'max' });
+  });
+
+  it('overlapping (non-nested) calls cannot latch suppression on', async () => {
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: null, thinkingLevel: null },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    const states: (ModelState | null)[] = [];
+    controller.onModelState((s) => states.push(s));
+
+    // A enters, then B overlaps it. A finishes FIRST, so B's finally runs last
+    // and restores the value it read at entry (true) — which latches the flag on
+    // with the boolean save/restore.
+    let releaseA!: () => void;
+    let releaseB!: () => void;
+    const a = controller.runSuppressingModelRefresh(async () => {
+      await new Promise<void>((r) => { releaseA = r; });
+    });
+    await flush();
+    const b = controller.runSuppressingModelRefresh(async () => {
+      await new Promise<void>((r) => { releaseB = r; });
+    });
+    await flush();
+
+    releaseA();
+    await a;
+    releaseB();
+    await b;
+    states.length = 0;
+
+    await controller.sendCommand({ type: 'cycle_model' });
+    await flush();
+
+    expect(states.length).toBeGreaterThan(0);
+  });
+});
+
+// ─── memory normalization on write ───────────────────────────────────────────
+
+describe('AgentController model memory — normalize on commit', () => {
+  async function flush() {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  }
+
+  it('trims and drops empties from the in-memory cache, not just on read', async () => {
+    const store: Record<string, unknown> = {};
+    const memento = {
+      get: <T,>(key: string) => store[key] as T | undefined,
+      update: async (key: string, value: unknown) => { store[key] = value; },
+    };
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_state') {
+        return {
+          type: 'response', success: true, command: 'get_state',
+          data: { model: null, thinkingLevel: null },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    controller.setStateStorage(memento);
+
+    // A padded ref must never reach set_model / set_thinking_level verbatim.
+    controller.rememberModelChoice('  anthropic  ', ' claude-opus-4.8 ');
+    controller.rememberThinkingLevel(' high ');
+    await flush();
+
+    expect(controller.modelMemory).toEqual({
+      provider: 'anthropic', modelId: 'claude-opus-4.8', thinkingLevel: 'high',
+    });
+    expect(store['sqoweWingman.modelMemory']).toEqual({
+      provider: 'anthropic', modelId: 'claude-opus-4.8', thinkingLevel: 'high',
+    });
+  });
+
+  it('drops a whitespace-only argument entirely', async () => {
+    const store: Record<string, unknown> = {};
+    const memento = {
+      get: <T,>(key: string) => store[key] as T | undefined,
+      update: async (key: string, value: unknown) => { store[key] = value; },
+    };
+    const { controller } = makeController((cmd) => ({
+      type: 'response', success: true, command: cmd.type,
+    }));
+    controller.setStateStorage(memento);
+
+    controller.rememberThinkingLevel('   ');
+    await flush();
+
+    expect(controller.modelMemory).toBeUndefined();
+    expect(store['sqoweWingman.modelMemory']).toBeUndefined();
   });
 });

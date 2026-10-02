@@ -46,6 +46,9 @@ export const window = {
   showErrorMessage: (_msg: string, ..._args: string[]) => Promise.resolve(undefined),
   showWarningMessage: (_msg: string, ..._args: string[]) => Promise.resolve(undefined),
   showInformationMessage: (_msg: string, ..._args: string[]) => Promise.resolve(undefined),
+  // Resolves undefined (user cancelled) by default; tests override to return a pick.
+  showQuickPick: (_items: unknown, _opts?: unknown) => Promise.resolve(undefined),
+  showInputBox: (_opts?: unknown) => Promise.resolve(undefined),
   withProgress: (_opts: unknown, task: (progress: unknown, token: unknown) => Promise<unknown>) =>
     task({ report: () => {} }, undefined),
 };

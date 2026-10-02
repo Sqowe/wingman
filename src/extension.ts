@@ -115,6 +115,10 @@ export function activate(context: vscode.ExtensionContext): void {
     bundledExtensions.filter((e) => e.exists && (e.gate ? e.gate() : true)).map((e) => e.path);
   const controller = new AgentController(enabledBundledExtensionPaths());
   _controller = controller;
+  // Back the per-workspace model + thinking memory (pi's RPC cannot persist a
+  // selection itself, so a new_session would otherwise revert to its global
+  // default). See src/agent/model-memory.ts.
+  controller.setStateStorage(context.workspaceState);
   for (const e of bundledExtensions) {
     if (!e.exists) {
       // Log to the output channel so users can diagnose the missing feature.

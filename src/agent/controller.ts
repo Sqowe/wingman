@@ -16,6 +16,10 @@ import type { PiStatus, PiCommand, SessionStats, ModelState, AttachedImage, Inst
 import { UiProtocolBridge } from '../ui-protocol/bridge';
 import type { DialogStyle } from '../ui-protocol/bridge';
 import { normalizeBundledExtensionPaths, buildExtraArgs } from './spawn-args';
+import {
+  readModelMemory, writeModelMemory, mergeModelMemory, hasModelRef, normalizeModelMemory,
+} from './model-memory';
+import type { MementoLike, ModelMemory } from './model-memory';
 import type { TrustDecision } from '../trust/project-trust';
 
 /**
@@ -150,6 +154,32 @@ export class AgentController implements vscode.Disposable {
    */
   private _instructionFilesWaiter: InstructionFilesWaiter | undefined;
   private _instructionFilesNonce = 0;
+  /**
+   * `context.workspaceState`, injected after construction (mirrors setProvider).
+   * Backs the model/thinking memory — see agent/model-memory.ts for why pi
+   * cannot be asked to remember the choice itself.
+   */
+  private _stateStorage: MementoLike | undefined;
+  /** In-memory cache of the remembered pair, kept in sync with _stateStorage. */
+  private _modelMemory: ModelMemory | undefined;
+  /**
+   * Nesting depth of the active runSuppressingModelRefresh() windows, which is
+   * what keeps the status bar from briefly flashing pi's default mid-sequence.
+   * A counter,
+   * not a boolean: two *overlapping* (non-nested) windows would make a
+   * save/restore boolean latch on. A finishes first and restores the false it
+   * read on entry, then B finishes and restores the true it read on entry —
+   * leaving suppression stuck on, after which no MODEL_AFFECTING command would
+   * ever refresh the model state again. VS Code command handlers can overlap
+   * because newSession awaits. A counter cannot latch: it only reaches zero
+   * when every window has closed.
+   */
+  private _suppressModelRefreshDepth = 0;
+  /**
+   * Tail of the serialized model-memory write chain (see _commitMemory). Never
+   * rejects, so a failed write cannot poison the next one.
+   */
+  private _memoryWrite: Promise<void> = Promise.resolve();
 
   constructor(bundledExtensionPaths: readonly string[] = []) {
     // Normalize + de-duplicate so bad/duplicate entries never yield `-e ''` or
@@ -457,10 +487,170 @@ export class AgentController implements vscode.Disposable {
     // After a command that may have changed the model/thinking level, refresh
     // the cached state (non-blocking) so the status bar stays accurate. get_state
     // is not in the set, so this never recurses.
-    if (response.success && MODEL_AFFECTING_COMMANDS.has(command.type)) {
+    if (response.success && MODEL_AFFECTING_COMMANDS.has(command.type) && this._suppressModelRefreshDepth === 0) {
       void this._refreshModelState();
     }
     return response;
+  }
+
+  /**
+   * Run `fn` with the automatic post-command `get_state` refresh suppressed.
+   *
+   * Used by the new_session + model-re-apply sequence: without it, `new_session`
+   * fires a refresh that pushes pi's freshly-resolved *default* model into the
+   * status bar and webview, only for `restoreModelChoice` to overwrite it a
+   * moment later. The restore issues its own single refresh at the end, so the
+   * net number of `get_state` round-trips is one instead of three.
+   */
+  public async runSuppressingModelRefresh<T>(fn: () => Promise<T>): Promise<T> {
+    this._suppressModelRefreshDepth++;
+    try {
+      return await fn();
+    } finally {
+      this._suppressModelRefreshDepth--;
+    }
+  }
+
+  // ─── Model / thinking memory ───────────────────────────────────────────────
+
+  /**
+   * Inject the workspace-scoped memento that backs the model memory. Called
+   * from activate() right after construction, like setProvider.
+   */
+  public setStateStorage(memento: MementoLike | undefined): void {
+    this._stateStorage = memento;
+    this._modelMemory = readModelMemory(memento);
+  }
+
+  /** The remembered model + thinking choice for this workspace, if any. */
+  public get modelMemory(): ModelMemory | undefined {
+    return this._modelMemory;
+  }
+
+  /**
+   * Record a model the user explicitly picked (Set Model, Cycle Model), so a
+   * later `new_session` can restore it.
+   *
+   * Also backfills `thinkingLevel` from the live session when nothing is
+   * remembered yet: pi re-resolves the two halves independently, so storing
+   * only the model would leave the thinking level to fall back to the default
+   * on the next new session. The live value is the right backfill here — the
+   * user is looking at it and has not changed it.
+   */
+  public rememberModelChoice(provider: string, modelId: string): void {
+    if (!provider || !modelId) return;
+    const patch: ModelMemory = { provider, modelId };
+    if (!this._modelMemory?.thinkingLevel) {
+      const live = this._lastModelState?.thinkingLevel;
+      if (live) patch.thinkingLevel = live;
+    }
+    this._commitMemory(mergeModelMemory(this._modelMemory, patch));
+  }
+
+  /** Record an explicitly chosen thinking level (Set / Cycle Thinking Level). */
+  public rememberThinkingLevel(level: string): void {
+    if (!level) return;
+    this._commitMemory(mergeModelMemory(this._modelMemory, { thinkingLevel: level }));
+  }
+
+  /**
+   * Re-apply the remembered model + thinking level to the live pi session.
+   *
+   * Only ever called after `new_session`, which is the one command that loses
+   * the selection: pi builds a fresh runtime and re-resolves both halves from
+   * CLI flags / global settings. `switch_session`, `fork` and `clone` must NOT
+   * come through here — pi restores those from the transcript
+   * (`getSessionContextSettings` replays `model_change` / `thinking_level_change`),
+   * and overriding them would discard the real session's own choice.
+   *
+   * No-op when nothing is remembered. Otherwise **both** halves are always
+   * re-sent: `new_session` runs with the refresh suppressed, so `_lastModelState`
+   * is still the *previous* session's value here and says nothing about what pi
+   * just resolved to. Comparing against it would skip the re-apply in precisely
+   * the common case — the user is on their remembered model, presses New Session,
+   * and the cache looks like a match — and the trailing refresh would then
+   * publish pi's default. One `get_state` fires at the end either way, so the
+   * status bar and webview settle on what pi actually accepted.
+   *
+   * Always ends with exactly one `get_state`, whatever the memory holds. That
+   * matters because the caller suppresses the automatic refresh around the
+   * `new_session` send: if this returned early, the suppressed refresh would
+   * never be replaced and `onModelState` would keep publishing the *previous*
+   * session's model — which also gates the webview's image affordances on
+   * `supportsImages`.
+   *
+   * Throws when a re-apply is rejected or the transport fails. The caller is
+   * expected to treat that as non-fatal: pi has already created the session.
+   */
+  public async restoreModelChoice(): Promise<void> {
+    const memory = this._modelMemory;
+    if (!memory) {
+      // Nothing to re-apply, but the refresh is still owed to the caller.
+      await this._refreshModelState();
+      return;
+    }
+
+    const failures: string[] = [];
+    try {
+      await this.runSuppressingModelRefresh(async () => {
+        if (hasModelRef(memory)) {
+          const res = await this.sendCommand({
+            type: 'set_model',
+            provider: memory.provider,
+            modelId: memory.modelId,
+          });
+          if (!res.success) {
+            failures.push(`model ${memory.provider}/${memory.modelId} — ${res.error ?? 'unknown error'}`);
+          }
+        }
+        // Only follow with the level when the remembered model is actually
+        // active: pi clamps the level to the active model's capabilities, so
+        // sending it after a rejected model would report a success that does not
+        // describe the pair the user chose.
+        if (memory.thinkingLevel && failures.length === 0) {
+          const res = await this.sendCommand({ type: 'set_thinking_level', level: memory.thinkingLevel });
+          if (!res.success) {
+            failures.push(`thinking level ${memory.thinkingLevel} — ${res.error ?? 'unknown error'}`);
+          }
+        }
+      });
+    } finally {
+      // Publish what pi actually settled on in every case: the success:false
+      // path records into `failures`, a throw propagates after this runs.
+      // Skipping it on the throw path would leave the status bar and webview
+      // showing stale values. _refreshModelState swallows its own errors, so it
+      // cannot mask the original throw.
+      await this._refreshModelState();
+    }
+
+    if (failures.length > 0) {
+      // The memory is deliberately kept. A rejected re-apply is usually
+      // transient (pi not fully ready, auth flapping) or a model that has since
+      // been removed from the catalog; silently discarding the user's choice is
+      // worse than retrying it on the next new session, and the warning below
+      // tells them why it did not stick.
+      this._outputChannel.appendLine(
+        `[model-memory] could not restore ${failures.join('; ')} — keeping the remembered choice for the next new session`,
+      );
+      throw new Error(failures.join('; '));
+    }
+  }
+
+  /** Merge into the cache and persist. Storage failures are swallowed. */
+  private _commitMemory(memory: ModelMemory | undefined): void {
+    // Normalize on the way in as well as on read, so the cache, the memento and
+    // the restore path can never disagree — a padded or partially-empty value
+    // must not be sent to set_model / set_thinking_level until the next reload.
+    const canonical = normalizeModelMemory(memory);
+    this._modelMemory = canonical;
+    // Serialize the writes. `cycleModel` records the model and the level with
+    // two back-to-back commits; two unawaited update() calls on one key can land
+    // out of order and leave the older snapshot on disk, which would restore the
+    // wrong thinking level after a reload. Chaining also collapses a burst into
+    // the final state.
+    this._memoryWrite = this._memoryWrite
+      .then(() => writeModelMemory(this._stateStorage, canonical))
+      .catch(() => { /* writeModelMemory already swallows; belt and braces */ });
   }
 
   /** The most recently fetched model + thinking level, or null before the first fetch. */
@@ -495,6 +685,19 @@ export class AgentController implements vscode.Disposable {
         supportsImages: inputArr.includes('image'),
       };
       this._lastModelState = state;
+      // Seed the memory from the first state we see in this workspace, so a
+      // first-run new_session still lands on the model the user was already
+      // looking at rather than pi's default. Only ever seeds an *empty* memory:
+      // once a choice is recorded it is the user's, and neither a
+      // switch_session nor the default that new_session just resolved to may
+      // overwrite it.
+      if (!this._modelMemory && state.provider && state.modelId) {
+        this._commitMemory({
+          provider: state.provider,
+          modelId: state.modelId,
+          thinkingLevel: state.thinkingLevel ?? undefined,
+        });
+      }
       this._onModelState.fire(state);
       // The active model's contextWindow is part of contextUsage (not exposed
       // on get_state directly). Re-fetch session stats so the status-bar

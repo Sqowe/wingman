@@ -198,6 +198,9 @@ export async function pickModel(controller: AgentController): Promise<void> {
       return;
     }
     const label = provider ? `${provider}/${modelId}` : modelId;
+    // Remember the pick so a later new_session restores it — pi's RPC has no
+    // way to persist a selection (see agent/model-memory.ts).
+    controller.rememberModelChoice(provider, modelId);
     void vscode.window.showInformationMessage(`Sqowe Wingman: model set to ${label}.`);
   } catch (err) {
     void vscode.window.showErrorMessage(`Sqowe Wingman: could not set model — ${String(err)}`);
@@ -214,6 +217,41 @@ function readCurrentModel(data: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Read the `{ provider, modelId }` ref from a cycle_model response, so the
+ * cycled-to model can be remembered for the next new_session.
+ *
+ * pi's `cycleModel` answers `{ model: <Model>, thinkingLevel, isScoped }` —
+ * `model` is an object, which the string-only `readCurrentModel` above cannot
+ * see. Also accepts the flat `{ provider, modelId }` / `{ provider, id }`
+ * shapes. Returns undefined when provider or id is missing, since `set_model`
+ * requires both.
+ */
+export function readCycledModelRef(data: unknown): { provider: string; modelId: string } | undefined {
+  if (!data || typeof data !== 'object') return undefined;
+  const o = data as Record<string, unknown>;
+  const inner = (o['model'] && typeof o['model'] === 'object')
+    ? o['model'] as Record<string, unknown>
+    : o;
+  const provider = typeof inner['provider'] === 'string' ? inner['provider'] : undefined;
+  const modelId =
+    typeof inner['modelId'] === 'string' ? inner['modelId'] :
+    typeof inner['id'] === 'string' ? inner['id'] :
+    typeof inner['model'] === 'string' ? inner['model'] :
+    undefined;
+  return provider && modelId ? { provider, modelId } : undefined;
+}
+
+/** Read a thinking level from a cycle_model / cycle_thinking_level response. */
+function readResponseLevel(data: unknown): string | undefined {
+  if (!data || typeof data !== 'object') return undefined;
+  const o = data as Record<string, unknown>;
+  for (const key of ['level', 'thinkingLevel', 'thinking_level']) {
+    if (typeof o[key] === 'string' && o[key]) return o[key] as string;
+  }
+  return undefined;
+}
+
 export async function cycleModel(controller: AgentController): Promise<void> {
   try {
     const response = await controller.sendCommand({ type: 'cycle_model' });
@@ -223,9 +261,19 @@ export async function cycleModel(controller: AgentController): Promise<void> {
       );
       return;
     }
+    // A cycle is an explicit user choice — remember it like a pick, so the
+    // next new_session lands back on the model the user cycled to.
+    const ref = readCycledModelRef(response.data);
+    if (ref) {
+      controller.rememberModelChoice(ref.provider, ref.modelId);
+      const level = readResponseLevel(response.data);
+      if (level) controller.rememberThinkingLevel(level);
+    }
     const model = readCurrentModel(response.data);
     void vscode.window.showInformationMessage(
-      model ? `Sqowe Wingman: model switched to ${model}.` : 'Sqowe Wingman: model cycled.',
+      model
+        ? `Sqowe Wingman: model switched to ${model}.`
+        : `Sqowe Wingman: model switched to ${ref ? `${ref.provider}/${ref.modelId}` : 'next model'}.`,
     );
   } catch (err) {
     void vscode.window.showErrorMessage(`Sqowe Wingman: could not cycle model — ${String(err)}`);
