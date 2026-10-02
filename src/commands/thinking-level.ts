@@ -32,6 +32,12 @@ export interface LevelListing {
   source: LevelSource;
   /** Display name of the model the list describes, when known. */
   modelLabel?: string;
+  /**
+   * The level pi actually has right now. This is the only value that answers
+   * "what am I on?" — the row the quick pick highlights is just the keyboard
+   * cursor's starting position and says nothing about the current level.
+   */
+  currentLevel?: string;
 }
 
 /**
@@ -99,17 +105,34 @@ export function normalizeLevels(raw: unknown): string[] {
  */
 async function fetchLevels(controller: AgentController): Promise<LevelListing> {
   const modelLabel = describeCurrentModel(controller);
-  const fallback = (): LevelListing =>
-    ({ levels: [...FALLBACK_LEVELS], source: 'fallback', modelLabel });
+  // Two independent asks, in parallel, each allowed to fail alone: a failed
+  // get_state must not cost us the level list, and a failed level list must
+  // not cost us the current level.
+  const [levelsResponse, currentLevel] = await Promise.all([
+    controller.sendCommand({ type: 'get_available_thinking_levels' }).catch(() => undefined),
+    fetchCurrentLevel(controller),
+  ]);
+  const levels = levelsResponse?.success ? normalizeLevels(levelsResponse.data) : [];
+  return levels.length > 0
+    ? { levels, source: 'model', modelLabel, currentLevel }
+    : { levels: [...FALLBACK_LEVELS], source: 'fallback', modelLabel, currentLevel };
+}
+
+/**
+ * The level pi actually has right now, or undefined if it could not be asked.
+ * Authoritative, in a way the picker's own highlight is not: `showQuickPick`
+ * offers no way to set the active row for a single-select list (`picked` is
+ * honored only with `canPickMany`), so the menu cannot be made to show this
+ * without being told.
+ */
+async function fetchCurrentLevel(controller: AgentController): Promise<string | undefined> {
   try {
-    const response = await controller.sendCommand({ type: 'get_available_thinking_levels' });
-    if (!response.success) return fallback();
-    const levels = normalizeLevels(response.data);
-    return levels.length > 0
-      ? { levels, source: 'model', modelLabel }
-      : fallback();
+    const response = await controller.sendCommand({ type: 'get_state' });
+    if (!response.success) return undefined;
+    const level = (response.data as Record<string, unknown> | null)?.['thinkingLevel'];
+    return typeof level === 'string' && level ? level : undefined;
   } catch {
-    return fallback();
+    return undefined;
   }
 }
 
@@ -123,23 +146,59 @@ function describeCurrentModel(controller: AgentController): string | undefined {
 }
 
 /**
- * Build the picker's items. A 'model'-sourced list is the levels and nothing
- * else. A 'fallback' list gets a trailing, non-selectable separator and note
- * so the user can see at a glance that these are pi's full set rather than
- * the levels their model actually reports — otherwise a fallback is
- * indistinguishable from a real answer, which is exactly how a wrong list
- * reads as a right one.
+ * The picker's input line. Leads with the current level because that is the
+ * fact the user is opening the menu to check, and names the model the levels
+ * belong to so a list is never free-floating.
+ *
+ * A remembered level the model does not offer is called out rather than passed
+ * over: pi clamps it on every model switch, so a level absent from this list
+ * is a level the user believes they set and no longer have.
+ */
+function describeCurrent(
+  currentLevel: string | undefined,
+  levels: readonly string[],
+  modelLabel: string | undefined,
+): string {
+  const where = modelLabel ? ` for ${modelLabel}` : '';
+  if (!currentLevel) {
+    return `Could not read the current level. Choose one${where}.`;
+  }
+  const offered = levels.includes(currentLevel);
+  const level = offered ? currentLevel : `${currentLevel} (not offered by this model)`;
+  return `Now: ${level}${where} — pick a different level to change it.`;
+}
+
+/**
+ * Build the picker's items.
+ *
+ * The level pi actually has is marked with a leading checkmark and "current",
+ * because a single-select `showQuickPick` cannot be told which row to start on
+ * — the highlighted row is always just the first item. Without this, a menu
+ * opened while the level is `high` appears to be offering `low`, and the two
+ * disagree with no way to tell which is the fact.
+ *
+ * A 'model'-sourced list is the levels and nothing more. A 'fallback' list
+ * gets a trailing, non-selectable separator and note so the user can see at a
+ * glance that these are pi's full set rather than the levels their model
+ * actually reports.
  */
 export function buildLevelItems(
   levels: readonly string[],
   source: LevelSource = 'model',
   modelLabel?: string,
+  currentLevel?: string,
 ): vscode.QuickPickItem[] {
-  const items: vscode.QuickPickItem[] = levels.map((level) => ({
-    label: level,
-    description: LEVEL_DESCRIPTIONS[level],
-    level,
-  })) as vscode.QuickPickItem[];
+  const items = levels.map((level) => {
+    const isCurrent = level === currentLevel;
+    const blurb = LEVEL_DESCRIPTIONS[level];
+    return {
+      // The checkmark is a prefix, not a replacement: the level token stays
+      // contiguous with its label so typing it still filters the list.
+      label: isCurrent ? `✓ ${level}` : level,
+      description: isCurrent && blurb ? `${blurb} · current` : blurb,
+      level,
+    };
+  }) as vscode.QuickPickItem[];
 
   if (source === 'fallback') {
     items.push(
@@ -159,14 +218,12 @@ export function buildLevelItems(
 export async function setThinkingLevel(controller: AgentController): Promise<void> {
   // Fetched here, not cached at module load, so the list always describes the
   // model that is selected when the user opens the picker.
-  const { levels, source, modelLabel } = await fetchLevels(controller);
+  const { levels, source, modelLabel, currentLevel } = await fetchLevels(controller);
 
-  const items = buildLevelItems(levels, source, modelLabel);
+  const items = buildLevelItems(levels, source, modelLabel, currentLevel);
   const picked = await vscode.window.showQuickPick(items, {
     title: 'Sqowe Wingman: Set Thinking Level',
-    placeHolder: modelLabel
-      ? `Extended-thinking levels for ${modelLabel} — this session only`
-      : 'Choose an extended-thinking level for this session',
+    placeHolder: describeCurrent(currentLevel, levels, modelLabel),
   });
   // A separator (or the fallback note) carries no `level`; picking one is a
   // no-op rather than a send of `undefined`.

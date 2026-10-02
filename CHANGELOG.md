@@ -33,7 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   you open the picker, so the list follows your current model and updates when you change it.
   A model with no extended thinking simply offers *off* and nothing else. The picker also names
   the model the levels belong to, and if pi cannot be asked which levels it supports it says so
-  in the menu rather than passing its own full list off as the model's.
+  in the menu rather than passing its own full list off as the model's. The menu also marks the
+  level actually in force with a tick: VS Code cannot be told which row to start a single-choice
+  list on, so it always began on the first one, which made a menu opened while you were on a high
+  budget look like it was offering you a low one instead.
 - **Cycling the model no longer discards a thinking level you had chosen.** When you switched
   models, pi works the thinking level out again for itself, and the extension was writing that
   recomputed value down as though you had chosen it — so the level you had deliberately set was

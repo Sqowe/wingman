@@ -40,6 +40,28 @@ function pickedItems(pick: { mock: { calls: unknown[][] } }) {
   return (pick.mock.calls[0][0] as { label: string; description?: string; level?: string; kind?: number }[]);
 }
 
+/** The placeholder text showQuickPick was called with. */
+function placeholderOf(pick: { mock: { calls: unknown[][] } }): string {
+  return (pick.mock.calls[0][1] as { placeHolder: string }).placeHolder;
+}
+
+/**
+ * A controller whose get_state reports `level` — the single source of truth for
+ * "what am I on?" — and which otherwise defers to `impl`. Pass undefined to
+ * make get_state fail.
+ */
+function controllerWithLevel(
+  level: string | undefined,
+  impl: (cmd: { type: string; [k: string]: unknown }) => unknown,
+) {
+  return makeController((cmd) => (
+    cmd.type === 'get_state'
+      ? (level === undefined
+        ? { type: 'response', success: false, command: cmd.type, error: 'no state' }
+        : ok(cmd.type, { thinkingLevel: level }))
+      : impl(cmd)));
+}
+
 /** Just the level labels — excludes the fallback separator and note. */
 function levelLabels(items: { label: string; level?: string }[]): string[] {
   return items.filter((i) => i.level !== undefined).map((i) => i.label);
@@ -249,6 +271,102 @@ describe('setThinkingLevel — level list comes from pi', () => {
 
     const opts = pick.mock.calls[0][1] as { placeHolder: string };
     expect(opts.placeHolder).toContain('Claude Opus 5 (claude-opus-5)');
+  });
+
+  // The highlighted row of a single-select showQuickPick is always just the
+  // first item, so on its own it contradicts whatever the status bar shows.
+  // pi's get_state is the only real answer; the menu has to be told it.
+  describe('marks the level pi actually has', () => {
+    it('checks the current level rather than letting it look like row one', async () => {
+      const controller = controllerWithLevel('high', (cmd) =>
+        ok(cmd.type, { levels: ['low', 'medium', 'high'] }));
+      const pick = vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(undefined as never);
+
+      await setThinkingLevel(controller as never);
+
+      const items = pickedItems(pick);
+      expect(items[0].label).toBe('low');            // unselected: untouched
+      expect(items[2].label).toBe('✓ high');         // the real one is flagged
+      expect(items[2].level).toBe('high');           // token is unaffected
+      expect(items[2].description).toBe('Large thinking budget · current');
+    });
+
+    it('states the current level in the placeholder', async () => {
+      const controller = controllerWithLevel('high', (cmd) =>
+        ok(cmd.type, { levels: ['low', 'high'] }));
+      const pick = vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(undefined as never);
+
+      await setThinkingLevel(controller as never);
+
+      expect(placeholderOf(pick)).toBe(
+        'Now: high for Claude Opus 5 (claude-opus-5) — pick a different level to change it.',
+      );
+    });
+
+    it('keeps the level token filterable despite the checkmark', async () => {
+      const controller = controllerWithLevel('high', (cmd) =>
+        ok(cmd.type, { levels: ['low', 'high'] }));
+      const pick = vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(undefined as never);
+
+      await setThinkingLevel(controller as never);
+
+      // VS Code filters on the label string, so the token must stay contiguous.
+      expect(pickedItems(pick)[1].label).toContain('high');
+    });
+
+    it('flags a level the model does not offer, rather than passing over it', async () => {
+      // pi clamps on every model switch, so a level missing from this list is
+      // one the user believes they set and no longer have.
+      const controller = controllerWithLevel('xhigh', (cmd) =>
+        ok(cmd.type, { levels: ['low', 'high'] }));
+      const pick = vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(undefined as never);
+
+      await setThinkingLevel(controller as never);
+
+      expect(placeholderOf(pick)).toContain('xhigh (not offered by this model)');
+      // Nothing in the list is current, so nothing is wrongly checked.
+      expect(pickedItems(pick).some((i) => i.label.startsWith('✓'))).toBe(false);
+    });
+
+    it('still offers the full list when the current level cannot be read', async () => {
+      const controller = controllerWithLevel(undefined, (cmd) =>
+        ok(cmd.type, { levels: ['low', 'high'] }));
+      const pick = vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(undefined as never);
+
+      await setThinkingLevel(controller as never);
+
+      expect(levelLabels(pickedItems(pick))).toEqual(['low', 'high']);
+      expect(placeholderOf(pick)).toContain('Could not read the current level');
+    });
+
+    it('a failed level list does not cost the current level', async () => {
+      const controller = controllerWithLevel('max', (cmd) => (
+        cmd.type === 'get_available_thinking_levels'
+          ? { type: 'response', success: false, command: cmd.type, error: 'nope' }
+          : ok(cmd.type)));
+      const pick = vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(undefined as never);
+
+      await setThinkingLevel(controller as never);
+
+      expect(placeholderOf(pick)).toContain('Now: max');
+      expect(pickedItems(pick).some((i) => i.label === '✓ max')).toBe(true);
+    });
+
+    it('sends a checked row as the bare level token', async () => {
+      const controller = controllerWithLevel('high', (cmd) =>
+        ok(cmd.type, { levels: ['low', 'high'] }));
+      vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(
+        { label: '✓ low', level: 'low' } as never,
+      );
+
+      await setThinkingLevel(controller as never);
+
+      // The checkmark is display only — it must not reach pi.
+      expect(controller.sendCommand).toHaveBeenCalledWith({
+        type: 'set_thinking_level', level: 'low',
+      });
+      expect(controller.rememberThinkingLevel).toHaveBeenCalledWith('low');
+    });
   });
 
   it('shows "off" alone for a model without reasoning support', async () => {
