@@ -320,7 +320,7 @@
     "@types/vscode": "1.82.0",
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^3.0.0",
-    "@vscode/vsce": "3.9.2",
+    "@vscode/vsce": "4.0.0",
     "esbuild": "^0.28.1",
     "mocha": "^11.3.0",
     "typescript": "5.5.3",
