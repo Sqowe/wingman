@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-02
+
 ### Fixed
 
 - **A new session no longer forgets your model and thinking level.** Pressing **New Session** used
@@ -19,6 +21,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Setting a model also remembers the thinking level you were on at the time, so the pair always
   comes back together. Sessions you switch **to** are untouched: those already restore the model
   recorded in that conversation.
+- **The thinking levels offered are the ones your model actually has.** **Set Thinking Level**
+  showed a fixed list of five levels written into the extension, which matched neither pi nor
+  any particular model. pi's levels are *off, minimal, low, medium, high, xhigh, max*, and which
+  of those a model supports depends on the model — so the list was wrong in both directions. It
+  offered **none**, which is not a pi level at all (pi spells it *off*); because the command
+  channel does not check the level, that choice was accepted, reported to you as applied, and
+  quietly did nothing. It left out **minimal** and **xhigh**, which most current models do
+  support, so those were unreachable. And it offered **max**, which applies only to a model that
+  goes that far. Wingman now asks pi which levels the model you are on supports, at the moment
+  you open the picker, so the list follows your current model and updates when you change it.
+  A model with no extended thinking simply offers *off* and nothing else.
+- **Cycling the model no longer discards a thinking level you had chosen.** When you switched
+  models, pi works the thinking level out again for itself, and the extension was writing that
+  recomputed value down as though you had chosen it — so the level you had deliberately set was
+  replaced in the per-workspace memory and stayed replaced, including into your next new session.
+  The model you cycled to is still remembered; your thinking level is now left as you set it.
 
 ## [0.2.4] - 2026-09-13
 
@@ -414,7 +432,8 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/wingman/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/sqowe/wingman/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/sqowe/wingman/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/sqowe/wingman/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/sqowe/wingman/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/sqowe/wingman/compare/v0.2.1...v0.2.2
