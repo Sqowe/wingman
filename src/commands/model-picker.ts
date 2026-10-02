@@ -6,7 +6,10 @@
  * enriched with display names from get_available_models, then calls set_model
  * with the chosen model. Falls back to the full get_available_models catalog
  * only when no shortlist is configured.
- * cycleModel: calls cycle_model to advance to the next configured model.
+ * cycleModel: calls cycle_model to advance to the next configured model. It
+ * records the cycled-to model only — pi re-resolves the thinking level on every
+ * model switch (see the comment at the rememberModelChoice call below), so the
+ * level in that response is pi's default, not the user's choice.
  *
  * Why a shortlist: pi's get_available_models returns *every* model reachable
  * through configured providers — an aggregator like OpenRouter alone yields
@@ -242,16 +245,6 @@ export function readCycledModelRef(data: unknown): { provider: string; modelId: 
   return provider && modelId ? { provider, modelId } : undefined;
 }
 
-/** Read a thinking level from a cycle_model / cycle_thinking_level response. */
-function readResponseLevel(data: unknown): string | undefined {
-  if (!data || typeof data !== 'object') return undefined;
-  const o = data as Record<string, unknown>;
-  for (const key of ['level', 'thinkingLevel', 'thinking_level']) {
-    if (typeof o[key] === 'string' && o[key]) return o[key] as string;
-  }
-  return undefined;
-}
-
 export async function cycleModel(controller: AgentController): Promise<void> {
   try {
     const response = await controller.sendCommand({ type: 'cycle_model' });
@@ -263,11 +256,19 @@ export async function cycleModel(controller: AgentController): Promise<void> {
     }
     // A cycle is an explicit user choice — remember it like a pick, so the
     // next new_session lands back on the model the user cycled to.
+    //
+    // The thinking level is deliberately NOT touched here. pi re-resolves it
+    // from scratch on every model switch: `setModel` calls
+    // `setThinkingLevel(_getThinkingLevelForModelSwitch(model))` with no
+    // explicit level, so it lands on `modelThinkingLevels[provider/id]`, else
+    // `defaultThinkingLevel`, else the previous level. The `thinkingLevel` in
+    // this response is therefore pi's post-switch *default*, not the user's
+    // choice — recording it would silently overwrite a level the user had
+    // deliberately picked, and the overwrite would outlive the session (the
+    // memory is what the next new_session restores).
     const ref = readCycledModelRef(response.data);
     if (ref) {
       controller.rememberModelChoice(ref.provider, ref.modelId);
-      const level = readResponseLevel(response.data);
-      if (level) controller.rememberThinkingLevel(level);
     }
     const model = readCurrentModel(response.data);
     void vscode.window.showInformationMessage(

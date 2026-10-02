@@ -25,7 +25,8 @@ package). These rules capture the gotchas; consult `rpc.md` for the full command
 - pi's interactive TUI commands (`/settings`, `/model`, `/new`, …) do **not** execute over RPC.
   Reimplement their behavior with the RPC/SDK equivalents wired to native VS Code UI: `set_model` /
   `cycle_model` / `get_available_models`, `compact`, `new_session`, `switch_session`, `fork` /
-  `clone`, `export_html`, `set_thinking_level` / `cycle_thinking_level`, `get_session_stats`.
+  `clone`, `export_html`, `set_thinking_level` / `cycle_thinking_level` /
+  `get_available_thinking_levels`, `get_session_stats`.
 - User slash commands (skills, prompt templates, extension commands) are enumerated via
   `get_commands` and invoked by sending `/name` through `prompt`. These ARE duplicated 1:1.
 
