@@ -33,6 +33,9 @@ export const ProgressLocation = {
   SourceControl: 1,
 };
 
+// Mirrors the real enum: -1 renders a non-selectable separator, 0 a normal item.
+export const QuickPickItemKind = { Separator: -1, Default: 0 };
+
 export const window = {
   createOutputChannel: (_name: string) => ({
     appendLine: (_line: string) => {},

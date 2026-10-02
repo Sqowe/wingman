@@ -35,6 +35,16 @@ function ok(command: string, data?: unknown) {
   return { type: 'response', success: true, command, data };
 }
 
+/** The items showQuickPick was called with. */
+function pickedItems(pick: { mock: { calls: unknown[][] } }) {
+  return (pick.mock.calls[0][0] as { label: string; description?: string; level?: string; kind?: number }[]);
+}
+
+/** Just the level labels — excludes the fallback separator and note. */
+function levelLabels(items: { label: string; level?: string }[]): string[] {
+  return items.filter((i) => i.level !== undefined).map((i) => i.label);
+}
+
 function makeController(sendImpl: (cmd: { type: string; [k: string]: unknown }) => unknown) {
   return {
     sendCommand: vi.fn(async (cmd: { type: string; [k: string]: unknown }) => sendImpl(cmd)),
@@ -42,7 +52,9 @@ function makeController(sendImpl: (cmd: { type: string; [k: string]: unknown }) 
     rememberThinkingLevel: vi.fn(),
     // Pre-switch snapshot, as the controller's cached `get_state` holds it
     // while the cycle command is still in flight.
-    lastModelState: { thinkingLevel: 'minimal' } as { thinkingLevel: string | null },
+    lastModelState: {
+      thinkingLevel: 'minimal', modelId: 'claude-opus-5', modelName: 'Claude Opus 5',
+    } as { thinkingLevel: string | null; modelId: string | null; modelName: string | null },
   };
 }
 
@@ -213,9 +225,30 @@ describe('setThinkingLevel — level list comes from pi', () => {
     await setThinkingLevel(controller as never);
 
     expect(controller.sendCommand).toHaveBeenCalledWith({ type: 'get_available_thinking_levels' });
-    const items = pick.mock.calls[0][0] as { label: string; description?: string }[];
-    expect(items.map((i) => i.label)).toEqual(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+    const items = pickedItems(pick);
+    expect(levelLabels(items)).toEqual(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
     expect(items[0].description).toBe('No extended thinking');
+  });
+
+  it('adds no caveat row when pi really did report the levels', async () => {
+    const controller = makeController((cmd) => ok(cmd.type, { levels: ['off', 'high'] }));
+    const pick = vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(undefined as never);
+
+    await setThinkingLevel(controller as never);
+
+    // Exactly the levels, nothing else — a caveat here would imply doubt pi
+    // does not deserve.
+    expect(pickedItems(pick)).toHaveLength(2);
+  });
+
+  it('names the model the levels are for in the placeholder', async () => {
+    const controller = makeController((cmd) => ok(cmd.type, { levels: ['off', 'high'] }));
+    const pick = vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(undefined as never);
+
+    await setThinkingLevel(controller as never);
+
+    const opts = pick.mock.calls[0][1] as { placeHolder: string };
+    expect(opts.placeHolder).toContain('Claude Opus 5 (claude-opus-5)');
   });
 
   it('shows "off" alone for a model without reasoning support', async () => {
@@ -224,8 +257,8 @@ describe('setThinkingLevel — level list comes from pi', () => {
 
     await setThinkingLevel(controller as never);
 
-    const items = pick.mock.calls[0][0] as { label: string }[];
-    expect(items.map((i) => i.label)).toEqual(['off']);
+    const items = pickedItems(pick);
+    expect(levelLabels(items)).toEqual(['off']);
   });
 
   it('never offers the non-existent "none" level', async () => {
@@ -234,8 +267,8 @@ describe('setThinkingLevel — level list comes from pi', () => {
 
     await setThinkingLevel(controller as never);
 
-    const items = pick.mock.calls[0][0] as { label: string }[];
-    expect(items.map((i) => i.label)).not.toContain('none');
+    const items = pickedItems(pick);
+    expect(levelLabels(items)).not.toContain('none');
   });
 
   it('falls back to the canonical list when pi answers with an error', async () => {
@@ -247,8 +280,7 @@ describe('setThinkingLevel — level list comes from pi', () => {
 
     await setThinkingLevel(controller as never);
 
-    const items = pick.mock.calls[0][0] as { label: string }[];
-    expect(items.map((i) => i.label)).toEqual([...FALLBACK_LEVELS]);
+    expect(levelLabels(pickedItems(pick))).toEqual([...FALLBACK_LEVELS]);
   });
 
   it('falls back to the canonical list when the fetch throws', async () => {
@@ -260,8 +292,7 @@ describe('setThinkingLevel — level list comes from pi', () => {
 
     await setThinkingLevel(controller as never);
 
-    const items = pick.mock.calls[0][0] as { label: string }[];
-    expect(items.map((i) => i.label)).toEqual([...FALLBACK_LEVELS]);
+    expect(levelLabels(pickedItems(pick))).toEqual([...FALLBACK_LEVELS]);
   });
 
   it('falls back when pi returns a payload with no usable levels', async () => {
@@ -270,8 +301,55 @@ describe('setThinkingLevel — level list comes from pi', () => {
 
     await setThinkingLevel(controller as never);
 
-    const items = pick.mock.calls[0][0] as { label: string }[];
-    expect(items.map((i) => i.label)).toEqual([...FALLBACK_LEVELS]);
+    expect(levelLabels(pickedItems(pick))).toEqual([...FALLBACK_LEVELS]);
+  });
+});
+
+// A fallback list is pi's full set, not the model's — which is exactly how a
+// wrong list comes to read as a right one. The menu has to say so.
+describe('setThinkingLevel — the menu admits a fallback list', () => {
+  it.each([
+    ['an error response', (cmd: { type: string }) => (
+      cmd.type === 'get_available_thinking_levels'
+        ? { type: 'response', success: false, command: cmd.type, error: 'nope' }
+        : ok(cmd.type))],
+    ['a thrown transport error', (cmd: { type: string }) => {
+      if (cmd.type === 'get_available_thinking_levels') throw new Error('down');
+      return ok(cmd.type);
+    }],
+    ['an unusable payload', (cmd: { type: string }) => ok(cmd.type, { levels: [] })],
+    ['an unrecognized payload', (cmd: { type: string }) => ok(cmd.type, { nope: 1 })],
+  ])('marks the list as not model-specific after %s', async (_label, sendImpl) => {
+    const controller = makeController(sendImpl as never);
+    const pick = vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(undefined as never);
+
+    await setThinkingLevel(controller as never);
+
+    const items = pickedItems(pick);
+    // The levels, then a non-selectable separator, then the caveat.
+    expect(items).toHaveLength(FALLBACK_LEVELS.length + 2);
+    expect(items[items.length - 2].kind).toBe(-1);
+    expect(items[items.length - 1].level).toBeUndefined();
+    expect(items[items.length - 1].label).toContain('could not report');
+    expect(items[items.length - 1].label).toContain('Claude Opus 5 (claude-opus-5)');
+  });
+
+  it('sends nothing if the caveat row is somehow selected', async () => {
+    const controller = makeController((cmd) => (
+      cmd.type === 'get_available_thinking_levels'
+        ? { type: 'response', success: false, command: cmd.type, error: 'nope' }
+        : ok(cmd.type)));
+    // The caveat carries no `level`, so it must not become `level: undefined`.
+    vi.spyOn(vscode.window, 'showQuickPick').mockResolvedValue(
+      { label: "pi could not report which levels x supports" } as never,
+    );
+
+    await setThinkingLevel(controller as never);
+
+    expect(controller.sendCommand).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'set_thinking_level' }),
+    );
+    expect(controller.rememberThinkingLevel).not.toHaveBeenCalled();
   });
 });
 
@@ -307,8 +385,26 @@ describe('buildLevelItems', () => {
   it('still offers an unknown future level, just without a description', () => {
     const [item] = buildLevelItems(['ultra']);
     expect(item.label).toBe('ultra');
-    expect(item.level).toBe('ultra');
+    expect((item as { level?: string }).level).toBe('ultra');
     expect(item.description).toBeUndefined();
+  });
+
+  it('defaults to a model-sourced list with no caveat rows', () => {
+    expect(buildLevelItems(['off', 'high'])).toHaveLength(2);
+  });
+
+  it('appends separator + note for a fallback list, naming the model', () => {
+    const items = buildLevelItems(['off', 'high'], 'fallback', 'Claude Opus 5');
+    expect(items).toHaveLength(4);
+    expect(items[2].kind).toBe(-1);
+    expect(items[3].label).toContain('Claude Opus 5');
+    expect(items[3].description).toContain('clamped');
+  });
+
+  it('falls back to generic wording when the model is unknown', () => {
+    const items = buildLevelItems(['off'], 'fallback');
+    expect(items).toHaveLength(3);
+    expect(items[2].label).toContain('this model');
   });
 });
 

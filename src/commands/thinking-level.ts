@@ -22,6 +22,18 @@ interface LevelPick extends vscode.QuickPickItem {
   level: string;
 }
 
+/** Where a level list came from, so the picker can say so. */
+export type LevelSource = 'model' | 'fallback';
+
+/** A level list plus the model it describes, when pi could supply one. */
+export interface LevelListing {
+  levels: string[];
+  /** 'model' when pi named the levels; 'fallback' when we had to guess. */
+  source: LevelSource;
+  /** Display name of the model the list describes, when known. */
+  modelLabel?: string;
+}
+
 /**
  * pi's full level set, in pi's own order (pi's THINKING_LEVEL_OPTIONS /
  * EXTENDED_THINKING_LEVELS). Used only when `get_available_thinking_levels`
@@ -74,46 +86,98 @@ export function normalizeLevels(raw: unknown): string[] {
   return out;
 }
 
-/** Build picker items from a level list, preserving pi's order. */
-export function buildLevelItems(levels: readonly string[]): LevelPick[] {
-  return levels.map((level) => ({
-    label: level,
-    description: LEVEL_DESCRIPTIONS[level],
-    level,
-  }));
+/**
+ * Ask pi which levels the current model supports.
+ *
+ * When pi answers, the list is authoritative and `source` is 'model' — the
+ * levels are exactly what this model honours. When it cannot be answered
+ * (older pi without the command, transport error, an unrecognized payload) we
+ * fall back to pi's full canonical set, which is a superset: pi clamps a level
+ * the model does not support down to the nearest one it does. A slightly-too-
+ * large list beats an empty picker, but it is NOT model-specific, so the
+ * caller says so in the menu rather than passing it off as the real thing.
+ */
+async function fetchLevels(controller: AgentController): Promise<LevelListing> {
+  const modelLabel = describeCurrentModel(controller);
+  const fallback = (): LevelListing =>
+    ({ levels: [...FALLBACK_LEVELS], source: 'fallback', modelLabel });
+  try {
+    const response = await controller.sendCommand({ type: 'get_available_thinking_levels' });
+    if (!response.success) return fallback();
+    const levels = normalizeLevels(response.data);
+    return levels.length > 0
+      ? { levels, source: 'model', modelLabel }
+      : fallback();
+  } catch {
+    return fallback();
+  }
+}
+
+/** Name the model the level list belongs to, for the picker chrome. */
+function describeCurrentModel(controller: AgentController): string | undefined {
+  const state = controller.lastModelState;
+  if (!state) return undefined;
+  const id = state.modelId ?? undefined;
+  if (!id) return undefined;
+  return state.modelName ? `${state.modelName} (${id})` : id;
 }
 
 /**
- * Ask pi which levels the current model supports. Returns FALLBACK_LEVELS when
- * the command is not answered successfully, throws, or yields nothing
- * recognizable — a slightly-too-large list beats an empty picker.
+ * Build the picker's items. A 'model'-sourced list is the levels and nothing
+ * else. A 'fallback' list gets a trailing, non-selectable separator and note
+ * so the user can see at a glance that these are pi's full set rather than
+ * the levels their model actually reports — otherwise a fallback is
+ * indistinguishable from a real answer, which is exactly how a wrong list
+ * reads as a right one.
  */
-async function fetchLevels(controller: AgentController): Promise<string[]> {
-  try {
-    const response = await controller.sendCommand({ type: 'get_available_thinking_levels' });
-    if (!response.success) return [...FALLBACK_LEVELS];
-    const levels = normalizeLevels(response.data);
-    return levels.length > 0 ? levels : [...FALLBACK_LEVELS];
-  } catch {
-    return [...FALLBACK_LEVELS];
+export function buildLevelItems(
+  levels: readonly string[],
+  source: LevelSource = 'model',
+  modelLabel?: string,
+): vscode.QuickPickItem[] {
+  const items: vscode.QuickPickItem[] = levels.map((level) => ({
+    label: level,
+    description: LEVEL_DESCRIPTIONS[level],
+    level,
+  })) as vscode.QuickPickItem[];
+
+  if (source === 'fallback') {
+    items.push(
+      {
+        kind: vscode.QuickPickItemKind.Separator,
+        label: 'Not specific to your model',
+      } as vscode.QuickPickItem,
+      {
+        label: `pi could not report which levels ${modelLabel ?? 'this model'} supports`,
+        description: `showing pi's full set instead — unsupported levels are clamped`,
+      } as vscode.QuickPickItem,
+    );
   }
+  return items;
 }
 
 export async function setThinkingLevel(controller: AgentController): Promise<void> {
   // Fetched here, not cached at module load, so the list always describes the
   // model that is selected when the user opens the picker.
-  const levels = await fetchLevels(controller);
+  const { levels, source, modelLabel } = await fetchLevels(controller);
 
-  const picked = await vscode.window.showQuickPick(buildLevelItems(levels), {
+  const items = buildLevelItems(levels, source, modelLabel);
+  const picked = await vscode.window.showQuickPick(items, {
     title: 'Sqowe Wingman: Set Thinking Level',
-    placeHolder: 'Choose an extended-thinking level for this session',
+    placeHolder: modelLabel
+      ? `Extended-thinking levels for ${modelLabel} — this session only`
+      : 'Choose an extended-thinking level for this session',
   });
-  if (!picked) return;
+  // A separator (or the fallback note) carries no `level`; picking one is a
+  // no-op rather than a send of `undefined`.
+  if (!picked || !('level' in picked)) return;
+  const level = (picked as LevelPick).level;
+  if (!level) return;
 
   try {
     const response = await controller.sendCommand({
       type: 'set_thinking_level',
-      level: picked.level,
+      level,
     });
     if (!response.success) {
       void vscode.window.showErrorMessage(
@@ -123,9 +187,9 @@ export async function setThinkingLevel(controller: AgentController): Promise<voi
     }
     // Remember the level so a later new_session restores it — pi's RPC has no
     // way to persist a selection (see agent/model-memory.ts).
-    controller.rememberThinkingLevel(picked.level);
+    controller.rememberThinkingLevel(level);
     void vscode.window.showInformationMessage(
-      `Sqowe Wingman: thinking level set to "${picked.level}".`,
+      `Sqowe Wingman: thinking level set to "${level}".`,
     );
   } catch (err) {
     void vscode.window.showErrorMessage(
