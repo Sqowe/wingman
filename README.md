@@ -11,7 +11,7 @@ it **reuses pi's own configuration** — the same `~/.pi/agent/` global config a
 `.pi/` resources the pi CLI uses. Wingman is a different front-end over the same brain, not a
 separate tool with its own settings.
 
-> **Status — `0.2.4` preview.** Phases 0–8 are complete: native chat, tool cards, native diff,
+> **Status — `0.2.6` preview.** Phases 0–8 are complete: native chat, tool cards, native diff,
 > commands, the extension-UI protocol bridge, sessions, and config/trust are all built and
 > tested. Phase 9 (packaging / Marketplace) is in progress, so for now you install from source
 > (see below). See [CHANGELOG.md](CHANGELOG.md) for what's new in each release, and the
@@ -31,6 +31,17 @@ separate tool with its own settings.
   selecting one inserts `/name ` so you can add arguments before sending. pi's built-ins (model,
   thinking level, compact, new / fork / clone, export, session stats) are surfaced as native VS
   Code commands, menu items, and an always-visible status bar item.
+- **Model-aware thinking levels** — **Set Thinking Level** asks pi which levels your *current
+  model* actually supports and offers exactly those, ticking the one in force (the same one the
+  status bar shows). pi's levels are `off, minimal, low, medium, high, xhigh, max`, but which of
+  them a given model honours depends on the model — so the list follows the model and updates when
+  you switch. A model with no extended thinking offers just `off`. If pi cannot be asked, the menu
+  says so in a footer instead of passing its full list off as the model's.
+- **Model and level survive a new session** — pressing **New Session** no longer drops the model
+  and thinking level you had picked. pi rebuilds its whole agent runtime on a new session and
+  re-derives both from its own global settings; Wingman remembers your pair per workspace and puts
+  it straight back. Sessions you *switch to* are untouched — they restore what that conversation
+  recorded.
 - **Context-window indicator** — the session-stats status bar item shows live context usage as
   `tokens used / window · percent · message count` (e.g. `12.4k / 200k tok · 6% · 85 msg`).
   Hover for a tooltip; click to open the Show Stats popup.
@@ -110,6 +121,7 @@ overrides, so pi reads exactly the same files as your terminal `pi`:
 | Project-local settings & resources | `<project>/.pi/`, `<project>/AGENTS.md` | edit per project (loaded only once the project is trusted) |
 | Default project-trust behavior | `defaultProjectTrust` in `~/.pi/agent/settings.json` (`"ask"` / `"always"` / `"never"`) | pi config, or `/settings` in the pi TUI |
 | Sessions | `~/.pi/agent/sessions/` | shared automatically |
+| Thinking level | `modelThinkingLevels` (per model) / `defaultThinkingLevel` in `~/.pi/agent/settings.json` | pi TUI → `/thinking`, then `Ctrl+S` to pin the level for the current model |
 
 Because the configuration is shared, a session you start in the CLI shows up in Wingman (and
 vice versa), and you only have to log in once. For the authoritative reference, see pi's own
@@ -119,6 +131,39 @@ vice versa), and you only have to log in once. For the authoritative reference, 
 The in-editor commands (**Set Model**, **Set Thinking Level**, **Compact**, …) drive the
 *running* pi session over RPC — convenient for the current conversation — but persistent
 defaults still come from pi's configuration above.
+
+### Thinking levels, and what happens when you switch model
+
+**Set Thinking Level** shows the levels your current model supports, not a fixed list: pi exposes
+them per model, and they differ. It ticks the level actually in force, which is the level in the
+status bar — a menu that just highlighted its first row told you nothing.
+
+Changing the model changes the level. This is pi's behaviour, not Wingman's: pi recomputes the
+level from scratch on every model switch, resolving it in this order —
+
+1. `modelThinkingLevels["<provider>/<model>"]` from `~/.pi/agent/settings.json`
+2. `defaultThinkingLevel` from the same file
+3. the level you were on
+
+— so with nothing pinned, **switching model returns you to `defaultThinkingLevel`**, discarding
+whatever you had set. **Cycle Model** used to make this permanent by writing that recomputed
+value into Wingman's memory, so the level you had chosen stayed lost even after a new session; it
+now records only the model.
+
+To keep a level across model switches, pin it per model — pi's TUI writes this for you via
+`/thinking` then `Ctrl+S`, or you can edit `~/.pi/agent/settings.json`:
+
+```json
+{
+  "modelThinkingLevels": {
+    "local-claude/claude-opus-5": "xhigh",
+    "minimax/MiniMax-M2.7": "medium"
+  }
+}
+```
+
+Keys are the exact `provider/modelId`. Some shortlist entries are `-latest` aliases, which must be
+spelled exactly as pi reports them.
 
 ### Recommended: a tool-call size limit in `AGENTS.md`
 
@@ -191,8 +236,8 @@ instead, point the trailing arg in `.vscode/launch.json` at `${workspaceFolder}`
 ### Option B — Package a VSIX and install it into your daily VS Code
 
 ```sh
-npm run vsce:package                       # produces sqowe-wingman-0.2.4.vsix
-code --install-extension sqowe-wingman-0.2.4.vsix
+npm run vsce:package                       # produces sqowe-wingman-0.2.6.vsix
+code --install-extension sqowe-wingman-0.2.6.vsix
 ```
 
 Or in VS Code: **Extensions** view ▸ **⋯** menu ▸ *Install from VSIX…* ▸ pick the file, then

@@ -14,7 +14,7 @@ event stream natively in a webview, and wires pi's `edit` tool into VS Code's di
 > see its milestone table for per-phase as-built notes.
 >
 > Build & test: `npm run build` (esbuild host + Vite webview), `npm test` (host vitest +
-> webview vitest), `npm run typecheck`. Currently 624 host + 216 webview unit tests.
+> webview vitest), `npm run typecheck`. Currently 737 host + 216 webview unit tests.
 
 ## Read before making changes
 
