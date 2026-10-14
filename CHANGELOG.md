@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-14
+
+### Added
+
+- **Models now see the actual current date.** pi's system prompt carries no date at all, so
+  models filled the gap from training data or from the serving infrastructure's clock — providers
+  running ahead of your local time would confidently state future dates. A new bundled
+  `current-date` pi extension (always loaded via `-e`, alongside `instruction-report`) injects a
+  `<current_date>` section with the date, weekday and system time zone into the system prompt.
+  It refreshes on every message but pi re-sends it only when the date actually changes, so
+  sessions spanning midnight stay correct without polluting the context. Kill switch:
+  `WINGMAN_CURRENT_DATE=off`.
+
 ## [0.2.6] - 2026-10-02
 
 ### Fixed
@@ -437,7 +450,8 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/wingman/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/sqowe/wingman/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sqowe/wingman/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/sqowe/wingman/compare/v0.2.4...v0.2.6
 [0.2.4]: https://github.com/sqowe/wingman/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/sqowe/wingman/compare/v0.2.2...v0.2.3

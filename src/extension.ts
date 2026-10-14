@@ -97,11 +97,12 @@ function readDialogStyle(): DialogStyle {
 export function activate(context: vscode.ExtensionContext): void {
   // ── Controller ────────────────────────────────────────────────────────────
   // Bundled pi extensions loaded via `-e`. `gate` (optional) makes an extension
-  // conditional on a setting: instruction-report is always on; claude-memory is
-  // gated by `sqoweWingman.shareClaudeMemory`.
+  // conditional on a setting: instruction-report and current-date are always on;
+  // claude-memory is gated by `sqoweWingman.shareClaudeMemory`.
   const bundledExtensionDefs: Array<{ rel: string; label: string; gate?: () => boolean }> = [
     { rel: 'pi-extensions/instruction-report/index.js', label: 'instruction file visibility' },
     { rel: 'pi-extensions/claude-memory/index.js', label: 'Claude Code memory sharing', gate: readShareClaudeMemory },
+    { rel: 'pi-extensions/current-date/index.js', label: 'current date in the system prompt' },
   ];
   const bundledExtensions = bundledExtensionDefs.map((e) => {
     const absPath = context.asAbsolutePath(e.rel);
