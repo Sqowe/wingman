@@ -171,6 +171,18 @@ function buildChildEnv(
 /** Exported for unit tests only — do not call from production code. */
 export { buildChildEnv as _buildChildEnvForTesting };
 
+/**
+ * Layer the deliberate extra env (host-provided, Wingman-specific) on top of
+ * the allowlisted child env. Extra wins on conflict — the host is the explicit
+ * authority for these variables.
+ */
+function withExtraEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): NodeJS.ProcessEnv {
+  return { ...base, ...extra };
+}
+
+/** Exported for unit tests only — do not call from production code. */
+export { withExtraEnv as _withExtraEnvForTesting };
+
 /** Maximum number of payloads queued for stdin writes. */
 const WRITE_QUEUE_MAX = 256;
 
@@ -234,6 +246,14 @@ export class RpcTransport implements AgentTransport {
     private readonly _piPath: string,
     private readonly _cwd: string,
     private readonly _extraArgs: string[] = [],
+    /**
+     * Wingman-specific variables deliberately handed to the pi child on top
+     * of the allowlisted environment (see buildChildEnv). The allowlist filters
+     * everything else by design; these are values the host explicitly chose to
+     * cross the process boundary, e.g. WINGMAN_CURRENT_DATE_TEMPLATE from the
+     * `sqoweWingman.currentDateTemplate` setting.
+     */
+    private readonly _extraEnv: Record<string, string> = {},
   ) {}
 
   // ─── AgentTransport ───────────────────────────────────────────────────────
@@ -246,7 +266,7 @@ export class RpcTransport implements AgentTransport {
     if (this._isRunning) return Promise.resolve();
 
     return new Promise((resolve, reject) => {
-      const env = buildChildEnv();
+      const env = withExtraEnv(buildChildEnv(), this._extraEnv);
 
       const proc = spawn(this._piPath, ['--mode', 'rpc', ...this._extraArgs], {
         cwd: this._cwd,

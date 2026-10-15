@@ -125,6 +125,8 @@ export class AgentController implements vscode.Disposable {
   private _startSeq = 0;
   /** Bundled pi extension paths passed as `-e` args on spawn (de-duplicated). */
   private _bundledExtensionPaths: readonly string[];
+  /** Wingman-specific env vars handed to the pi child on spawn (see RpcTransport). */
+  private _extraEnv: Record<string, string> = {};
   /** Owned output channel — disposed with the controller. */
   private readonly _outputChannel: vscode.OutputChannel;
   /** Handles extension_ui_request events from pi. */
@@ -214,6 +216,14 @@ export class AgentController implements vscode.Disposable {
    */
   public setBundledExtensionPaths(paths: readonly string[]): void {
     this._bundledExtensionPaths = normalizeBundledExtensionPaths(paths);
+  }
+
+  /**
+   * Replace the deliberate extra env for the pi child; call `reload()`
+   * afterwards to respawn pi so the new values take effect.
+   */
+  public setExtraEnv(env: Record<string, string>): void {
+    this._extraEnv = { ...env };
   }
 
   // ─── Public API ───────────────────────────────────────────────────────────
@@ -1192,7 +1202,7 @@ export class AgentController implements vscode.Disposable {
       resumeSessionPath,
       bundledExtensionPaths: this._bundledExtensionPaths,
     });
-    const transport = new RpcTransport(piStatus.path, cwd, extraArgs);
+    const transport = new RpcTransport(piStatus.path, cwd, extraArgs, this._extraEnv);
     transport.outputChannel = this._outputChannel;
 
     try {

@@ -82,6 +82,34 @@ function readShareClaudeMemory(): boolean {
 }
 
 /**
+ * Read the `sqoweWingman.currentDateTemplate` setting (default = the shipped
+ * template in package.json). Forwarded to the bundled current-date pi
+ * extension through the child env; a blank value makes the extension fall
+ * back to its built-in default.
+ */
+function readCurrentDateTemplate(): string {
+  return vscode.workspace
+    .getConfiguration('sqoweWingman')
+    .get<string>('currentDateTemplate', '');
+}
+
+/**
+ * Build the deliberate extra env for the pi child: the current-date template
+ * from settings, plus the WINGMAN_CURRENT_DATE kill switch forwarded from the
+ * environment VS Code itself started from (the child env is allowlisted, so
+ * without this explicit forwarding the switch would never reach pi).
+ */
+function buildPiExtraEnv(): Record<string, string> {
+  const env: Record<string, string> = {
+    WINGMAN_CURRENT_DATE_TEMPLATE: readCurrentDateTemplate(),
+  };
+  if (process.env['WINGMAN_CURRENT_DATE']) {
+    env['WINGMAN_CURRENT_DATE'] = process.env['WINGMAN_CURRENT_DATE'];
+  }
+  return env;
+}
+
+/**
  * Read the `sqoweWingman.dialogStyle` setting (defaults to `auto`).
  * Chooses the surface a blocking `select` / `input` dialog is drawn on — an
  * in-chat question card or a native quick pick. An unrecognised value (hand-edited
@@ -115,6 +143,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const enabledBundledExtensionPaths = (): string[] =>
     bundledExtensions.filter((e) => e.exists && (e.gate ? e.gate() : true)).map((e) => e.path);
   const controller = new AgentController(enabledBundledExtensionPaths());
+  controller.setExtraEnv(buildPiExtraEnv());
   _controller = controller;
   // Back the per-workspace model + thinking memory (pi's RPC cannot persist a
   // selection itself, so a new_session would otherwise revert to its global
@@ -196,6 +225,16 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!readShareClaudeMemory()) {
           provider.postClaudeMemory(null);
         }
+        void reloadAgent(
+          controller,
+          () => locatePi((m) => controller.outputChannel.appendLine(m)),
+          (s) => applyPiStatus(s, provider),
+        );
+      }
+      if (e.affectsConfiguration('sqoweWingman.currentDateTemplate')) {
+        // The template reaches the bundled current-date extension through the
+        // child env, which is fixed at spawn — respawn pi to apply it.
+        controller.setExtraEnv(buildPiExtraEnv());
         void reloadAgent(
           controller,
           () => locatePi((m) => controller.outputChannel.appendLine(m)),

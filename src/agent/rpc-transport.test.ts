@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { StringDecoder } from 'string_decoder';
 import type { RpcResponse } from '../agent/transport';
-import { _buildChildEnvForTesting } from '../agent/rpc-transport';
+import { _buildChildEnvForTesting, _withExtraEnvForTesting } from '../agent/rpc-transport';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -499,6 +499,32 @@ describe('RpcTransport onClose', () => {
     i._handleExit('x');
 
     expect(calls).toHaveLength(0);
+  });
+});
+
+// ─── withExtraEnv (pure function, host-provided extras) ────────────────────────
+
+describe('withExtraEnv', () => {
+  it('layers Wingman-specific vars on top of the allowlisted env', () => {
+    const base = _buildChildEnvForTesting('linux', { PATH: '/usr/bin' });
+    const merged = _withExtraEnvForTesting(base, {
+      WINGMAN_CURRENT_DATE_TEMPLATE: 'Today is {{date}}.',
+    });
+    expect(merged.WINGMAN_CURRENT_DATE_TEMPLATE).toBe('Today is {{date}}.');
+    expect(merged.PATH).toBe('/usr/bin');
+  });
+
+  it('extra wins on conflict with the allowlisted env', () => {
+    const merged = _withExtraEnvForTesting(
+      { PATH: '/usr/bin', TZ: 'UTC' },
+      { TZ: 'Europe/Budapest' },
+    );
+    expect(merged.TZ).toBe('Europe/Budapest');
+  });
+
+  it('empty extras leave the base untouched', () => {
+    const base = { PATH: '/usr/bin' } as NodeJS.ProcessEnv;
+    expect(_withExtraEnvForTesting(base, {})).toEqual(base);
   });
 });
 

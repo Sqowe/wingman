@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-15
+
+### Added
+
+- **The date text models see is now yours to edit.** The `<current_date>` section Wingman
+  injects into pi's system prompt was a fixed three-line text; if your models needed a different
+  instruction, or none of the wording at all, there was nothing to turn. The new
+  `sqoweWingman.currentDateTemplate` setting holds the whole section as a template, with
+  `{{date}}` (`YYYY-MM-DD`), `{{weekday}}` (full English weekday) and `{{timeZone}}` (this
+  machine's IANA zone) filled in fresh on every prompt. Unknown placeholders are left verbatim,
+  so a typo stays visible in the prompt instead of silently deleting text, and a blank template
+  falls back to the built-in default rather than emitting an empty section. The template travels
+  to the pi child through its environment, which is fixed at spawn, so changing the setting
+  reloads the agent to apply it.
+
+### Fixed
+
+- **`WINGMAN_CURRENT_DATE=off` now actually reaches pi.** The documented kill switch for the
+  current-date section never worked: Wingman spawns pi with an allowlisted environment and
+  `WINGMAN_*` variables were not on the list, so the switch was dropped on the way to the child
+  and the section kept being injected. The host now forwards it explicitly from the environment
+  VS Code was started from.
+
 ## [0.3.0] - 2026-10-14
 
 ### Added
@@ -450,7 +473,8 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/wingman/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sqowe/wingman/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/sqowe/wingman/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/sqowe/wingman/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/sqowe/wingman/compare/v0.2.4...v0.2.6
 [0.2.4]: https://github.com/sqowe/wingman/compare/v0.2.3...v0.2.4

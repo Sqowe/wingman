@@ -15,7 +15,7 @@ messages.
 ## What it does
 
 On every `before_agent_start` event (once per user prompt), sets a
-`current_date` section in `systemPromptOptions`:
+`current_date` section in `systemPromptOptions` (default template shown):
 
 ```
 <current_date>
@@ -40,8 +40,25 @@ Design notes:
 
 ## Configuration
 
+The section text is template-driven by the VS Code setting
+`sqoweWingman.currentDateTemplate` (default: the shipped three-line text):
+
+- Placeholders `{{date}}` (`YYYY-MM-DD`), `{{weekday}}` (full English weekday)
+  and `{{timeZone}}` (IANA zone of this machine) are substituted at render
+  time — the values stay live per prompt even though the template itself is
+  fixed for the life of the pi process.
+- Unknown placeholders are left verbatim, so a typo stays visible in the
+  prompt instead of silently deleting text.
+- A blank template falls back to the built-in default (guards against an
+  accidentally empty section).
+- Changing the setting reloads the agent: the template travels to the pi child
+  through its environment (`WINGMAN_CURRENT_DATE_TEMPLATE`), which the host
+  sets at spawn on top of the allowlisted env — the child env is fixed at
+  spawn, so a respawn is what applies the new value.
+
 | Env var | Effect |
 | --- | --- |
-| `WINGMAN_CURRENT_DATE=off` | Kill switch — extension registers nothing |
+| `WINGMAN_CURRENT_DATE_TEMPLATE` | Template override; blank/absent = built-in default. Set by the Wingman host from the setting; also honoured when pi is run manually with `-e`. |
+| `WINGMAN_CURRENT_DATE=off` | Kill switch — extension registers nothing. The host forwards it from the environment VS Code started from; it also works when running pi manually. |
 
 Loaded unconditionally (like `instruction-report`); no settings gate.
