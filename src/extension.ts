@@ -98,6 +98,10 @@ function readCurrentDateTemplate(): string {
  * from settings, plus the WINGMAN_CURRENT_DATE kill switch forwarded from the
  * environment VS Code itself started from (the child env is allowlisted, so
  * without this explicit forwarding the switch would never reach pi).
+ *
+ * Keys must stay inside Wingman's own `WINGMAN_*` namespace — the controller
+ * and the transport both drop anything else, so this seam cannot be used to
+ * override spawn-critical variables.
  */
 function buildPiExtraEnv(): Record<string, string> {
   const env: Record<string, string> = {

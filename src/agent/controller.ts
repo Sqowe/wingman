@@ -9,7 +9,7 @@
  */
 
 import * as vscode from 'vscode';
-import { RpcTransport } from './rpc-transport';
+import { isAllowedExtraEnvKey, RpcTransport } from './rpc-transport';
 import type { AgentTransport, RpcEvent } from './transport';
 import type { WingmanViewProvider } from '../webview/provider';
 import type { PiStatus, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo, ClaudeMemoryInfo } from '../shared/messages';
@@ -221,9 +221,26 @@ export class AgentController implements vscode.Disposable {
   /**
    * Replace the deliberate extra env for the pi child; call `reload()`
    * afterwards to respawn pi so the new values take effect.
+   *
+   * Only Wingman's own `WINGMAN_*` namespace is accepted. The child env is
+   * allowlisted at spawn (see `buildChildEnv` in rpc-transport), and this seam
+   * is for passing Wingman's variables through it — not for overriding PATH,
+   * HOME or TZ. Out-of-namespace keys are dropped and logged rather than
+   * silently honoured; the transport enforces the same rule at spawn.
    */
   public setExtraEnv(env: Record<string, string>): void {
-    this._extraEnv = { ...env };
+    const accepted: Record<string, string> = {};
+    const rejected: string[] = [];
+    for (const [key, value] of Object.entries(env)) {
+      if (isAllowedExtraEnvKey(key)) accepted[key] = value;
+      else rejected.push(key);
+    }
+    if (rejected.length > 0) {
+      this._outputChannel.appendLine(
+        `[AgentController] setExtraEnv: ignored non-WINGMAN_* key(s): ${rejected.join(', ')}`,
+      );
+    }
+    this._extraEnv = accepted;
   }
 
   // ─── Public API ───────────────────────────────────────────────────────────

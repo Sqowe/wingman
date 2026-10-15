@@ -7,6 +7,8 @@
  * vi.resetModules() with the environment it needs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import type { PiApi } from '../../pi-extensions/current-date/index.js';
 
 async function loadExtension(): Promise<{
@@ -114,5 +116,27 @@ describe('current-date extension', () => {
     const a = internals.renderCurrentDate(internals.DEFAULT_TEMPLATE);
     const b = internals.renderCurrentDate(internals.DEFAULT_TEMPLATE);
     expect(a).toBe(b);
+  });
+
+  // The shipped VS Code default and the extension's built-in fallback are two
+  // copies of the same string, reached by different paths: the host always
+  // passes the setting (default included) to the child, while a blank/absent
+  // env falls back to DEFAULT_TEMPLATE. If they drift, behaviour silently
+  // depends on how pi was launched, so pin them together.
+  it('ships a package.json default identical to the extension default template', async () => {
+    const { internals } = await loadExtension();
+    const manifest = JSON.parse(
+      readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'),
+    ) as {
+      contributes: {
+        configuration: {
+          properties: Record<string, { default?: unknown; markdownDescription?: string }>;
+        };
+      };
+    };
+    const setting =
+      manifest.contributes.configuration.properties['sqoweWingman.currentDateTemplate'];
+    expect(setting).toBeDefined();
+    expect(setting.default).toBe(internals.DEFAULT_TEMPLATE);
   });
 });

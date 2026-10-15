@@ -172,12 +172,33 @@ function buildChildEnv(
 export { buildChildEnv as _buildChildEnvForTesting };
 
 /**
+ * Prefix of the only env keys the host may inject into the child (Wingman's
+ * own namespace). The child env is deliberately allowlisted — see
+ * {@link buildChildEnv} — and the extra-env seam exists to carry Wingman's own
+ * variables, not to reopen that allowlist. Confining it to `WINGMAN_*` keeps a
+ * careless caller from overriding PATH, HOME, TZ or anything else pi needs to
+ * spawn correctly.
+ */
+const EXTRA_ENV_PREFIX = 'WINGMAN_';
+
+/** Whether the host is allowed to set `key` in the pi child's environment. */
+export function isAllowedExtraEnvKey(key: string): boolean {
+  return key.startsWith(EXTRA_ENV_PREFIX) && key.length > EXTRA_ENV_PREFIX.length;
+}
+
+/**
  * Layer the deliberate extra env (host-provided, Wingman-specific) on top of
- * the allowlisted child env. Extra wins on conflict — the host is the explicit
- * authority for these variables.
+ * the allowlisted child env. Extra wins on conflict within the `WINGMAN_*`
+ * namespace — the host is the explicit authority for those variables. Keys
+ * outside the namespace are dropped rather than merged, so the spawn-critical
+ * part of the environment stays under {@link buildChildEnv}'s control.
  */
 function withExtraEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): NodeJS.ProcessEnv {
-  return { ...base, ...extra };
+  const env: NodeJS.ProcessEnv = { ...base };
+  for (const [key, value] of Object.entries(extra)) {
+    if (isAllowedExtraEnvKey(key)) env[key] = value;
+  }
+  return env;
 }
 
 /** Exported for unit tests only — do not call from production code. */

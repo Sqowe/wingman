@@ -50,11 +50,15 @@ The section text is template-driven by the VS Code setting
 - Unknown placeholders are left verbatim, so a typo stays visible in the
   prompt instead of silently deleting text.
 - A blank template falls back to the built-in default (guards against an
-  accidentally empty section).
+  accidentally empty section). The `package.json` setting default and the
+  extension's `DEFAULT_TEMPLATE` are therefore two copies of one string,
+  reached by different paths; a unit test pins them equal so they cannot drift.
 - Changing the setting reloads the agent: the template travels to the pi child
   through its environment (`WINGMAN_CURRENT_DATE_TEMPLATE`), which the host
   sets at spawn on top of the allowlisted env — the child env is fixed at
-  spawn, so a respawn is what applies the new value.
+  spawn, so a respawn is what applies the new value. Only `WINGMAN_*` keys may
+  be injected that way; the host drops anything else rather than letting it
+  override `PATH`, `HOME` or `TZ`.
 
 | Env var | Effect |
 | --- | --- |

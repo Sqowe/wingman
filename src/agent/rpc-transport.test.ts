@@ -10,7 +10,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { StringDecoder } from 'string_decoder';
 import type { RpcResponse } from '../agent/transport';
-import { _buildChildEnvForTesting, _withExtraEnvForTesting } from '../agent/rpc-transport';
+import {
+  _buildChildEnvForTesting,
+  _withExtraEnvForTesting,
+  isAllowedExtraEnvKey,
+} from '../agent/rpc-transport';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -514,12 +518,36 @@ describe('withExtraEnv', () => {
     expect(merged.PATH).toBe('/usr/bin');
   });
 
-  it('extra wins on conflict with the allowlisted env', () => {
+  it('extra wins on conflict within the WINGMAN_ namespace', () => {
     const merged = _withExtraEnvForTesting(
-      { PATH: '/usr/bin', TZ: 'UTC' },
-      { TZ: 'Europe/Budapest' },
+      { PATH: '/usr/bin', WINGMAN_CURRENT_DATE: 'on' },
+      { WINGMAN_CURRENT_DATE: 'off' },
     );
-    expect(merged.TZ).toBe('Europe/Budapest');
+    expect(merged.WINGMAN_CURRENT_DATE).toBe('off');
+    expect(merged.PATH).toBe('/usr/bin');
+  });
+
+  it('drops keys outside the WINGMAN_ namespace instead of overriding spawn-critical vars', () => {
+    const merged = _withExtraEnvForTesting(
+      { PATH: '/usr/bin', TZ: 'UTC', HOME: '/home/a' },
+      {
+        TZ: 'Europe/Budapest',
+        PATH: '/evil/bin',
+        HOME: '/tmp/evil',
+        WINGMAN_CURRENT_DATE_TEMPLATE: 'Today is {{date}}.',
+      },
+    );
+    expect(merged.TZ).toBe('UTC');
+    expect(merged.PATH).toBe('/usr/bin');
+    expect(merged.HOME).toBe('/home/a');
+    expect(merged.WINGMAN_CURRENT_DATE_TEMPLATE).toBe('Today is {{date}}.');
+  });
+
+  it('rejects the bare prefix and lowercase look-alikes', () => {
+    expect(isAllowedExtraEnvKey('WINGMAN_')).toBe(false);
+    expect(isAllowedExtraEnvKey('wingman_current_date')).toBe(false);
+    expect(isAllowedExtraEnvKey('MY_WINGMAN_VAR')).toBe(false);
+    expect(isAllowedExtraEnvKey('WINGMAN_CURRENT_DATE')).toBe(true);
   });
 
   it('empty extras leave the base untouched', () => {

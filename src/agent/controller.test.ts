@@ -1729,3 +1729,45 @@ describe('AgentController model memory — normalize on commit', () => {
     expect(store['sqoweWingman.modelMemory']).toBeUndefined();
   });
 });
+
+// ─── setExtraEnv (WINGMAN_* namespace guard) ──────────────────────────────────
+
+describe('AgentController.setExtraEnv()', () => {
+  it('keeps WINGMAN_* keys and drops everything else', () => {
+    const { controller } = makeController(() => ({ type: 'response', success: true }));
+    controller.setExtraEnv({
+      WINGMAN_CURRENT_DATE_TEMPLATE: 'Today is {{date}}.',
+      WINGMAN_CURRENT_DATE: 'off',
+      PATH: '/evil/bin',
+      HOME: '/tmp/evil',
+      TZ: 'Europe/Budapest',
+      WINGMAN_: 'bare prefix',
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((controller as any)._extraEnv).toEqual({
+      WINGMAN_CURRENT_DATE_TEMPLATE: 'Today is {{date}}.',
+      WINGMAN_CURRENT_DATE: 'off',
+    });
+  });
+
+  it('logs the rejected keys to the diagnostics channel', () => {
+    const { controller } = makeController(() => ({ type: 'response', success: true }));
+    const lines: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (controller as any)._outputChannel = { appendLine: (m: string) => lines.push(m) };
+
+    controller.setExtraEnv({ PATH: '/evil/bin', WINGMAN_CURRENT_DATE: 'off' });
+
+    expect(lines.join('\n')).toContain('ignored non-WINGMAN_* key(s): PATH');
+  });
+
+  it('replaces rather than merges on a second call', () => {
+    const { controller } = makeController(() => ({ type: 'response', success: true }));
+    controller.setExtraEnv({ WINGMAN_CURRENT_DATE: 'off' });
+    controller.setExtraEnv({ WINGMAN_CURRENT_DATE_TEMPLATE: 'x' });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((controller as any)._extraEnv).toEqual({ WINGMAN_CURRENT_DATE_TEMPLATE: 'x' });
+  });
+});
