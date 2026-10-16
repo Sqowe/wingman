@@ -11,6 +11,7 @@ import type { ChatItem, UserItem } from '../store';
 import { AssistantBlock } from './AssistantBlock';
 import { ToolCard } from './ToolCard';
 import { QuestionCard } from './QuestionCard';
+import { SessionSummaryCard } from './SessionSummaryCard';
 import { splitUserMessage } from '../lib/skill-blocks';
 import { CollapsibleText } from './CollapsibleText';
 
@@ -183,6 +184,9 @@ function ItemRenderer({ item }: { item: ChatItem }) {
           {item.text}
         </div>
       );
+
+    case 'summary':
+      return <SessionSummaryCard item={item} />;
 
     default:
       return null;

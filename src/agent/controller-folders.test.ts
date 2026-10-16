@@ -97,6 +97,8 @@ function makeProvider() {
   return {
     postCommandsList: vi.fn(),
     postSessionStats: vi.fn(),
+    postSessionStatsSettled: vi.fn(),
+    clearSessionStatsSettled: vi.fn(),
     postAgentEvent: vi.fn(),
     postAgentStatus: vi.fn(),
     postSessionReset: vi.fn(),

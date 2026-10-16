@@ -19,7 +19,7 @@ import type {
   ToolRunItem,
   UserItem,
 } from './index';
-import type { UiDialogMessage } from '../../../src/shared/messages';
+import type { UiDialogMessage, SessionStats } from '../../../src/shared/messages';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -1105,5 +1105,122 @@ describe('question cards', () => {
     // disturb one that is open.
     expect(onlyCard().status).toBe('open');
     expect(answers()).toHaveLength(0);
+  });
+});
+
+// ─── setSessionStatsSettled (chat footer card) ──────────────────────────────
+describe('store.setSessionStatsSettled', () => {
+  beforeEach(() => {
+    useChatStore.getState().resetSession();
+  });
+
+  it('appends one summary item after the rest of the transcript', () => {
+    const stats: SessionStats = {
+      tokens: { input: 100_000, output: 25_000, cacheRead: 80_000, cacheWrite: 5_000 },
+      totalCost: 0.45,
+      startedAt: Date.now() - 690_000,
+      totalTokens: 0,
+      totalMessages: 0,
+    };
+    useChatStore.getState().setSessionStatsSettled(stats);
+
+    const items = useChatStore.getState().items;
+    const summaries = items.filter((i) => i.itemKind === 'summary');
+    expect(summaries).toHaveLength(1);
+    const s = summaries[0];
+    if (s?.itemKind !== 'summary') throw new Error('expected summary');
+    expect(s.id).toBe('summary-final');
+    expect(s.stats.totalCost).toBe(0.45);
+  });
+
+  it('replaces the prior summary in place (one footer per transcript)', () => {
+    const first: SessionStats = {
+      tokens: { input: 100, output: null, cacheRead: null, cacheWrite: null },
+      totalCost: 0.10,
+      startedAt: undefined,
+      totalTokens: 0,
+      totalMessages: 0,
+    };
+    const second: SessionStats = {
+      ...first,
+      totalCost: 0.99,
+      tokens: { input: 200, output: null, cacheRead: null, cacheWrite: null },
+    };
+    useChatStore.getState().setSessionStatsSettled(first);
+    useChatStore.getState().setSessionStatsSettled(second);
+
+    const summaries = useChatStore.getState().items.filter((i) => i.itemKind === 'summary');
+    expect(summaries).toHaveLength(1);
+    const s = summaries[0];
+    if (s?.itemKind !== 'summary') throw new Error('expected summary');
+    expect(s.stats.totalCost).toBe(0.99);
+    // And it's the LAST item in the transcript.
+    const last = useChatStore.getState().items.at(-1);
+    expect(last?.itemKind).toBe('summary');
+  });
+
+  it('a snapshot with no renderable line appends nothing (and drops a stale prior summary)', () => {
+    // No elapsed (no startedAt/elapsedMs), no buckets, sub-threshold cost:
+    // formatChatFooterLine returns null. The store must not append an item
+    // that renders null yet still occupies a row in the message list.
+    const empty: SessionStats = {
+      tokens: { input: null, output: null, cacheRead: null, cacheWrite: null },
+      totalCost: 0,
+      startedAt: undefined,
+      totalTokens: 0,
+      totalMessages: 0,
+    };
+    useChatStore.getState().setSessionStatsSettled(empty);
+    expect(useChatStore.getState().items.some((i) => i.itemKind === 'summary')).toBe(false);
+
+    // A renderable summary followed by an empty snapshot: the empty one
+    // must remove the stale footer rather than leave it contradicting the
+    // freshest (empty) reading.
+    useChatStore.getState().setSessionStatsSettled({
+      tokens: { input: 10, output: null, cacheRead: null, cacheWrite: null },
+      totalCost: 0.05,
+      startedAt: undefined,
+      totalTokens: 0,
+      totalMessages: 0,
+    });
+    expect(useChatStore.getState().items.some((i) => i.itemKind === 'summary')).toBe(true);
+    useChatStore.getState().setSessionStatsSettled(empty);
+    expect(useChatStore.getState().items.some((i) => i.itemKind === 'summary')).toBe(false);
+  });
+
+  it('resetSession clears the summary along with the transcript', () => {
+    useChatStore.getState().setSessionStatsSettled({
+      tokens: { input: 1, output: null, cacheRead: null, cacheWrite: null },
+      totalCost: 0,
+      startedAt: undefined,
+      totalTokens: 0,
+      totalMessages: 0,
+    });
+    expect(useChatStore.getState().items.some((i) => i.itemKind === 'summary')).toBe(true);
+    useChatStore.getState().resetSession();
+    expect(useChatStore.getState().items.some((i) => i.itemKind === 'summary')).toBe(false);
+  });
+
+  it('addUserMessage drops the prior summary so it does not float mid-transcript at turn 2', () => {
+    // Round 1: user → settled → summary at the tail.
+    useChatStore.getState().addUserMessage('first prompt', 0);
+    useChatStore.getState().setSessionStatsSettled({
+      tokens: { input: 10, output: null, cacheRead: null, cacheWrite: null },
+      totalCost: 0.01,
+      startedAt: undefined,
+      totalTokens: 0,
+      totalMessages: 0,
+    });
+    expect(useChatStore.getState().items.filter((i) => i.itemKind === 'summary')).toHaveLength(1);
+
+    // Round 2: user sends another prompt — the prior summary MUST be gone
+    // before the new user message lands, so the user message is the last
+    // item and the next agent_settled will land cleanly below it.
+    useChatStore.getState().addUserMessage('second prompt', 0);
+
+    const items = useChatStore.getState().items;
+    expect(items.some((i) => i.itemKind === 'summary')).toBe(false);
+    const last = items.at(-1);
+    expect(last?.itemKind).toBe('user');
   });
 });

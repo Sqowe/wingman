@@ -12,6 +12,8 @@ import {
   formatContextFraction,
   formatContextText,
   formatContextTooltipBody,
+  formatElapsed,
+  formatChatFooterLine,
 } from './stats-format';
 import type { ModelState, SessionStats } from './messages';
 
@@ -234,5 +236,131 @@ describe('formatContextTooltipBody', () => {
     }));
     expect(body).not.toMatch(/model/i);
     expect(body).not.toMatch(/thinking/i);
+  });
+});
+
+// ─── formatElapsed (chat footer card) ──────────────────────────────────────
+describe('formatElapsed', () => {
+  it('formats sub-minute durations in seconds', () => {
+    expect(formatElapsed(0)).toBe('0s');
+    expect(formatElapsed(47_000)).toBe('47s');
+  });
+
+  it('formats sub-hour durations as "Xm Ys" or "Xm"', () => {
+    expect(formatElapsed(60_000)).toBe('1m');
+    expect(formatElapsed(690_000)).toBe('11m 30s');
+    expect(formatElapsed(900_000)).toBe('15m');
+  });
+
+  it('formats multi-hour durations as "Xh YYm" or "Xh"', () => {
+    expect(formatElapsed(3_600_000)).toBe('1h');
+    expect(formatElapsed(3_720_000)).toBe('1h 02m');
+    expect(formatElapsed(2 * 3_600_000)).toBe('2h');
+  });
+
+  it('clamps negative durations to 0s (a clock skew would otherwise render "-1s")', () => {
+    expect(formatElapsed(-500)).toBe('0s');
+  });
+});
+
+// ─── formatChatFooterLine (Kiro-style footer) ──────────────────────────────
+describe('formatChatFooterLine', () => {
+  it('returns null when the snapshot has nothing to render', () => {
+    expect(formatChatFooterLine(stats())).toBeNull();
+    expect(
+      formatChatFooterLine(stats({
+        tokens: { input: null, output: null, cacheRead: null, cacheWrite: null },
+      })),
+    ).toBeNull();
+  });
+
+  it('prefers the frozen elapsedMs (host-stamped at agent_settled, deterministic)', () => {
+    expect(formatChatFooterLine(stats({ elapsedMs: 690_000 }))).toBe('⏱ 11m 30s');
+    expect(formatChatFooterLine(stats({ elapsedMs: 0 }))).toBe('⏱ 0s');
+  });
+
+  it('falls back to startedAt (rare: only when elapsedMs was not stamped)', () => {
+    // startedAt-driven path computes live, so tolerate ±1s jitter on slow
+    // CI rather than asserting an exact string.
+    const out = formatChatFooterLine(stats({ startedAt: Date.now() - 690_000 }));
+    expect(out).toMatch(/^⏱ 11m (29|30|31)s$/);
+  });
+
+  it('renders all four token buckets with arrow glyphs and k-scaling', () => {
+    const out = formatChatFooterLine(stats({
+      tokens: {
+        input: 100_000,
+        output: 25_000,
+        cacheRead: 80_000,
+        cacheWrite: 5_000,
+      },
+    }));
+    expect(out).toBe('↑100k ↓25k ↻80k ↪5k');
+  });
+
+  it('omits zero-valued buckets (no stray separators)', () => {
+    const out = formatChatFooterLine(stats({
+      tokens: {
+        input: 100_000,
+        output: 25_000,
+        cacheRead: 0,
+        cacheWrite: null,
+      },
+    }));
+    // 0 cacheRead is dropped (treated as not-visible, not a real measurement),
+    // null cacheWrite is dropped entirely.
+    expect(out).toBe('↑100k ↓25k');
+  });
+
+  it('appends cost as ≈ $X.XX (two decimal places, Kiro-style)', () => {
+    const out = formatChatFooterLine(stats({ elapsedMs: 1000, totalCost: 0.4567 }));
+    expect(out).toBe('⏱ 1s · ≈ $0.46');
+  });
+
+  it('drops zero cost (consistent with zero bucket policy)', () => {
+    const out = formatChatFooterLine(stats({ elapsedMs: 1000, totalCost: 0 }));
+    expect(out).toBe('⏱ 1s');
+  });
+
+  it('joins elapsed + tokens + cost with the " · " separator', () => {
+    const out = formatChatFooterLine(stats({
+      elapsedMs: 690_000,
+      tokens: {
+        input: 100_000,
+        output: 25_000,
+        cacheRead: 80_000,
+        cacheWrite: 5_000,
+      },
+      totalCost: 0.45,
+    }));
+    expect(out).toBe('⏱ 11m 30s · ↑100k ↓25k ↻80k ↪5k · ≈ $0.45');
+  });
+
+  it('renders M-scaled buckets beyond 1M tokens', () => {
+    const out = formatChatFooterLine(stats({
+      tokens: {
+        input: 1_500_000,
+        output: 250_000,
+        cacheRead: 800_000,
+        cacheWrite: 12_000,
+      },
+    }));
+    expect(out).toBe('↑1.5M ↓250k ↻800k ↪12k');
+  });
+
+  it('drops cost when null/non-finite instead of printing "$NaN"', () => {
+    expect(
+      formatChatFooterLine(stats({
+        elapsedMs: 1000,
+        tokens: { input: 100, output: null, cacheRead: null, cacheWrite: null },
+      })),
+    ).toBe('⏱ 1s · ↑100');
+    expect(
+      formatChatFooterLine(stats({
+        elapsedMs: 1000,
+        tokens: { input: 100, output: null, cacheRead: null, cacheWrite: null },
+        totalCost: Number.NaN,
+      })),
+    ).toBe('⏱ 1s · ↑100');
   });
 });

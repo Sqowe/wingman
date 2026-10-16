@@ -50,6 +50,122 @@ const MODEL_AFFECTING_COMMANDS = new Set<string>([
 ]);
 
 /**
+ * Coerce the raw `data.tokens` sub-object from pi's `get_session_stats` response into
+ * the typed `SessionStats['tokens']` shape (the four per-bucket counters:
+ * `input` / `output` / `cacheRead` / `cacheWrite`). Returns `undefined` when the
+ * field is absent (e.g. no model response yet). Bucket names follow pi-ai's
+ * `Usage` type, which is camelCase on the wire — there is no snake_case variant
+ * to accept. A bucket that is missing / null / non-numeric parses to `null`,
+ * not 0, so the footer formatter can skip it instead of printing `↻0k`.
+ *
+ * Exported for unit testing — the controller-side integration is exercised via
+ * `_fetchSessionStats` in the existing controller.test.ts stats block.
+ */
+export function parseTokenBuckets(raw: unknown): SessionStats['tokens'] {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const r = (k: string): number | null => {
+    const v = o[k];
+    if (v === null || v === undefined) return null;
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    input: r('input'),
+    output: r('output'),
+    cacheRead: r('cacheRead'),
+    cacheWrite: r('cacheWrite'),
+  };
+}
+
+/**
+ * Shared parser for the `data` payload of `get_session_stats`. Used by both
+ * the status-bar fetch path (`_fetchSessionStats`) and the footer-card path
+ * (`_fetchSettledStats`) so both code paths stay structurally identical
+ * even though their fetch race-windows are independent.
+ *
+ * Numeric-string coercion throughout; `totalMessages` also accepts a
+ * snake_case `total_messages` alias as a defensive parity with pi's RPC
+ * conventions. Treats null/undefined/'' as absent (null) rather than zero. The `startedAt`
+ * parameter is the host-side session-start timestamp (not part of pi's
+ * response) — passed through for the formatter to fall back on when
+ * `elapsedMs` hasn't been stamped yet.
+ */
+export function parseStatsPayload(
+  data: Record<string, unknown>,
+  startedAt: number | undefined,
+): SessionStats {
+  const toFiniteOrNull = (v: unknown): number | null => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = typeof v === 'number' ? v : Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const tokensRaw = data['tokens'];
+  return {
+    // FIX: pi returns totals nested under `tokens`, not as top-level `totalTokens`.
+    totalTokens:   toFiniteOrNull((tokensRaw as Record<string, unknown> | undefined)?.['total']),
+    // FIX: pi returns cost at top-level `cost`, not `totalCost`.
+    totalCost:     toFiniteOrNull(data['cost']),
+    totalMessages: toFiniteOrNull(data['totalMessages'] ?? data['total_messages']),
+    contextUsage:  parseContextUsage(data['contextUsage'], toFiniteOrNull),
+    // Per-bucket usage (input/output/cacheRead/cacheWrite) for the chat footer.
+    tokens:        parseTokenBuckets(tokensRaw),
+    // Wall-clock origin so the footer can render elapsed time without a
+    // separate round-trip. `elapsedMs` is stamped separately by the
+    // settled-path caller with the frozen turn duration.
+    startedAt,
+  };
+}
+
+/**
+ * Subtract the previous settled snapshot from the current one, field by
+ * field, to surface per-turn deltas for the chat footer card. pi's
+ * get_session_stats accumulates across the session (assistant + tools +
+ * compactions / branch summaries — see docs/json.md § get_session_stats),
+ * so without this diff a footer would mix an honest per-turn elapsed time
+ * with cumulative-pretending-to-be-per-turn numbers.
+ *
+ * On the FIRST settled snapshot (previous is null), the snapshot is
+ * returned as-is. The very first turn in a session cannot have a delta.
+ * Negative deltas (provider counter resets, race conditions) are clamped
+ * to 0 and turned into `null` so the formatter skips them — a token
+ * bucket showing a negative "usage" makes no sense.
+ *
+ * Fields that are not part of the delta (totalTokens, totalMessages,
+ * contextUsage, startedAt) are dropped from the diffed snapshot so the
+ * footer only ever carries per-turn numbers. `elapsedMs`, when present
+ * in `current`, is preserved.
+ */
+export function diffSettledStats(
+  current: SessionStats,
+  previous: SessionStats | null,
+): SessionStats {
+  if (!previous) return { ...current };
+  const delta = (a: number | null | undefined, b: number | null | undefined): number | null => {
+    const av = typeof a === 'number' && Number.isFinite(a) ? a : 0;
+    const bv = typeof b === 'number' && Number.isFinite(b) ? b : 0;
+    const d = av - bv;
+    return d > 0 ? d : null;
+  };
+  const tk = current.tokens;
+  const pk = previous.tokens;
+  const diffedTokens = tk ? {
+    input:      delta(tk.input,      pk?.input),
+    output:     delta(tk.output,     pk?.output),
+    cacheRead:  delta(tk.cacheRead,  pk?.cacheRead),
+    cacheWrite: delta(tk.cacheWrite, pk?.cacheWrite),
+  } : undefined;
+  return {
+    totalTokens: null,           // cumulative — not meaningful per-turn
+    totalCost:   delta(current.totalCost, previous.totalCost),
+    totalMessages: null,         // cumulative — not meaningful per-turn
+    tokens:      diffedTokens,
+    elapsedMs:   current.elapsedMs,
+    startedAt:   undefined,      // session-level — not meaningful per-turn
+  };
+}
+
+/**
  * Coerce the raw `data.contextUsage` sub-object from pi's `get_session_stats` response into
  * the typed `SessionStats['contextUsage']` shape. Returns `undefined` when the field is
  * absent (no model / no context window), preserving the documented transient state where
@@ -110,6 +226,83 @@ export class AgentController implements vscode.Disposable {
   private _lastSessionStats: SessionStats | null = null;
   /** True while a get_session_stats fetch is in flight — prevents races. */
   private _statsFetchSeq = 0;
+  /** Independent seq counter for the chat-footer-card fetch path. The
+   *  status-bar path and the footer path share pi-side but have separate
+   *  race windows: a status-bar refresh triggered between agent_end and
+   *  agent_settled must not seq-guard the footer out of pushing.
+   *  Bumped from three places: each settled fetch at issue time, an
+   *  accepted prompt (kills the previous turn's in-flight footer by
+   *  design — a stale footer must not re-appear above the new prompt),
+   *  and `_resetSessionGenerationState`. Under the `_settledFooterChain`
+   *  serialization two settled fetches can no longer overlap, so the
+   *  in-fetch superseded branch is defence-in-depth only. */
+  private _settledFetchSeq = 0;
+  /** Wall-clock start of the active session, ms epoch. Set on successful
+   *  transport start in `_doStart`; cleared on `onNewSession` so the
+   *  footer-card elapsed timer doesn't carry across sessions. */
+  private _sessionStartedAt: number | undefined;
+  /** Prompts accepted by the host whose run has not yet reached
+   *  `agent_settled`, in acceptance order. `sendPrompt` — the ONLY
+   *  user-turn boundary (`agent_start` is a pure streaming toggle) —
+   *  pushes an entry; the `agent_settled` handler dequeues the OLDEST
+   *  one, because pi settles runs in prompt order. Binding the elapsed
+   *  origin and the fetch's turn guard to the dequeued entry (never to
+   *  live fields) closes the race where a prompt accepted in the
+   *  `agent_end` → `agent_settled` window would otherwise let the
+   *  finished run's footer (a) report ~0 elapsed from the NEW prompt's
+   *  stamp, (b) wipe the new turn's origin, (c) post under the NEW
+   *  turn's id, and (d) store `_lastSettledStats` as if it belonged to
+   *  the new turn. Cleared by `onNewSession` / `_doStart`. */
+  private _pendingRuns: Array<{ turnId: number; startedAt: number }> = [];
+  /** Last successful settled-fresh snapshot. pi's get_session_stats is
+   *  cumulative across the session (docs/json.md § get_session_stats),
+   *  so the footer card needs to diff against this to surface per-turn
+   *  token buckets and cost — otherwise an honest per-turn elapsed
+   *  number would mix with cumulative-pretending-to-be-per-turn
+   *  counters and mislead the user. Cleared on session reset; seeded
+   *  by `_seedBaseline` on session resume so a reconnected transport
+   *  doesn't render the entire session's tokens as one turn. */
+  private _lastSettledStats: SessionStats | null = null;
+  /** Session-generation-scoped marker that the next successful settled
+   *  snapshot must be posted as-is (first-turn semantics) instead of
+   *  diffed against `_lastSettledStats`. Raised when a settled fetch
+   *  fails or its post is superseded — the lost turn's usage window can
+   *  no longer be attributed, and silently merging it into the next
+   *  footer would overstate that turn. Scoped to the `_sessionGen`
+   *  value it was raised in so a stale fetch from a previous session /
+   *  transport cannot flag the new one. */
+  private _pendingBaselineReset: number | null = null;
+  /** Bumped on every session-generation change (`onNewSession`,
+   *  `_doStart`) — NOT on prompts. Settled fetches capture it at issue
+   *  time so a late resolution knows whether its recovery still applies
+   *  to the live session. */
+  private _sessionGen = 0;
+  /** In-flight `_seedBaseline()` promise (session resume only). The
+   *  first post-resume `agent_settled` awaits it so the footer diffs
+   *  against the pre-disconnect baseline instead of racing the seed and
+   *  rendering the entire session as one turn. */
+  private _seedBaselinePromise: Promise<void> | undefined;
+  /** Serialization chain for settled-footer tails. Settles are rare, but
+   *  their async tails overlap — a previous turn's stats fetch can still
+   *  be in flight when the next turn settles — and the tails mutate
+   *  shared footer state (`_lastSettledStats`, `_pendingBaselineReset`).
+   *  Running them strictly one-after-another means a superseded turn's
+   *  miss raises the recovery flag BEFORE the next turn's tail consumes
+   *  it (honest cumulative footer), never AFTER — which would poison a
+   *  baseline the newer turn had already written and make the following
+   *  turn render the whole session as one delta. The chain is just
+   *  ordering; a tail whose generation died is still dropped by its own
+   *  turn-id/gen guards. */
+  private _settledFooterChain: Promise<void> = Promise.resolve();
+  /** Turn-id counter incremented at every user-turn boundary
+   *  (`sendPrompt`) and at session-generation boundaries
+   *  (`onNewSession`, `_doStart`). `agent_start` never touches it.
+   *  Settled fetches capture the id from their dequeued `_pendingRuns`
+   *  entry (or live, when the queue is empty) so a fetch that resolves
+   *  after a newer prompt or session reset is dropped before it can
+   *  corrupt `_lastSettledStats` or re-append a stale footer
+   *  mid-transcript. */
+  private _currentTurnId = 0;
   /** Cached list of user slash commands for the current session. */
   private _commands: PiCommand[] = [];
   /** In-flight getCommands promise — coalesces concurrent fetches into one RPC call. */
@@ -934,6 +1127,38 @@ export class AgentController implements vscode.Disposable {
     this._provider?.postInstructionFiles(info);
   }
 
+  /** Reset ALL session-generation footer state in one place. Called by
+   *  `onNewSession` (new/forked/cloned session) and `_doStart` (every
+   *  transport (re)start), so neither generation can inherit the
+   *  previous one's chat-footer state:
+   *  - `_pendingRuns`: unsettled runs belonged to the dead generation —
+   *    their agent_settled events must not post there.
+   *  - `_lastSettledStats`: the diff baseline must die with the
+   *    session. A non-resume restart (pi crash, fresh session) that
+   *    kept it would diff the NEW session against the OLD one's
+   *    cumulative snapshot, producing a bogus (or clamped-to-null)
+   *    first footer; on resume, a leftover baseline would also block
+   *    `_seedBaseline` from ever writing the pre-disconnect state.
+   *  - Bump the settled-fetch seq AND the turn id AND the session
+   *    generation, so any in-flight `_fetchSettledStats()` from the
+   *    previous turn resolves into the seq-guard's stale branch AND
+   *    (defence-in-depth) the turn-id check rejects the post, and so
+   *    stale fetches from the old generation can no longer raise the
+   *    baseline-reset recovery flag on the new one.
+   *  - Drop the provider's replay-cache snapshot so a webview reload
+   *    mid-session (replaying on `ready`) does not resurrect the
+   *    previous turn's footer. */
+  private _resetSessionGenerationState(): void {
+    this._pendingRuns = [];
+    this._lastSettledStats = null;
+    this._pendingBaselineReset = null;
+    this._seedBaselinePromise = undefined;
+    this._settledFetchSeq++;
+    this._currentTurnId++;
+    this._sessionGen++;
+    this._provider?.clearSessionStatsSettled();
+  }
+
   /**
    * Called after new_session / fork / clone to reset per-session state and
    * refresh the command list and status bar.
@@ -949,6 +1174,13 @@ export class AgentController implements vscode.Disposable {
     // otherwise permanently block prompts in the new session.
     this._setStreaming(false);
     this._lastSessionStats = null;
+    // Reset the elapsed-time origin so the footer card for the previous
+    // session doesn't bleed into the new one's stats snapshot. The next
+    // `_doStart` will re-stamp it once the new transport is up.
+    this._sessionStartedAt = undefined;
+    // One shared reset for ALL session-generation footer state — see
+    // `_resetSessionGenerationState` for why each piece must go.
+    this._resetSessionGenerationState();
     this._commands = [];
     this._provider?.postCommandsList([]);
     // Signal a stats reset to the status bar via the provider callback.
@@ -1078,6 +1310,24 @@ export class AgentController implements vscode.Disposable {
         `Sqowe Wingman: prompt rejected — ${response.error ?? 'unknown error'}`,
       );
     }
+
+    // Stamp turn identity HERE — AFTER pi accepted the prompt, not on
+    // pi's `agent_start` and not before the RPC resolves. Between
+    // iterations of a multi-iteration tool loop pi emits agent_end →
+    // agent_start again; a prompt accepted in such a window is a REAL
+    // new user turn and must restamp, letting agent_start stay a pure
+    // streaming toggle. And a prompt that FAILS to send or is rejected
+    // must leave zero trace: no bumped ids (which would drop an
+    // in-flight settled footer from the previous turn), no phantom
+    // queue entry for the next agent_settled to attribute elapsed time
+    // to, no wiped replay cache.
+    this._settledFetchSeq++;
+    this._currentTurnId++;
+    // Queue the unsettled run AFTER the bumps so the entry carries the
+    // post-bump turn id: the settled fetch for THIS run passes the
+    // live-id guard, while any fetch from an OLDER run fails it.
+    this._pendingRuns.push({ turnId: this._currentTurnId, startedAt: Date.now() });
+    this._provider?.clearSessionStatsSettled();
   }
 
   /**
@@ -1253,7 +1503,33 @@ export class AgentController implements vscode.Disposable {
 
     this._transport = transport;
     this._uiBridge.setTransport(transport);
+    // Stamp the session start so the chat footer card can render elapsed time.
+    // Cleared on `onNewSession` to avoid carrying the timer across sessions.
+    this._sessionStartedAt = Date.now();
     this._setStreaming(false);
+    // Transport (re)start — even if the new transport is the same session
+    // resuming, the user's elapsed clock must restart from zero (downtime
+    // shouldn't be billed to the next run). Also bump turn id and seq
+    // so any in-flight settled fetch from the previous transport can't
+    // post on the new one.
+    // Same shared generation reset as `onNewSession` — crucially
+    // including `_lastSettledStats = null` (see the method's doc): a
+    // non-resume restart must not diff against the previous session's
+    // cumulative snapshot. Resume re-seeds a fresh baseline right after.
+    this._resetSessionGenerationState();
+    // When resuming an existing session (extension reload, session
+    // switch), pi's get_session_stats already contains cumulative
+    // numbers from before the disconnect. Seed `_lastSettledStats`
+    // silently so the next settled fetch diffs correctly instead of
+    // rendering the entire session as one giant "turn" of N seconds.
+    if (resumeSessionPath) {
+      // Keep the promise: `agent_settled` serializes on it so the first
+      // post-resume footer diffs against the seeded baseline instead of
+      // racing the seed and diffing against null.
+      this._seedBaselinePromise = this._seedBaseline();
+    } else {
+      this._seedBaselinePromise = undefined;
+    }
     this._eventDisposable = transport.onEvent((event: RpcEvent) => {
       this._trackStreaming(event);
       // UI protocol events are handled natively — do not forward to the webview.
@@ -1349,6 +1625,12 @@ export class AgentController implements vscode.Disposable {
   /** Tracks pi's turn lifecycle so callers can tell when a prompt would be rejected. */
   private _trackStreaming(event: RpcEvent): void {
     if (event.type === 'agent_start') {
+      // agent_start is a pure streaming toggle now: the turn boundary
+      // was stamped at `sendPrompt` (host-side user-prompt accept) so
+      // multi-iteration tool loops (which re-fire agent_start between
+      // iterations) cannot restamp or bump the turn id. Doing it here
+      // instead would race with the user pressing Enter during the
+      // brief agent_end window between iterations.
       this._setStreaming(true);
     } else if (event.type === 'agent_end') {
       this._setStreaming(false);
@@ -1368,41 +1650,211 @@ export class AgentController implements vscode.Disposable {
       // status bar clears the "compacting…" placeholder as soon as possible
       // rather than waiting for the next agent_end.
       void this._fetchSessionStats();
+    } else if (event.type === 'agent_settled') {
+      // Pi has committed to no further automatic work (no queued retries,
+      // compaction recovery, steering, or follow-up). Multi-iteration tool
+      // loops have multiple `agent_end`s between iterations, so the chat
+      // footer card waits for `agent_settled` so the user only sees one
+      // terminal line per true session-level run.
+      //
+      // Bind the footer to the run that actually finished: dequeue the
+      // OLDEST unsettled prompt (pi settles runs in prompt order). All run
+      // identity — elapsed origin and the fetch's turn guard — comes from
+      // this entry, never from live fields, so a prompt accepted in the
+      // agent_end → agent_settled window can neither steal this footer's
+      // origin nor have its own origin wiped by it.
+      // Unmatched settle (empty queue — e.g. a stale event delivered
+      // after a session/transport reset and before any new prompt):
+      // never invent a footer for it, and never let it sit on the chain
+      // — it would otherwise await and dequeue a LATER prompt's queue
+      // entry, stealing that turn's origin and leaving its real settle
+      // nothing to bind to.
+      const run = this._pendingRuns.shift();
+      if (!run) return;
+      // Capture identity SYNCHRONOUSLY at the dequeue instant: the
+      // frozen elapsed excludes the get_session_stats RPC latency, and
+      // the generation snapshot decides below whether this tail may run
+      // at all (a reset while the tail sits queued must void it).
+      const elapsedMs = Math.max(0, Date.now() - run.startedAt);
+      const genAtSettle = this._sessionGen;
+      // Serialize the tail behind any previous turn's still-running tail
+      // (see `_settledFooterChain` for why order matters here).
+      this._settledFooterChain = this._settledFooterChain
+        .then(() => this._runSettledFooter(run, elapsedMs, genAtSettle))
+        .catch(() => {
+          // `_runSettledFooter` handles its own errors; this guard only
+          // keeps the chain alive for the next settle no matter what.
+        });
     }
   }
 
-  /** Fetch session stats from pi and push them to the status bar + provider. */
-  private async _fetchSessionStats(): Promise<void> {
+  /**
+   * Per-turn stats fetch for the chat footer card. Shares the response
+   * parser with `_fetchSessionStats` but uses an independent seq-guard so
+   * the status-bar path cannot seq-guard it out. Returns the generation
+   * the fetch was issued in so `_runSettledFooter` can tell whether a
+   * late miss still applies to the live session.
+   */
+  private async _fetchSettledStats(): Promise<{
+    stats: SessionStats | null;
+    superseded: boolean;
+    sessionGen: number;
+  }> {
+    if (!this._transport?.isRunning) return { stats: null, superseded: false, sessionGen: this._sessionGen };
+    const seq = ++this._settledFetchSeq;
+    const sessionGen = this._sessionGen;
+    try {
+      const response = await this.sendCommand({ type: 'get_session_stats' });
+      if (seq !== this._settledFetchSeq) return { stats: null, superseded: true, sessionGen }; // superseded only by a newer settled fetch
+      if (!response.success) return { stats: null, superseded: false, sessionGen };
+      const data = (typeof response.data === 'object' && response.data !== null)
+        ? response.data as Record<string, unknown>
+        : {};
+      const stats = parseStatsPayload(
+        data,
+        this._sessionStartedAt,
+      );
+      return { stats, superseded: false, sessionGen };
+    } catch {
+      return { stats: null, superseded: false, sessionGen };
+    }
+  }
+
+  /** Completes the chat-footer flow for one settled run: awaits an
+   *  in-flight resume seed, fetches the cumulative snapshot, and posts
+   *  the per-turn delta. `run` is the dequeued `_pendingRuns` entry;
+   *  `genAtSettle` is the session generation captured when the settle
+   *  event was handled — the tail is void if the generation moved on
+   *  while it sat queued.
+   *
+   *  Guarding rules, in order:
+   *  0. Generation gate — a queued tail from a dead generation must not
+   *     run at all: no seed wait, no fetch, no flag, no post.
+   *  1. Missing snapshot — a genuine RPC failure, or superseded by a
+   *     newer prompt: the turn's usage window is lost either way, so
+   *     raise `_pendingBaselineReset` (unless the session generation
+   *     already moved on and re-baselined).
+   *  2. Turn-id mismatch on a fetched snapshot — the post is stale and
+   *     the snapshot may already include partial usage of the newer
+   *     turn: never store it as baseline; raise the reset flag only if
+   *     the recovery still applies to the live session.
+   *  3. Match — diff against the baseline (or post as-is, first-turn
+   *     semantics, when the reset flag is raised), store the snapshot,
+   *     post the footer. */
+  private async _runSettledFooter(
+    run: { turnId: number; startedAt: number },
+    elapsedMs: number,
+    genAtSettle: number,
+  ): Promise<void> {
+    // Generation gate FIRST (rule 0): see the doc above.
+    if (this._sessionGen !== genAtSettle) return;
+    // Serialize on an in-flight resume seed: the first post-resume footer
+    // must diff against the seeded pre-disconnect baseline, not null
+    // (diffing against null would render the entire session as one turn).
+    if (this._seedBaselinePromise) {
+      try {
+        await this._seedBaselinePromise;
+      } catch {
+        // best-effort: the seed already swallowed its own errors
+      }
+    }
+    const myTurnId = run.turnId;
+    const res = await this._fetchSettledStats();
+    const sameGen = res.sessionGen === this._sessionGen;
+    if (!res.stats) {
+      // Superseded by another SETTLED fetch on the same turn: that newer
+      // fetch carries both the newer snapshot and the shared baseline —
+      // nothing to recover here. Any other miss loses this turn's
+      // attribution window.
+      if (sameGen && (!res.superseded || this._currentTurnId !== myTurnId)) {
+        this._pendingBaselineReset = this._sessionGen;
+      }
+      return;
+    }
+    if (this._currentTurnId !== myTurnId) {
+      if (sameGen) this._pendingBaselineReset = this._sessionGen;
+      return;
+    }
+    res.stats.elapsedMs = elapsedMs;
+    // After a lost attribution window, post the snapshot as-is (first-turn
+    // semantics) instead of silently merging the missed turns into this
+    // one; the fresh baseline restores per-turn deltas from here on.
+    const baseline = this._pendingBaselineReset === this._sessionGen ? null : this._lastSettledStats;
+    const deltaStats = diffSettledStats(res.stats, baseline);
+    this._lastSettledStats = res.stats;
+    this._pendingBaselineReset = null;
+    this._provider?.postSessionStatsSettled(deltaStats);
+  }
+
+  /**
+   * Silently read pi's cumulative session stats and store as the
+   * `_lastSettledStats` baseline. Used on session RESUME so the first
+   * `agent_settled` footer diffs against the pre-disconnect state
+   * instead of displaying the entire session as a single per-turn
+   * total. Best-effort: on failure the next settled fetch will diff
+   * against `null` and surface the cumulative snapshot as-is (matches
+   * the pre-resume behaviour we already had). The settle path
+   * serializes on `_seedBaselinePromise` (see `_runSettledFooter`), so
+   * it can no longer race the seed into that null-diff.
+   *
+   * The seed RPC can race with several real events:
+   *  - the first settled fetch from the resumed run (newer than the
+   *    seed, must not clobber),
+   *  - a user prompt that arrives during resume (bumps turn id, the
+   *    seed's snapshot is for an OLDER turn, must not write),
+   *  - onNewSession clearing the baseline (if the seed wrote afterwards,
+   *    the new session would diff against the old).
+   * Each is guarded: capture the turn id BEFORE awaiting, refuse to
+   * write if either the turn rolled over or `_lastSettledStats` was
+   * already filled in by a settled fetch.
+   */
+  private async _seedBaseline(): Promise<void> {
     if (!this._transport?.isRunning) return;
+    const turnIdAtKickoff = this._currentTurnId;
+    try {
+      const response = await this.sendCommand({ type: 'get_session_stats' });
+      // Drop the seed if anything has happened that supersedes it:
+      //  - the user has fired a new prompt (turnId rolled),
+      //  - a settled fetch already stored a baseline (rare: would mean a
+      //    settled fetch beat us; trust whichever is newer — at this
+      //    point `_lastSettledStats` is the more accurate reading).
+      //  - onNewSession cleared the baseline via the turn id bump above.
+      if (!response.success) return;
+      if (this._currentTurnId !== turnIdAtKickoff) return;
+      if (this._lastSettledStats !== null) return;
+      const data = (typeof response.data === 'object' && response.data !== null)
+        ? response.data as Record<string, unknown>
+        : {};
+      this._lastSettledStats = parseStatsPayload(data, this._sessionStartedAt);
+    } catch {
+      // best-effort; no UI effect, no log
+    }
+  }
+
+  /** Fetch session stats from pi and push them to the status bar + provider.
+   *
+   *  Returns the parsed `SessionStats` (or `null` on no-transport / RPC
+   *  failure / supersede) so callers can reuse the just-fetched snapshot
+   *  — `agent_settled` uses its own `_fetchSettledStats` to avoid sharing
+   *  this seq-guard. */
+  private async _fetchSessionStats(): Promise<SessionStats | null> {
+    if (!this._transport?.isRunning) return null;
     // Sequence guard: only the latest fetch updates state.
     const seq = ++this._statsFetchSeq;
     try {
       const response = await this.sendCommand({ type: 'get_session_stats' });
-      if (seq !== this._statsFetchSeq) return; // superseded by a newer fetch
-      if (!response.success) return;
-      // Normalise at the RPC boundary: tolerate camelCase/snake_case and coerce
-      // types — RPC payloads can return strings or undefined for numeric fields.
+      if (seq !== this._statsFetchSeq) return null; // superseded by a newer fetch
+      if (!response.success) return null;
       const data = (typeof response.data === 'object' && response.data !== null)
         ? response.data as Record<string, unknown>
         : {};
-      const toFiniteOrNull = (v: unknown): number | null => {
-        // Treat null / undefined / empty string as absent — not as 0.
-        if (v === null || v === undefined || v === '') return null;
-        const n = typeof v === 'number' ? v : Number(v);
-        return Number.isFinite(n) ? n : null;
-      };
-      const stats: SessionStats = {
-        // FIX: pi returns totals nested under `tokens`, not as top-level `totalTokens`.
-        totalTokens:   toFiniteOrNull((data['tokens'] as Record<string, unknown> | undefined)?.['total']),
-        // FIX: pi returns cost at top-level `cost`, not `totalCost`.
-        totalCost:     toFiniteOrNull(data['cost']),
-        totalMessages: toFiniteOrNull(data['totalMessages'] ?? data['total_messages']),
-        contextUsage:  parseContextUsage(data['contextUsage'], toFiniteOrNull),
-      };
+      const stats = parseStatsPayload(data, this._sessionStartedAt);
       this._lastSessionStats = stats;
       this._provider?.postSessionStats(stats);
+      return stats;
     } catch {
       // Stats are best-effort — swallow errors silently.
+      return null;
     }
   }
 

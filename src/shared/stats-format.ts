@@ -28,8 +28,11 @@ function formatScaledCore(scaled: number, suffix: 'k' | 'M'): string {
  * Format a token count without the trailing " tok" unit. Returns "—" for
  * missing / non-finite values. Used where the unit is only wanted once
  * (e.g. the numerator of a "12.4k / 200k tok" fraction).
+ *
+ * Exported so the chat footer line can reuse the same k/M scaling without
+ * duplicating the threshold logic.
  */
-function formatTokensCore(raw: unknown): string {
+export function formatTokensCore(raw: unknown): string {
   if (isMissing(raw)) return '—';
   const n = Number(raw);
   if (!Number.isFinite(n)) return '—';
@@ -209,4 +212,91 @@ export function formatModelStatus(state: ModelState | null): string {
   const level = state?.thinkingLevel;
   const showLevel = level && level !== 'none' && level !== 'off';
   return showLevel ? `${label} · ${level}` : label;
+}
+
+// ─── Chat footer line (Kiro-style end-of-turn summary) ──────────────────────
+
+/**
+ * Format a duration in milliseconds as a compact human string.
+ *   < 60 s   → "47s"
+ *   < 60 min → "11m 30s"  (or "11m" when seconds round to 0)
+ *   else     → "1h 02m"   (or "2h" when minutes round to 0)
+ * Never reaches the "days" scale — coding sessions beyond a few hours are
+ * outliers and "1d 03h" is harder to scan at a glance than "27h".
+ * @example formatElapsed(0)        → "0s"
+ * @example formatElapsed(47_000)   → "47s"
+ * @example formatElapsed(690_000)  → "11m 30s"
+ * @example formatElapsed(3_720_000)→ "1h 02m"
+ */
+export function formatElapsed(ms: number): string {
+  const totalSec = Math.max(0, Math.floor(ms / 1000));
+  if (totalSec < 60) return `${totalSec}s`;
+  const totalMin = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (totalMin < 60) return sec ? `${totalMin}m ${sec}s` : `${totalMin}m`;
+  const hr = Math.floor(totalMin / 60);
+  const min = totalMin % 60;
+  return min ? `${hr}h ${min.toString().padStart(2, '0')}m` : `${hr}h`;
+}
+
+/**
+ * One-line end-of-turn footer for the chat transcript. Renders a
+ * Kiro-style summary that surfaces elapsed time, the four token buckets
+ * (input / output / cache read / cache write), and total cost. Any section
+ * whose source data is absent or zero is silently dropped so a still-loading
+ * or all-free session doesn't show stray separators.
+ *
+ * Elapsed time comes from `elapsedMs` when stamped (the host freezes it at
+ * `agent_settled`); `startedAt` is a fallback only — computing live here
+ * would make the line stale and tests flake. Token buckets and cost hide
+ * zero values for consistency: a real zero (e.g. zero cache write) looks
+ * the same as "not measured" to the user, so showing it would add noise.
+ *
+ * Returns `null` when there is nothing meaningful to render (no elapsed,
+ * no token buckets, no cost) so the caller can choose not to render the
+ * row at all.
+ *
+ * @example
+ *   formatChatFooterLine({
+ *     elapsedMs: 690_000,
+ *     tokens: { input: 100000, output: 25000, cacheRead: 80000, cacheWrite: 5000 },
+ *     totalCost: 0.45,
+ *   })
+ *   // → "⏱ 11m 30s · ↑100k ↓25k ↻80k ↪5k · ≈$0.45"
+ */
+export function formatChatFooterLine(stats: SessionStats): string | null {
+  const parts: string[] = [];
+
+  // `elapsedMs` is the frozen turn duration (host-stamped at agent_settled).
+  // `startedAt` is a deterministic-but-derived fallback used by tests and
+  // by the rare no-event snapshot; production paths always pass elapsedMs.
+  if (typeof stats.elapsedMs === 'number' && stats.elapsedMs >= 0) {
+    parts.push(`⏱ ${formatElapsed(stats.elapsedMs)}`);
+  } else if (typeof stats.startedAt === 'number') {
+    parts.push(`⏱ ${formatElapsed(Date.now() - stats.startedAt)}`);
+  }
+
+  if (stats.tokens) {
+    const t = stats.tokens;
+    const segs: string[] = [];
+    // Hide 0 alongside null: from the user's perspective both mean "no
+    // measurements to surface"; showing ↻0k in the middle of the line adds
+    // noise without information.
+    if (t.input && Number.isFinite(t.input))                 segs.push(`↑${formatTokensCore(t.input)}`);
+    if (t.output && Number.isFinite(t.output))               segs.push(`↓${formatTokensCore(t.output)}`);
+    if (t.cacheRead && Number.isFinite(t.cacheRead))         segs.push(`↻${formatTokensCore(t.cacheRead)}`);
+    if (t.cacheWrite && Number.isFinite(t.cacheWrite))       segs.push(`↪${formatTokensCore(t.cacheWrite)}`);
+    if (segs.length) parts.push(segs.join(' '));
+  }
+
+  // Cost mirrors the bucket-zero policy for consistency: sub-cent values
+  // round to "$0.00" in the display, which would look like a rounding bug
+  // ("≈ $0.00" beside non-zero usage). Hide anything that rounds to
+  // zero cents so the formatter never prints "$0.00". A positive cent
+  // is the rendering threshold.
+  if (typeof stats.totalCost === 'number' && Number.isFinite(stats.totalCost) && stats.totalCost >= 0.01) {
+    parts.push(`≈ $${stats.totalCost.toFixed(2)}`);
+  }
+
+  return parts.length ? parts.join(' · ') : null;
 }

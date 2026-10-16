@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import type { RpcEvent } from '../../../src/agent/transport';
-import type { PiCommand, ModelState, InstructionFilesInfo, ClaudeMemoryInfo, UiDialogMessage, UiDialogOption } from '../../../src/shared/messages';
+import type { PiCommand, ModelState, InstructionFilesInfo, ClaudeMemoryInfo, UiDialogMessage, UiDialogOption, SessionStats } from '../../../src/shared/messages';
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -103,7 +103,23 @@ export interface QuestionCardItem {
   timestamp: number;
 }
 
-export type ChatItem = UserItem | AssistantItem | ToolRunItem | SystemItem | QuestionCardItem;
+/**
+ * End-of-turn summary footer (Kiro-style one-liner). Owned by the host:
+ * sent on `agent_settled` via the `sessionStatsSettled` message. The
+ * store replaces any prior `SummaryItem` in place — there's always at
+ * most one summary in the transcript, the most recent.
+ *
+ * `id` is stable (`'summary-final'`) so the `MessageList` virtualised
+ * scroll position stays consistent across replaces.
+ */
+export interface SummaryItem {
+  itemKind: 'summary';
+  id: 'summary-final';
+  stats: SessionStats;
+  timestamp: number;
+}
+
+export type ChatItem = UserItem | AssistantItem | ToolRunItem | SystemItem | QuestionCardItem | SummaryItem;
 
 // ── Restoring a stored session into ChatItems ───────────────────────
 //
@@ -363,6 +379,9 @@ interface ChatActions {
   setInstructionFiles: (info: InstructionFilesInfo | null) => void;
   /** Update shared Claude Code memory from a claudeMemory host message. */
   setClaudeMemory: (info: ClaudeMemoryInfo | null) => void;
+  /** Replace the chat footer summary with a fresh terminal-of-session snapshot.
+   *  Always replaces the prior summary (one footer per transcript). */
+  setSessionStatsSettled: (stats: SessionStats) => void;
   /** Set or clear a status entry (key → text | null). */
   setUiStatus: (key: string, text: string | null) => void;
   /** Set or clear a widget block (key → lines[] | null). */
@@ -659,7 +678,11 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   addUserMessage: (text, imageCount) =>
     set((state) => ({
       items: [
-        ...state.items,
+        // A new turn invalidates the previous turn's footer card: leaving it
+        // would float the summary in the middle of the transcript until the
+        // next agent_settled. Drop any prior summary here so the new user
+        // message lands on a clean tail.
+        ...state.items.filter((i) => i.itemKind !== 'summary'),
         {
           itemKind: 'user',
           id: nextId(),
@@ -826,6 +849,43 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
 
   setInstructionFiles: (info: InstructionFilesInfo | null) => set(() => ({ instructionFiles: info })),
   setClaudeMemory: (info: ClaudeMemoryInfo | null) => set(() => ({ claudeMemory: info })),
+
+  setSessionStatsSettled: (stats) =>
+    set((state) => {
+      // Replace any prior summary in place — the footer is always at most
+      // one item, the latest. Filtering out + appending is correct because
+      // there is at most one summary item at any time, so the cost is small
+      // even on long sessions.
+      //
+      // Structural emptiness check (NOT presentation): a snapshot with no
+      // elapsed origin, no positive bucket, and no non-trivial cost has
+      // nothing to show (e.g. the very first turn before any model
+      // response) and must not APPEND an item that would render null yet
+      // still occupy a row in the message list. The $0.01 threshold
+      // mirrors the formatter's "hide sub-cent cost" rule on purpose:
+      // below it the card would render without its cost segment while
+      // this item exists. Deliberately does NOT call the formatter here —
+      // display rules (zero-hiding, formats) may change without wanting
+      // to add/remove transcript items.
+      const t = stats.tokens;
+      const hasBuckets = !!t && [
+        t.input, t.output, t.cacheRead, t.cacheWrite,
+      ].some((v) => typeof v === 'number' && v > 0);
+      const hasElapsed = typeof stats.elapsedMs === 'number' || typeof stats.startedAt === 'number';
+      const hasCost = typeof stats.totalCost === 'number' && stats.totalCost >= 0.01;
+      if (!hasBuckets && !hasElapsed && !hasCost) {
+        if (!state.items.some((i) => i.itemKind === 'summary')) return {};
+        return { items: state.items.filter((i) => i.itemKind !== 'summary') };
+      }
+      const next: ChatItem[] = state.items.filter((i) => i.itemKind !== 'summary');
+      next.push({
+        itemKind: 'summary',
+        id: 'summary-final',
+        stats,
+        timestamp: Date.now(),
+      });
+      return { items: next };
+    }),
 
   setUiStatus: (key, text) =>
     set((state) => {

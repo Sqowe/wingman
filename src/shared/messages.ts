@@ -33,6 +33,21 @@ export interface PiCommand {
   builtIn?: boolean;
 }
 
+/**
+ * Per-bucket token usage aggregated by pi across the session, surfaced from
+ * `get_session_stats` → `data.tokens`. Each field is `null` when absent
+ * (never `0` from coercion — `0` means a real zero, `null` means unknown).
+ *
+ * `total` lives on `SessionStats.totalTokens` for backward compat; it is the
+ * sum of these four (input + output + cacheRead + cacheWrite).
+ */
+export interface TokenBuckets {
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheWrite: number | null;
+}
+
 /** Session statistics returned by pi's get_session_stats RPC call.
  *
  * `contextUsage` is the per-turn, current-context-window estimate that pi itself uses for
@@ -40,7 +55,12 @@ export interface PiCommand {
  * pi reports no model / no context window, and the inner `tokens`/`percent` are **null**
  * during the documented post-compaction transient until the next post-compaction assistant
  * response lands. `contextWindow` (the denominator) is unaffected by the transient and can
- * be used to render a partial "— / 200k" placeholder. */
+ * be used to render a partial "— / 200k" placeholder.
+ *
+ * `tokens`, `startedAt`, and `elapsedMs` are parsed / stamped alongside the existing fields;
+ * they power the chat-transcript footer card (Kiro-style end-of-turn summary) driven by the
+ * `agent_settled` event.
+ */
 export interface SessionStats {
   totalTokens: number | null;
   totalCost: number | null;
@@ -54,6 +74,23 @@ export interface SessionStats {
     /** Percentage 0-100. `null` during the post-compaction transient. */
     percent: number | null;
   };
+  /** Per-bucket token usage aggregated across the session. `undefined` when
+   *  absent (old pi, command failed, before any model response). */
+  tokens?: TokenBuckets;
+  /** Wall-clock start of the active session, ms epoch. Set on successful
+   *  transport start; cleared on `new_session` / `switch_session` so the
+   *  elapsed timer doesn't carry across sessions. Used as a fallback for the
+   *  chat footer when `elapsedMs` is not stamped. */
+  startedAt?: number;
+  /**
+   * Wall-clock duration of the most recent agent turn, in milliseconds.
+   * Stamped by the host at `agent_settled` (frozen at that moment, not
+   * recomputed on every render) so the footer card shows the actual time
+   * the agent spent on the last turn rather than the live "session age".
+   * `undefined` on snapshots that did not flow through the settled path
+   * (status-bar refresh, fresh-fallback, etc.).
+   */
+  elapsedMs?: number;
 }
 
 /** The session's active model + thinking level, from pi's get_state. */
@@ -308,6 +345,22 @@ export interface ModelStateMessage {
   state: ModelState | null;
 }
 
+/**
+ * Sent by the host after pi emits `agent_settled` — i.e. once pi has
+ * committed to no further automatic work for that session-level run
+ * (no queued retries, compaction recovery, steering, or follow-ups).
+ * The webview replaces any prior summary item with a fresh footer line.
+ *
+ * Pushed on `agent_settled` rather than `agent_end` deliberately: long
+ * tool-loop runs have multiple `agent_end` events between iterations, and
+ * flashing a footer between them would be noisy. `agent_settled` is the
+ * canonical "really done" signal.
+ */
+export interface SessionStatsSettledMessage {
+  type: 'sessionStatsSettled';
+  stats: SessionStats;
+}
+
 // ─── Instruction files ───────────────────────────────────────────────────────
 
 export type InstructionFileRole =
@@ -408,7 +461,8 @@ export type HostMessage =
   | ModelStateMessage
   | ChatConfigMessage
   | InstructionFilesMessage
-  | ClaudeMemoryMessage;
+  | ClaudeMemoryMessage
+  | SessionStatsSettledMessage;
 
 // ─── Webview → Host ──────────────────────────────────────────────────────────
 

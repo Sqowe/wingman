@@ -12,7 +12,7 @@ vi.mock('vscode', async () => {
 });
 
 import * as vscode from 'vscode';
-import { AgentController } from './controller';
+import { AgentController, parseTokenBuckets, diffSettledStats } from './controller';
 import type { WingmanViewProvider } from '../webview/provider';
 import type { SessionStats, PiCommand, ModelState } from '../shared/messages';
 import { newSession } from '../commands/new-session';
@@ -36,6 +36,8 @@ function makeProvider() {
   return {
     postCommandsList: vi.fn(),
     postSessionStats: vi.fn(),
+    postSessionStatsSettled: vi.fn(),
+    clearSessionStatsSettled: vi.fn(),
     postAgentEvent: vi.fn(),
     postAgentStatus: vi.fn(),
     postSessionReset: vi.fn(),
@@ -422,6 +424,833 @@ describe('AgentController stats normalization', () => {
     expect(provider.postSessionStats).toHaveBeenCalledTimes(1);
     const stats: SessionStats = provider.postSessionStats.mock.calls[0][0];
     expect(stats.contextUsage?.tokens).toBe(500);
+  });
+
+  it('on agent_settled: fetches stats, stamps elapsed synchronously, pushes the footer', async () => {
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type === 'get_session_stats') {
+        return {
+          type: 'response', success: true, command: 'get_session_stats',
+          data: {
+            tokens: {
+              total: 210000,
+              input: 100_000,
+              output: 25_000,
+              cacheRead: 80_000,
+              cacheWrite: 5_000,
+            },
+            cost: 0.45,
+            totalMessages: 12,
+          },
+        };
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+
+    // Queue the unsettled run to mimic sendPrompt's stamp. `_sessionStartedAt`
+    // is deliberately older to prove the formatter uses the TURN origin,
+    // not session age, when both are present.
+    const turnStart = Date.now() - 690_000;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ctrl as any)._pendingRuns.push({ turnId: (ctrl as any)._currentTurnId, startedAt: turnStart });
+    ctrl._sessionStartedAt = turnStart - 60_000;
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await flush();
+
+    // agent_settled fires ONLY the footer path — the status bar's
+    // postSessionStats runs from agent_end / turn_end / compaction_end,
+    // not from settled (which intentionally does its own fetch to avoid
+    // sharing the seq-guard).
+    expect(provider.postSessionStats).not.toHaveBeenCalled();
+    expect(provider.postSessionStatsSettled).toHaveBeenCalledTimes(1);
+    const settledStats: SessionStats = provider.postSessionStatsSettled.mock.calls[0][0];
+    expect(settledStats.tokens).toEqual({
+      input: 100_000,
+      output: 25_000,
+      cacheRead: 80_000,
+      cacheWrite: 5_000,
+    });
+    expect(settledStats.totalCost).toBe(0.45);
+    expect(settledStats.startedAt).toBe(turnStart - 60_000);
+    // elapsedMs is frozen at settle time and reflects the TURN duration
+    // (~11m 30s since turn start), not the session age (~12m 30s). Allow
+    // jitter — the synchronous capture can run a few ms later than the
+    // exact turn boundary.
+    expect(settledStats.elapsedMs).toBeGreaterThanOrEqual(690_000);
+    expect(settledStats.elapsedMs).toBeLessThan(700_000);
+    // After settled, the queue entry must be consumed so the next user
+    // turn gets a fresh stamp.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((ctrl as any)._pendingRuns).toHaveLength(0);
+  });
+
+  it('agent_start is a pure streaming toggle — it does NOT bump turn id or stamp turn origin', () => {
+    // Turn identity is stamped host-side at `sendPrompt` time, NOT on
+    // agent_start. Multi-iteration tool loops re-fire agent_start and
+    // those must NOT bump the turn id (which would invalidate an in-
+    // flight settled fetch without a real new user prompt).
+    const { ctrl } = makeControllerForStats(() => ({ type: 'response', success: true, command: 'get_session_stats' }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const seqRef = ctrl as unknown as { _settledFetchSeq: number; _currentTurnId: number };
+    const turnIdBefore = seqRef._currentTurnId;
+    const seqBefore = seqRef._settledFetchSeq;
+
+    // Iterate freely — agent_start, agent_end, agent_start — none of
+    // these should touch turn identity or settled seq.
+    ctrl._trackStreaming({ type: 'agent_start' });
+    ctrl._trackStreaming({ type: 'agent_end' });
+    ctrl._trackStreaming({ type: 'agent_start' });
+    ctrl._trackStreaming({ type: 'agent_end' });
+    ctrl._trackStreaming({ type: 'agent_start' });
+
+    expect(seqRef._currentTurnId).toBe(turnIdBefore);
+    expect(seqRef._settledFetchSeq).toBe(seqBefore);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((ctrl as any)._pendingRuns).toHaveLength(0); // stamping happens at sendPrompt, not here
+  });
+
+  it('sendPrompt queues the unsettled run and bumps turn id (host-side user-prompt boundary)', async () => {
+    // sendPrompt is the turn-boundary marker. It MUST:
+    //  - push a pending run stamped with Date.now() and the POST-bump
+    //    turn id (so this run's settled fetch passes the live-id guard
+    //    while older runs' fetches fail it)
+    //  - bump _currentTurnId
+    //  - bump _settledFetchSeq (to invalidate any stale in-flight settled
+    //    fetch from the previous turn)
+    //  - clear the provider's replay cache via clearSessionStatsSettled()
+    const { ctrl, provider } = makeControllerForStats(() => ({ type: 'response', success: true, command: 'get_session_stats' }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    state._transport = {
+      isRunning: true,
+      send: vi.fn(async () => ({ type: 'response', success: true, command: 'prompt', data: { disposition: 'started' } })),
+    };
+    const turnIdBefore = state._currentTurnId;
+    const seqBefore = state._settledFetchSeq;
+    await ctrl.sendPrompt('hello');
+    expect(state._pendingRuns).toHaveLength(1);
+    expect(typeof state._pendingRuns[0].startedAt).toBe('number');
+    expect(state._pendingRuns[0].turnId).toBe(turnIdBefore + 1);
+    expect(state._currentTurnId).toBe(turnIdBefore + 1);
+    expect(state._settledFetchSeq).toBe(seqBefore + 1);
+    expect(provider.clearSessionStatsSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rejected prompt leaves zero trace: no queue entry, no id/seq bumps, no cache wipe', async () => {
+    // pi rejecting the prompt (success:false) must roll everything back:
+    // the next agent_settled must not dequeue a phantom run and attribute
+    // elapsed time to a prompt that never ran, and an in-flight settled
+    // footer from the PREVIOUS turn must not be dropped by id/seq bumps.
+    const { ctrl, provider } = makeControllerForStats(() => ({ type: 'response', success: true, command: 'get_session_stats' }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    state._transport = {
+      isRunning: true,
+      send: vi.fn(async () => ({ type: 'response', success: false, command: 'prompt', error: 'busy' })),
+    };
+    const turnIdBefore = state._currentTurnId;
+    const seqBefore = state._settledFetchSeq;
+    await expect(ctrl.sendPrompt('hello')).rejects.toThrow(/prompt rejected/);
+    expect(state._pendingRuns).toHaveLength(0);
+    expect(state._currentTurnId).toBe(turnIdBefore);
+    expect(state._settledFetchSeq).toBe(seqBefore);
+    expect(provider.clearSessionStatsSettled).not.toHaveBeenCalled();
+  });
+
+  it('a thrown send (transport died mid-RPC) also leaves zero trace', async () => {
+    const { ctrl, provider } = makeControllerForStats(() => ({ type: 'response', success: true, command: 'get_session_stats' }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    state._transport = {
+      isRunning: true,
+      send: vi.fn(async () => { throw new Error('transport closed'); }),
+    };
+    const turnIdBefore = state._currentTurnId;
+    const seqBefore = state._settledFetchSeq;
+    await expect(ctrl.sendPrompt('hello')).rejects.toThrow(/transport closed/);
+    expect(state._pendingRuns).toHaveLength(0);
+    expect(state._currentTurnId).toBe(turnIdBefore);
+    expect(state._settledFetchSeq).toBe(seqBefore);
+    expect(provider.clearSessionStatsSettled).not.toHaveBeenCalled();
+  });
+
+  it('session-generation reset clears a stale settled baseline (non-resume restart / onNewSession must not reuse it)', () => {
+    // Both `onNewSession` and `_doStart` delegate to
+    // `_resetSessionGenerationState`. A non-resume restart (pi crash,
+    // fresh session) that kept the previous session's cumulative
+    // baseline would diff the new session against it — bogus first
+    // footer — and a leftover baseline would block `_seedBaseline` from
+    // writing the pre-disconnect state on resume.
+    const { ctrl } = makeControllerForStats(() => ({ type: 'response', success: true, command: 'get_session_stats' }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    state._lastSettledStats = {
+      totalTokens: 999, totalCost: 9.99, totalMessages: 99,
+      tokens: { input: 999, output: 999, cacheRead: 999, cacheWrite: 999 },
+    };
+    state._pendingRuns.push({ turnId: state._currentTurnId, startedAt: Date.now() - 1000 });
+    state._pendingBaselineReset = state._sessionGen;
+    state._seedBaselinePromise = Promise.resolve();
+    const seqBefore = state._settledFetchSeq;
+    const genBefore = state._sessionGen;
+
+    state._resetSessionGenerationState();
+
+    expect(state._lastSettledStats).toBeNull();
+    expect(state._pendingRuns).toHaveLength(0);
+    expect(state._pendingBaselineReset).toBeNull();
+    expect(state._seedBaselinePromise).toBeUndefined();
+    expect(state._settledFetchSeq).toBeGreaterThan(seqBefore);
+    expect(state._sessionGen).toBe(genBefore + 1);
+  });
+
+  it('on agent_settled when the RPC fails, the webview footer push is skipped (no spurious empty snapshot)', async () => {
+    const { ctrl, provider } = makeControllerForStats(() => ({
+      type: 'response', success: false, command: 'get_session_stats', error: 'nope',
+    }));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ctrl as any)._pendingRuns.push({ turnId: (ctrl as any)._currentTurnId, startedAt: Date.now() - 1_000 });
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await flush();
+    expect(provider.postSessionStatsSettled).not.toHaveBeenCalled();
+    // The failed turn's usage window is lost — the baseline-reset flag
+    // must be raised so the NEXT footer posts honestly (as-is cumulative)
+    // instead of silently merging this turn into itself.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((ctrl as any)._pendingBaselineReset).toBe((ctrl as any)._sessionGen);
+  });
+
+  it('agent_settled fetch uses an INDEPENDENT seq-guard so a concurrent status-bar fetch cannot skip the footer', async () => {
+    // Reproduces the review's original bug: a status-bar refresh was
+    // seq-guarding the settled fetch out. With the dedicated
+    // _settledFetchSeq counter, the footer fires regardless.
+    //
+    // We simulate concurrency by hooking an RPC factory that returns a
+    // never-resolving promise for the FIRST call (the status-bar fetch)
+    // and an immediate response for the SECOND (the settled fetch). After
+    // both, the settled fetch must have posted.
+    let calls = 0;
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type !== 'get_session_stats') {
+        return { type: 'response', success: true, command: cmd.type };
+      }
+      calls += 1;
+      if (calls === 1) {
+        // Never resolves in this test — the in-flight status-bar fetch.
+        return new Promise(() => {}) as never;
+      }
+      return {
+        type: 'response', success: true, command: 'get_session_stats',
+        data: { tokens: { total: 1 }, cost: 0, totalMessages: 1 },
+      };
+    });
+
+    // Fire a status-bar refresh that gets stuck on the never-resolving RPC.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    void (ctrl as any)._fetchSessionStats();
+    // Let the in-flight call bump _statsFetchSeq.
+    await Promise.resolve();
+
+    // Now fire agent_settled. Despite the status-bar fetch being stuck
+    // (it bumped _statsFetchSeq but never resolves), the settled path
+    // uses its OWN counter and posts the footer.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ctrl as any)._pendingRuns.push({ turnId: (ctrl as any)._currentTurnId, startedAt: Date.now() - 60_000 });
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await flush();
+
+    expect(provider.postSessionStatsSettled).toHaveBeenCalledTimes(1);
+    expect(provider.postSessionStatsSettled.mock.calls[0][0].elapsedMs).toBeGreaterThanOrEqual(60_000);
+  });
+
+  it('onNewSession clears the cached footer so a webview reload does not replay the previous turn', async () => {
+    // Drive the path through the public controller method, not via a
+    // direct mock call — the mock only proves the mock was called,
+    // not that the controller actually fires it.
+    const { controller, provider } = makeController(() => ({
+      type: 'response', success: true, command: 'get_commands', data: { commands: [] },
+    }));
+    controller.onNewSession({ clearTranscript: false });
+    expect(provider.clearSessionStatsSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it('onNewSession bumps _settledFetchSeq so an in-flight settled fetch from the old session cannot push', async () => {
+    // Hang the FIRST RPC (simulating an in-flight _fetchSettledStats
+    // already started before onNewSession was called). The seq counter
+    // must advance by ≥1 inside onNewSession so the hanging RPC fails
+    // its seq-guard when it eventually resolves.
+    let firstCallStarted = false;
+    let resolveFirst: () => void = () => {};
+    const { controller } = makeController((cmd) => {
+      if (cmd.type === 'get_commands' && !firstCallStarted) {
+        firstCallStarted = true;
+        return new Promise<unknown>((res) => { resolveFirst = () => res({ type: 'response', success: true, command: 'get_commands', data: { commands: [] } }); }) as never;
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ctrl = controller as any;
+    const seqBefore = ctrl._settledFetchSeq;
+    controller.onNewSession({ clearTranscript: false });
+    expect(ctrl._settledFetchSeq).toBeGreaterThan(seqBefore);
+    // Cleanup: resolve the hanging promise.
+    resolveFirst();
+  });
+
+  it('two consecutive settled fires post per-turn deltas, not cumulative snapshots', async () => {
+    // Mock returns progressively-growing cumulative numbers across two
+    // get_session_stats calls in pi's wire shape (cost at top level,
+    // tokens.* nested). First call's response seeds the baseline
+    // (no prior); the second diffs against the first, so the posted
+    // snapshot shows the delta (one turn's worth).
+    let callIdx = 0;
+    const cumulativeAt = (turn: number) => ({
+      tokens: {
+        total: 100_000 * turn,
+        input: 1000 * turn,
+        output: 200 * turn,
+        cacheRead: 800 * turn,
+        cacheWrite: 50 * turn,
+      },
+      cost: 0.10 * turn,
+      totalMessages: 2,
+    });
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type !== 'get_session_stats') {
+        return { type: 'response', success: true, command: cmd.type };
+      }
+      callIdx += 1;
+      return {
+        type: 'response', success: true, command: 'get_session_stats',
+        data: cumulativeAt(callIdx),
+      };
+    });
+
+    // Turn 1: no baseline → first settled posts as-is.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ctrl as any)._pendingRuns.push({ turnId: (ctrl as any)._currentTurnId, startedAt: Date.now() - 1_000 });
+    ctrl._trackStreaming({ type: 'agent_start' });
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await flush();
+    expect(provider.postSessionStatsSettled).toHaveBeenCalledTimes(1);
+    const turn1 = provider.postSessionStatsSettled.mock.calls[0][0];
+    expect(turn1.tokens).toEqual({
+      input: 1000, output: 200, cacheRead: 800, cacheWrite: 50,
+    });
+    expect(turn1.totalCost).toBeCloseTo(0.10, 10);
+
+    // Turn 2: cumulative grew by exactly "one turn" worth. The posted
+    // delta must show the per-turn numbers (1000/200/800/50, $0.10),
+    // NOT the cumulative totals (2000/400/1600/100, $0.20).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ctrl as any)._pendingRuns.push({ turnId: (ctrl as any)._currentTurnId, startedAt: Date.now() - 1_000 });
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await flush();
+    expect(provider.postSessionStatsSettled).toHaveBeenCalledTimes(2);
+    const turn2 = provider.postSessionStatsSettled.mock.calls[1][0];
+    expect(turn2.tokens).toEqual({
+      input: 1000, output: 200, cacheRead: 800, cacheWrite: 50,
+    });
+    expect(turn2.totalCost).toBeCloseTo(0.10, 10);
+  });
+
+  it('overlapping settled tails are serialized: the older miss cannot poison a newer written baseline', async () => {
+    // The poisoning order the chain prevents: A's fetch in flight → B
+    // settles and its fetch completes FIRST, writing a valid baseline →
+    // A's fetch resolves superseded → A's miss raises the reset flag →
+    // the NEXT turn diffs against null (whole session as one footer).
+    // With serialized tails B's fetch cannot even be issued before A's
+    // tail finished, so "B completes first" is unreachable by design;
+    // this test pins the visible contract: A's miss raises the flag,
+    // B's tail consumes it, exactly one honest footer, flag ends null.
+    const pending: Array<(v: unknown) => void> = [];
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type !== 'get_session_stats') {
+        return { type: 'response', success: true, command: cmd.type };
+      }
+      return new Promise<unknown>((res) => { pending.push(res); }) as never;
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    state._transport = {
+      isRunning: true,
+      send: vi.fn(async (cmd: { type: string }) => {
+        if (cmd.type === 'get_session_stats') {
+          return new Promise<unknown>((res) => { pending.push(res); });
+        }
+        return { type: 'response', success: true, command: 'prompt', data: { disposition: 'started' } };
+      }),
+    };
+    const snapshot = (input: number) => ({
+      type: 'response', success: true, command: 'get_session_stats',
+      data: { tokens: { total: input, input, output: 2, cacheRead: 0, cacheWrite: 0 }, cost: 0.05, totalMessages: 2 },
+    });
+
+    await ctrl.sendPrompt('turn A');
+    ctrl._trackStreaming({ type: 'agent_settled' });   // A tail: fetch hangs (pending[0])
+    await flush();
+    await ctrl.sendPrompt('turn B');                   // bumps seq/id → A's fetch will be superseded
+    ctrl._trackStreaming({ type: 'agent_settled' });   // B tail: queued BEHIND A's tail
+    await flush();
+    // Only A's fetch is in flight — the chain holds B's back.
+    expect(pending.length).toBe(1);
+    expect(provider.postSessionStatsSettled).not.toHaveBeenCalled();
+
+    pending[0](snapshot(100));                         // A resolves → superseded miss
+    await flush();
+    await flush();   // extra pump: chain hop into B's tail + B's fetch registration
+    // A's miss raised the recovery flag…
+    expect(state._pendingBaselineReset).toBe(state._sessionGen);
+    // …and only NOW did B's fetch get issued (serialized behind A's tail).
+    expect(pending.length).toBe(2);
+
+    pending[1](snapshot(200));                         // B's snapshot (cumulative incl. A)
+    await flush();
+    // Exactly one footer — B's — posted as honest cumulative (flag consumed).
+    expect(provider.postSessionStatsSettled).toHaveBeenCalledTimes(1);
+    const footer: SessionStats = provider.postSessionStatsSettled.mock.calls[0][0];
+    expect(footer.tokens?.input).toBe(200);
+    expect(state._lastSettledStats?.tokens?.input).toBe(200);
+    expect(state._pendingBaselineReset).toBeNull();
+    expect(state._pendingRuns).toHaveLength(0);
+  });
+
+  it('an unmatched agent_settled (empty queue) is a no-op — it must not invent a footer', async () => {
+    // e.g. a stale settle delivered after a session/transport reset and
+    // before any new prompt (reset → orphan → sendPrompt B). It must not
+    // post, not write the baseline, not raise the recovery flag, not
+    // touch pi with a fetch — and the next real turn must work normally.
+    let statCalls = 0;
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type === 'get_session_stats') statCalls += 1;
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+
+    ctrl._trackStreaming({ type: 'agent_settled' });   // queue empty → no-op
+    await flush();
+    expect(statCalls).toBe(0);
+    expect(provider.postSessionStatsSettled).not.toHaveBeenCalled();
+    expect(state._lastSettledStats).toBeNull();
+    expect(state._pendingBaselineReset).toBeNull();
+
+    // A later real turn is unaffected: prompt → settle → footer.
+    state._transport = {
+      isRunning: true,
+      send: vi.fn(async () => ({ type: 'response', success: true, command: 'prompt', data: { disposition: 'started' } })),
+    };
+    await ctrl.sendPrompt('real turn');
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await flush();
+    expect(provider.postSessionStatsSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it('a settled tail queued across a generation change is voided (no seed wait, no fetch, no flag)', async () => {
+    // A's tail sits on the chain when onNewSession bumps the generation.
+    // The tail must not run at all: in particular it must NOT await the
+    // NEW generation's resume seed (the test never resolves it — if the
+    // tail awaited it, this test would hang), not fetch, not raise
+    // `_pendingBaselineReset` for the new generation (which would
+    // discard a successful resume seed), not post.
+    const pending: Array<(v: unknown) => void> = [];
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type !== 'get_session_stats') {
+        return { type: 'response', success: true, command: cmd.type };
+      }
+      return new Promise<unknown>((res) => { pending.push(res); }) as never;
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    state._transport = {
+      isRunning: true,
+      send: vi.fn(async (cmd: { type: string }) => {
+        if (cmd.type === 'get_session_stats') {
+          return new Promise<unknown>((res) => { pending.push(res); });
+        }
+        return { type: 'response', success: true, command: 'prompt', data: { disposition: 'started' } };
+      }),
+    };
+
+    await ctrl.sendPrompt('turn A');
+    ctrl._trackStreaming({ type: 'agent_settled' });   // A tail queued; fetch hangs
+    await flush();
+    expect(pending.length).toBe(1);
+
+    ctrl.onNewSession({ clearTranscript: false });     // generation bump
+    // Simulate a resume seeding the NEW generation while A's tail sits queued.
+    state._seedBaselinePromise = new Promise<void>(() => {}); // never resolves
+    const seedValue = {
+      totalTokens: 5, totalCost: 0.01, totalMessages: 1,
+      tokens: { input: 5, output: 1, cacheRead: 0, cacheWrite: 0 },
+    };
+    state._lastSettledStats = seedValue;
+
+    pending[0]({
+      type: 'response', success: true, command: 'get_session_stats',
+      data: { tokens: { total: 999, input: 999, output: 2, cacheRead: 0, cacheWrite: 0 }, cost: 9, totalMessages: 9 },
+    });
+    await flush();
+    await flush();
+
+    expect(provider.postSessionStatsSettled).not.toHaveBeenCalled();
+    expect(state._pendingBaselineReset).toBeNull();
+    expect(state._lastSettledStats).toBe(seedValue);
+    expect(state._pendingRuns).toHaveLength(0);
+  });
+
+  it('a prompt accepted during the agent_end → agent_settled window cannot steal the finished run footer', async () => {
+    // Sequence (the review's blocking race):
+    //   1. sendPrompt A — queue: A (old origin, ~11.5 min ago).
+    //   2. A settles; its stats fetch HANGS on a deferred RPC.
+    //   3. sendPrompt B — new turn id, queue: B (fresh origin).
+    //   4. A's fetch resolves. It must NOT post, must NOT write the
+    //      baseline, and must leave B's queue entry (origin) intact.
+    //   5. B settles. The footer must use B's origin for elapsed and be
+    //      posted as an honest cumulative (baseline-reset semantics).
+    const pending: Array<(v: unknown) => void> = [];
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type !== 'get_session_stats') {
+        return { type: 'response', success: true, command: cmd.type };
+      }
+      return new Promise<unknown>((res) => { pending.push(res); }) as never;
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    state._transport = {
+      isRunning: true,
+      send: vi.fn(async (cmd: { type: string }) => {
+        if (cmd.type === 'get_session_stats') {
+          return new Promise<unknown>((res) => { pending.push(res); });
+        }
+        return { type: 'response', success: true, command: 'prompt', data: { disposition: 'started' } };
+      }),
+    };
+    const snapshot = (input: number) => ({
+      type: 'response', success: true, command: 'get_session_stats',
+      data: { tokens: { total: input, input, output: 2, cacheRead: 0, cacheWrite: 0 }, cost: 0.05, totalMessages: 2 },
+    });
+
+    await ctrl.sendPrompt('turn A');
+    state._pendingRuns[0].startedAt = Date.now() - 690_000; // A ran ~11.5 min
+    ctrl._trackStreaming({ type: 'agent_settled' });        // dequeues A; fetch hangs
+    await flush();
+    expect(pending.length).toBe(1);
+
+    // User submits the next prompt while A's settle fetch is in flight.
+    await ctrl.sendPrompt('turn B');
+    state._pendingRuns[0].startedAt = Date.now() - 5_000;   // B just started
+
+    pending[0](snapshot(100));
+    await flush();
+    // A's post is dropped (turn id rolled) …
+    expect(provider.postSessionStatsSettled).not.toHaveBeenCalled();
+    // … no baseline was written from it …
+    expect(state._lastSettledStats).toBeNull();
+    // … the lost attribution window is flagged for B's footer …
+    expect(state._pendingBaselineReset).toBe(state._sessionGen);
+    // … and B's queue entry — its origin — is untouched.
+    expect(state._pendingRuns).toHaveLength(1);
+
+    ctrl._trackStreaming({ type: 'agent_settled' });        // dequeues B
+    await flush();
+    expect(pending.length).toBe(2);
+    pending[1](snapshot(200));                              // cumulative grew
+    await flush();
+
+    expect(provider.postSessionStatsSettled).toHaveBeenCalledTimes(1);
+    const footer: SessionStats = provider.postSessionStatsSettled.mock.calls[0][0];
+    // Elapsed from B's origin (~5 s), not A's (~11.5 min) and not ~0.
+    expect(footer.elapsedMs).toBeGreaterThanOrEqual(5_000);
+    expect(footer.elapsedMs).toBeLessThan(60_000);
+    // Baseline-reset semantics: posted as-is cumulative, not diffed.
+    expect(footer.tokens?.input).toBe(200);
+    expect(state._pendingRuns).toHaveLength(0);
+    expect(state._pendingBaselineReset).toBeNull();
+  });
+
+  it('agent_settled serializes on an in-flight resume seed before fetching (no null-diff footer)', async () => {
+    // Resume flow: _doStart stored the seed promise; agent_settled must
+    // await it BEFORE issuing its fetch, so the footer diffs against the
+    // seeded baseline instead of racing the seed into a null diff (which
+    // would render the entire session as one turn).
+    let statCalls = 0;
+    let resolveSeed!: () => void;
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type !== 'get_session_stats') {
+        return { type: 'response', success: true, command: cmd.type };
+      }
+      statCalls += 1;
+      return {
+        type: 'response', success: true, command: 'get_session_stats',
+        data: { tokens: { total: 2000, input: 2000, output: 400, cacheRead: 0, cacheWrite: 0 }, cost: 0.20, totalMessages: 4 },
+      };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    state._seedBaselinePromise = new Promise<void>((res) => { resolveSeed = res; });
+    // What the seed will have written when it resolves: pre-disconnect
+    // cumulative (input 1000 / output 200 / cost $0.10).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const seedBaseline: SessionStats = {
+      totalTokens: 1000, totalCost: 0.10, totalMessages: 2,
+      tokens: { input: 1000, output: 200, cacheRead: 0, cacheWrite: 0 },
+    } as unknown as SessionStats;
+
+    state._pendingRuns.push({ turnId: state._currentTurnId, startedAt: Date.now() - 1_000 });
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await flush();
+    // While the seed hangs, the settled fetch must not even fire — the
+    // settle serializes on the seed instead of racing it.
+    expect(statCalls).toBe(0);
+    expect(provider.postSessionStatsSettled).not.toHaveBeenCalled();
+
+    state._lastSettledStats = seedBaseline; // seed resolves & writes
+    resolveSeed();
+    await flush();
+
+    expect(statCalls).toBe(1);
+    expect(provider.postSessionStatsSettled).toHaveBeenCalledTimes(1);
+    const footer: SessionStats = provider.postSessionStatsSettled.mock.calls[0][0];
+    // Delta against the seeded baseline (2000−1000), not the cumulative.
+    expect(footer.tokens?.input).toBe(1000);
+    expect(footer.totalCost).toBeCloseTo(0.10, 10);
+  });
+
+  it('_seedBaseline drops its write when a settled fetch beat it (turn id locked, but _lastSettledStats already set)', async () => {
+    // Sequence:
+    //   1. _seedBaseline fires (e.g. on session resume).
+    //   2. While the seed RPC is in flight, a settled fetch lands first and
+    //      stores a newer snapshot in _lastSettledStats.
+    //   3. The seed RPC resolves. It must NOT clobber the newer snapshot.
+    let resolveSeed!: (response: unknown) => void;
+    let resolveSettled!: (response: unknown) => void;
+    const seedPromise = new Promise<unknown>((res) => { resolveSeed = res; });
+    const settledPromise = new Promise<unknown>((res) => { resolveSettled = res; });
+
+    let callIdx = 0;
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type === 'get_session_stats') {
+        callIdx += 1;
+        return callIdx === 1 ? seedPromise : settledPromise;
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    void provider;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+
+    // Kick off the seed (simulates resume: caller invokes _seedBaseline).
+    const seedPromise2 = state._seedBaseline();
+    await Promise.resolve(); // let the seed's RPC request register
+
+    // While the seed is in flight, fire a settled. The settled fetch
+    // races with the seed for the same get_session_stats call slot,
+    // so this test uses a stronger guarantee: drop the seed on
+    // turn-id mismatch OR when _lastSettledStats already has a value.
+    state._pendingRuns.push({ turnId: state._currentTurnId, startedAt: Date.now() - 1_000 });
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    // Resolve BOTH: settled first (wins), then seed arrives. The settled
+    // fetch completes and stores into _lastSettledStats; the seed's
+    // guard refuses to overwrite.
+    resolveSettled({
+      type: 'response', success: true, command: 'get_session_stats',
+      data: { tokens: { total: 5000, input: 5000, output: 1000, cacheRead: 3000, cacheWrite: 200 }, cost: 0.30, totalMessages: 3 },
+    });
+    await flush();
+    expect(state._lastSettledStats).not.toBeNull();
+
+    const baselineBefore = state._lastSettledStats;
+    resolveSeed({
+      type: 'response', success: true, command: 'get_session_stats',
+      data: { tokens: { total: 999 }, cost: 999 },
+    });
+    await seedPromise2;
+    // The seed's write must NOT have happened: _lastSettledStats is
+    // unchanged from the settled fetch's snapshot.
+    expect(state._lastSettledStats).toBe(baselineBefore);
+    expect(state._lastSettledStats.tokens?.input).toBe(5000);
+  });
+
+  it('_seedBaseline drops its write when the turn id rolls over before it resolves', async () => {
+    // Scenarios: seed started at resume, but the user fired a fresh
+    // sendPrompt while the seed RPC was in flight. The seed must NOT
+    // overwrite _lastSettledStats — that would set the baseline from
+    // the OLD (pre-prompt) session.
+    let resolveSeed!: (response: unknown) => void;
+    const seedPromise = new Promise<unknown>((res) => { resolveSeed = res; });
+
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type === 'get_session_stats') return seedPromise;
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    void provider;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    state._transport = { ...state._transport, isRunning: true };
+
+    // Kick off the seed.
+    const seedPromise2 = state._seedBaseline();
+    await Promise.resolve();
+
+    // Bump the turn id (simulating sendPrompt landing while seed in-flight).
+    state._currentTurnId += 1;
+    const turnIdAfter = state._currentTurnId;
+
+    // Now resolve the seed. The guard must reject.
+    resolveSeed({
+      type: 'response', success: true, command: 'get_session_stats',
+      data: { tokens: { total: 999 }, cost: 999 },
+    });
+    await seedPromise2;
+    expect(state._lastSettledStats).toBeNull();
+    expect(state._currentTurnId).toBe(turnIdAfter);
+  });
+
+  it('a resolved settled fetch is dropped when the turn id has rolled over', async () => {
+    // Wire a settled fetch that hangs forever. The `.then` capture the
+    // turn id BEFORE awaiting; rolling the turn id forward (mimicking a
+    // fresh user prompt's sendPrompt) must make the eventual resolution
+    // a no-op: no post, no _lastSettledStats mutation.
+    let resolveStaleFetch!: (response: unknown) => void;
+    const staleFetchPromise = new Promise<unknown>((res) => { resolveStaleFetch = res; });
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type !== 'get_session_stats') {
+        return { type: 'response', success: true, command: cmd.type };
+      }
+      return staleFetchPromise as never;
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ctrlAny = ctrl as any;
+
+    ctrl._trackStreaming({ type: 'agent_start' });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ctrlAny as any)._pendingRuns.push({ turnId: ctrlAny._currentTurnId, startedAt: Date.now() - 1_000 });
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await flush();
+    expect(provider.postSessionStatsSettled).not.toHaveBeenCalled();
+
+    // Simulate the user sending a new prompt — turn id rolls forward.
+    const turnIdBefore = ctrlAny._currentTurnId;
+    ctrlAny._currentTurnId = turnIdBefore + 1;
+
+    // Now the hung RPC eventually resolves. The .then's turn-id check
+    // must reject: no post, no baseline mutation.
+    resolveStaleFetch({
+      type: 'response', success: true, command: 'get_session_stats',
+      data: {
+        tokens: { total: 9999, input: 9999, output: 9999, cacheRead: 9999, cacheWrite: 9999 },
+        cost: 9.99,
+        totalMessages: 99,
+      },
+    });
+    await flush();
+    expect(provider.postSessionStatsSettled).not.toHaveBeenCalled();
+    expect(ctrlAny._lastSettledStats).toBeNull();
+  });
+});
+
+// ─── diffSettledStats tests (per-turn footer deltas) ──────────────────────────
+
+describe('diffSettledStats', () => {
+  it('returns current as-is when there is no previous snapshot (first turn of session)', () => {
+    const cur: SessionStats = {
+      totalTokens: 100_000,
+      totalCost: 0.45,
+      totalMessages: 5,
+      tokens: { input: 1000, output: 200, cacheRead: 800, cacheWrite: 50 },
+      elapsedMs: 60_000,
+      startedAt: 1,
+    };
+    expect(diffSettledStats(cur, null)).toEqual(cur);
+  });
+
+  it('diffs cumulative fields into per-turn deltas (the whole point of the helper)', () => {
+    const prev: SessionStats = {
+      totalTokens: 0, totalMessages: 0,
+      totalCost: 0.45,
+      tokens: { input: 1000, output: 200, cacheRead: 800, cacheWrite: 50 },
+    };
+    const cur: SessionStats = {
+      totalTokens: 0, totalMessages: 0,
+      totalCost: 0.55,
+      tokens: { input: 1500, output: 350, cacheRead: 1200, cacheWrite: 80 },
+    };
+    const out = diffSettledStats(cur, prev);
+    expect(out.totalCost).toBeCloseTo(0.10, 10);
+    expect(out.tokens).toEqual({
+      input: 500, output: 150, cacheRead: 400, cacheWrite: 30,
+    });
+    // Cumulative non-delta fields are dropped so the footer only carries
+    // per-turn semantics.
+    expect(out.totalTokens).toBeNull();
+    expect(out.totalMessages).toBeNull();
+    expect(out.startedAt).toBeUndefined();
+  });
+
+  it('clamps non-positive deltas to null (provider counters can reset)', () => {
+    const prev: SessionStats = {
+      totalTokens: 0, totalMessages: 0,
+      totalCost: 0.55,
+      tokens: { input: 1500, output: 350, cacheRead: 1200, cacheWrite: 80 },
+    };
+    const cur: SessionStats = {
+      totalTokens: 0, totalMessages: 0,
+      totalCost: 0.30, // went DOWN
+      tokens: { input: 1500, output: 350, cacheRead: 1100, cacheWrite: 80 }, // cacheRead went DOWN
+    };
+    const out = diffSettledStats(cur, prev);
+    expect(out.totalCost).toBeNull();
+    expect(out.tokens).toEqual({
+      input: null, output: null, cacheRead: null, cacheWrite: null,
+    });
+  });
+
+  it('preserves elapsedMs from current (per-turn, frozen at settle)', () => {
+    const cur: SessionStats = { totalTokens: 0, totalMessages: 0, elapsedMs: 30_000, totalCost: 0.10 };
+    const prev: SessionStats = { totalTokens: 0, totalMessages: 0, elapsedMs: 60_000, totalCost: 0.05 };
+    expect(diffSettledStats(cur, prev).elapsedMs).toBe(30_000);
+  });
+
+  it('treats missing previous tokens as zeros (a snapshot from old pi diffs cleanly)', () => {
+    const prev: SessionStats = { totalTokens: 0, totalMessages: 0, totalCost: 0.10 };
+    const cur: SessionStats = {
+      totalTokens: 0, totalMessages: 0,
+      totalCost: 0.20,
+      tokens: { input: 100, output: 20, cacheRead: 50, cacheWrite: 5 },
+    };
+    expect(diffSettledStats(cur, prev).tokens).toEqual({
+      input: 100, output: 20, cacheRead: 50, cacheWrite: 5,
+    });
+  });
+});
+
+// ─── parseTokenBuckets tests ────────────────────────────────────────────────
+
+describe('parseTokenBuckets', () => {
+  it('extracts the four per-bucket counts from pi tokens response', () => {
+    expect(
+      parseTokenBuckets({ input: 100, output: 25, cacheRead: 80, cacheWrite: 5 }),
+    ).toEqual({ input: 100, output: 25, cacheRead: 80, cacheWrite: 5 });
+  });
+
+  it('preserves null vs 0 distinction (0 is a real measurement, null is unknown)', () => {
+    expect(
+      parseTokenBuckets({ input: 0, output: null, cacheRead: null, cacheWrite: null }),
+    ).toEqual({ input: 0, output: null, cacheRead: null, cacheWrite: null });
+  });
+
+  it('coerces numeric strings', () => {
+    expect(
+      parseTokenBuckets({ input: '1000', output: '500', cacheRead: 0, cacheWrite: 5 }),
+    ).toEqual({ input: 1000, output: 500, cacheRead: 0, cacheWrite: 5 });
+  });
+
+  it('returns undefined for null/non-object input', () => {
+    expect(parseTokenBuckets(null)).toBeUndefined();
+    expect(parseTokenBuckets(undefined)).toBeUndefined();
+    expect(parseTokenBuckets('garbage')).toBeUndefined();
   });
 });
 

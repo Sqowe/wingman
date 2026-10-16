@@ -827,6 +827,22 @@ body {
   border: 1px solid var(--vscode-inputValidation-errorBorder);
 }
 
+/* ── Session summary footer (Kiro-style end-of-turn one-liner) ─────────── */
+
+.session-summary-card {
+  padding: 6px 12px;
+  margin: 8px auto;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-editorWidget-border, var(--vscode-panel-border, transparent));
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+  font-size: 12px;
+  text-align: center;
+  max-width: 80%;
+  /* Non-interactive — keep cursor as a plain arrow and lock out selection noise. */
+  user-select: none;
+}
+
 /* ── Copy button ──────────────────────────────────────────────────────────── */
 
 .copy-btn {

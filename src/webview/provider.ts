@@ -192,6 +192,11 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
             if (this._lastClaudeMemory !== undefined) {
               this._postMessage({ type: 'claudeMemory', info: this._lastClaudeMemory });
             }
+            // Replay the terminal session-stats summary so the chat footer card
+            // is correct immediately after a webview reload (mid-session).
+            if (this._lastStatsSettled !== undefined) {
+              this._postMessage({ type: 'sessionStatsSettled', stats: this._lastStatsSettled });
+            }
             // Re-post any question card still awaiting an answer. The request id
             // is unchanged, so an answer after a webview reload still correlates
             // (design doc §6). pi is blocked on these, so they must not be lost.
@@ -854,6 +859,34 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   /** Register a callback that receives session stats after each agent turn, or null on reset. */
   public onSessionStats(cb: (stats: SessionStats | null) => void): void {
     this._onSessionStats = cb;
+  }
+
+  /**
+   * Push a terminal-of-session-stats summary to the webview for the chat
+   * footer card. Cached until the webview signals `ready` so a reload
+   * mid-session still renders the latest footer.
+   *
+   * Triggered by `_trackStreaming` on the `agent_settled` event (not
+   * `agent_end`) so multi-iteration tool loops don't flash a fresh footer
+   * between iterations.
+   */
+  private _lastStatsSettled: SessionStats | undefined;
+  public postSessionStatsSettled(stats: SessionStats): void {
+    this._lastStatsSettled = stats;
+    if (this._webviewReady) {
+      this._postMessage({ type: 'sessionStatsSettled', stats });
+    }
+  }
+
+  /**
+   * Drop the cached footer snapshot. Called by the controller on
+   * `new_session` / `switch_session` so a webview reload mid-session does
+   * not replay the previous turn's footer on `ready`. The store already
+   * clears its own summary item via `sessionReset`, but the host's replay
+   * cache is independent and needs to be cleared in lock-step.
+   */
+  public clearSessionStatsSettled(): void {
+    this._lastStatsSettled = undefined;
   }
 
   /**

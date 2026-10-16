@@ -58,6 +58,7 @@ export default function App() {
   const setInstructionFiles = useChatStore((s) => s.setInstructionFiles);
   const claudeMemory = useChatStore((s) => s.claudeMemory);
   const setClaudeMemory = useChatStore((s) => s.setClaudeMemory);
+  const setSessionStatsSettled = useChatStore((s) => s.setSessionStatsSettled);
   const addQuestionCard = useChatStore((s) => s.addQuestionCard);
   const withdrawQuestionCard = useChatStore((s) => s.withdrawQuestionCard);
 
@@ -177,6 +178,14 @@ export default function App() {
 
         case 'claudeMemory':
           setClaudeMemory(msg.info);
+          break;
+
+        case 'sessionStatsSettled':
+          // Replace-in-place: store drops any prior summary and appends
+          // the new one. Triggered only on `agent_settled` from the host,
+          // so the footer doesn't flash between iterations of a multi-
+          // iteration tool loop.
+          setSessionStatsSettled(msg.stats);
           break;
 
         case 'uiDialog':
