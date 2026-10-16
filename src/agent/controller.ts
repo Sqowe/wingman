@@ -292,8 +292,20 @@ export class AgentController implements vscode.Disposable {
    *  baseline the newer turn had already written and make the following
    *  turn render the whole session as one delta. The chain is just
    *  ordering; a tail whose generation died is still dropped by its own
-   *  turn-id/gen guards. */
+   *  turn-id/gen guards. Reset by `_resetSessionGenerationState`: a tail
+   *  can hang forever on an RPC that never resolves (pi respawned
+   *  mid-request — transport RPCs settle only when a response arrives),
+   *  and a fresh generation must not queue behind that dead promise. */
   private _settledFooterChain: Promise<void> = Promise.resolve();
+  /** Wall-clock cap for the RPCs a settled-footer tail blocks on (the
+   *  resume-seed await and the get_session_stats fetch). Transport RPCs
+   *  settle only when a correlated response arrives, so a request lost
+   *  to a pi respawn would otherwise hang the tail — and via the chain,
+   *  every future footer with it. On timeout the tail proceeds: a seed
+   *  that lands late is still guarded, and a timed-out fetch counts as
+   *  a miss (recovery flag), not as data. Instance field so tests can
+   *  shrink it. */
+  private _settleRpcTimeoutMs = 10_000;
   /** Turn-id counter incremented at every user-turn boundary
    *  (`sendPrompt`) and at session-generation boundaries
    *  (`onNewSession`, `_doStart`). `agent_start` never touches it.
@@ -1156,6 +1168,11 @@ export class AgentController implements vscode.Disposable {
     this._settledFetchSeq++;
     this._currentTurnId++;
     this._sessionGen++;
+    // Start the new generation with a fresh chain: a tail queued on the
+    // old one may hang forever (RPC lost to a pi respawn) and would
+    // otherwise silently swallow every future footer. The orphaned tail,
+    // if it ever resolves, is voided by its genAtSettle check.
+    this._settledFooterChain = Promise.resolve();
     this._provider?.clearSessionStatsSettled();
   }
 
@@ -1688,6 +1705,25 @@ export class AgentController implements vscode.Disposable {
     }
   }
 
+  /** Race `p` against `_settleRpcTimeoutMs`. Resolves `null` when the
+   *  timeout wins — callers treat that exactly like a failed RPC. A
+   *  late resolution/rejection of the real promise is swallowed here:
+   *  correctness for late data is owned by the seq/gen/turn guards, not
+   *  by this race. */
+  private _withSettleRpcTimeout<T>(p: Promise<T>): Promise<T | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), this._settleRpcTimeoutMs);
+    });
+    // Attach a no-op catch so a rejection AFTER the timeout won cannot
+    // surface as an unhandled rejection; before the timeout, the race
+    // propagates it to the caller's own try/catch.
+    void p.catch(() => { /* handled by caller while the race is live */ });
+    return Promise.race([p, timeout]).finally(() => {
+      if (timer !== undefined) clearTimeout(timer);
+    });
+  }
+
   /**
    * Per-turn stats fetch for the chat footer card. Shares the response
    * parser with `_fetchSessionStats` but uses an independent seq-guard so
@@ -1704,7 +1740,10 @@ export class AgentController implements vscode.Disposable {
     const seq = ++this._settledFetchSeq;
     const sessionGen = this._sessionGen;
     try {
-      const response = await this.sendCommand({ type: 'get_session_stats' });
+      const response = await this._withSettleRpcTimeout(
+        this.sendCommand({ type: 'get_session_stats' }),
+      );
+      if (!response) return { stats: null, superseded: false, sessionGen }; // RPC timed out → treated as a miss
       if (seq !== this._settledFetchSeq) return { stats: null, superseded: true, sessionGen }; // superseded only by a newer settled fetch
       if (!response.success) return { stats: null, superseded: false, sessionGen };
       const data = (typeof response.data === 'object' && response.data !== null)
@@ -1751,9 +1790,12 @@ export class AgentController implements vscode.Disposable {
     // Serialize on an in-flight resume seed: the first post-resume footer
     // must diff against the seeded pre-disconnect baseline, not null
     // (diffing against null would render the entire session as one turn).
+    // Raced against the RPC timeout so a seed whose request was lost to
+    // a pi respawn cannot hang the tail (and through the chain, every
+    // future footer); a seed that lands late is still guarded.
     if (this._seedBaselinePromise) {
       try {
-        await this._seedBaselinePromise;
+        await this._withSettleRpcTimeout(this._seedBaselinePromise);
       } catch {
         // best-effort: the seed already swallowed its own errors
       }

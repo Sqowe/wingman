@@ -14,6 +14,7 @@ import {
   formatContextTooltipBody,
   formatElapsed,
   formatChatFooterLine,
+  formatCacheHitRate,
 } from './stats-format';
 import type { ModelState, SessionStats } from './messages';
 
@@ -295,7 +296,29 @@ describe('formatChatFooterLine', () => {
         cacheWrite: 5_000,
       },
     }));
-    expect(out).toBe('↑100k ↓25k ↻80k ↪5k');
+    expect(out).toBe('↑100k ↓25k ↻80k 44% ↪5k');
+  });
+
+  it('appends the cache hit-rate percentage to the ↻ segment', () => {
+    // 315.3k read / (315.3k + 8.3k fresh) ≈ 97.4% → 97%.
+    const out = formatChatFooterLine(stats({
+      tokens: { input: 8_300, output: null, cacheRead: 315_300, cacheWrite: null },
+    }));
+    expect(out).toBe('↑8.3k ↻315.3k 97%');
+  });
+
+  it('hit rate is 100% when the whole prompt came from cache', () => {
+    const out = formatChatFooterLine(stats({
+      tokens: { input: 0, output: null, cacheRead: 12_000, cacheWrite: null },
+    }));
+    expect(out).toBe('↻12k 100%');
+  });
+
+  it('no percentage when nothing was read from cache', () => {
+    const out = formatChatFooterLine(stats({
+      tokens: { input: 5_000, output: null, cacheRead: 0, cacheWrite: null },
+    }));
+    expect(out).toBe('↑5k');
   });
 
   it('omits zero-valued buckets (no stray separators)', () => {
@@ -333,7 +356,7 @@ describe('formatChatFooterLine', () => {
       },
       totalCost: 0.45,
     }));
-    expect(out).toBe('⏱ 11m 30s · ↑100k ↓25k ↻80k ↪5k · ≈ $0.45');
+    expect(out).toBe('⏱ 11m 30s · ↑100k ↓25k ↻80k 44% ↪5k · ≈ $0.45');
   });
 
   it('renders M-scaled buckets beyond 1M tokens', () => {
@@ -345,7 +368,17 @@ describe('formatChatFooterLine', () => {
         cacheWrite: 12_000,
       },
     }));
-    expect(out).toBe('↑1.5M ↓250k ↻800k ↪12k');
+    expect(out).toBe('↑1.5M ↓250k ↻800k 35% ↪12k');
+  });
+
+  it('formatCacheHitRate: rounding and edge cases', () => {
+    expect(formatCacheHitRate(315_300, 8_300)).toBe(' 97%');
+    expect(formatCacheHitRate(2, 1)).toBe(' 67%');          // 66.67 → 67
+    expect(formatCacheHitRate(12_000, 0)).toBe(' 100%');
+    expect(formatCacheHitRate(12_000, null)).toBe(' 100%');
+    expect(formatCacheHitRate(0, 5_000)).toBe('');           // no cache activity → no suffix
+    expect(formatCacheHitRate(-5, 100)).toBe('');            // nonsense input → no suffix
+    expect(formatCacheHitRate(Number.NaN, 100)).toBe('');
   });
 
   it('drops cost when null/non-finite instead of printing "$NaN"', () => {

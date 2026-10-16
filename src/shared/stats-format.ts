@@ -41,6 +41,19 @@ export function formatTokensCore(raw: unknown): string {
   return `${Math.round(n)}`;
 }
 
+/** Cache hit rate as a display suffix (" 97%"): the share of prompt
+ *  tokens served from the provider's cache, cacheRead /
+ *  (cacheRead + input). Rendered whenever the turn read from cache at
+ *  all (cacheRead > 0); input = 0 with cache read present is a perfect
+ *  100%. Input (fresh prompt tokens) is the denominator's other half —
+ *  output/cacheWrite do not participate. */
+export function formatCacheHitRate(cacheRead: number, input: number | null | undefined): string {
+  if (!(cacheRead > 0) || !Number.isFinite(cacheRead)) return '';
+  const fresh = typeof input === 'number' && Number.isFinite(input) && input > 0 ? input : 0;
+  const rate = cacheRead / (cacheRead + fresh);
+  return ` ${Math.round(rate * 100)}%`;
+}
+
 /**
  * Format a token count. Returns "—" for missing / non-finite values.
  * @example formatTokens(1234)   → "1.2k tok"
@@ -262,7 +275,7 @@ export function formatElapsed(ms: number): string {
  *     tokens: { input: 100000, output: 25000, cacheRead: 80000, cacheWrite: 5000 },
  *     totalCost: 0.45,
  *   })
- *   // → "⏱ 11m 30s · ↑100k ↓25k ↻80k ↪5k · ≈$0.45"
+ *   // → "⏱ 11m 30s · ↑100k ↓25k ↻80k 44% ↪5k · ≈$0.45"
  */
 export function formatChatFooterLine(stats: SessionStats): string | null {
   const parts: string[] = [];
@@ -284,7 +297,9 @@ export function formatChatFooterLine(stats: SessionStats): string | null {
     // noise without information.
     if (t.input && Number.isFinite(t.input))                 segs.push(`↑${formatTokensCore(t.input)}`);
     if (t.output && Number.isFinite(t.output))               segs.push(`↓${formatTokensCore(t.output)}`);
-    if (t.cacheRead && Number.isFinite(t.cacheRead))         segs.push(`↻${formatTokensCore(t.cacheRead)}`);
+    if (t.cacheRead && Number.isFinite(t.cacheRead)) {
+      segs.push(`↻${formatTokensCore(t.cacheRead)}${formatCacheHitRate(t.cacheRead, t.input)}`);
+    }
     if (t.cacheWrite && Number.isFinite(t.cacheWrite))       segs.push(`↪${formatTokensCore(t.cacheWrite)}`);
     if (segs.length) parts.push(segs.join(' '));
   }

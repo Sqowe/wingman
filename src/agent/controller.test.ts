@@ -193,8 +193,10 @@ describe('AgentController stats normalization', () => {
   }
 
   async function flush() {
-    // Let the fire-and-forget _fetchSessionStats microtasks settle.
-    for (let i = 0; i < 5; i++) await Promise.resolve();
+    // Let the fire-and-forget _fetchSessionStats microtasks settle — and
+    // the settled-tail path's extra hops (chain .then, RPC timeout race,
+    // .finally) on top of them.
+    for (let i = 0; i < 12; i++) await Promise.resolve();
   }
 
   it('normalizes camelCase stats fields correctly', async () => {
@@ -897,6 +899,124 @@ describe('AgentController stats normalization', () => {
     expect(state._pendingBaselineReset).toBeNull();
     expect(state._lastSettledStats).toBe(seedValue);
     expect(state._pendingRuns).toHaveLength(0);
+  });
+
+  it('a generation reset un-wedges the footer chain (a hung tail cannot block future footers)', async () => {
+    // The production wedge: a tail's get_session_stats RPC never resolves
+    // (pi respawned mid-request). Here we simulate the wedge directly —
+    // the chain is stuck — and verify _resetSessionGenerationState gives
+    // the new generation a fresh chain so later settles still post.
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type !== 'get_session_stats') {
+        return { type: 'response', success: true, command: cmd.type };
+      }
+      return {
+        type: 'response', success: true, command: 'get_session_stats',
+        data: { tokens: { total: 50, input: 50, output: 5, cacheRead: 0, cacheWrite: 0 }, cost: 0.02, totalMessages: 1 },
+      };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    state._transport = {
+      isRunning: true,
+      send: vi.fn(async (cmd: { type: string }) => {
+        if (cmd.type === 'get_session_stats') {
+          return { type: 'response', success: true, command: 'get_session_stats', data: { tokens: { total: 50, input: 50, output: 5, cacheRead: 0, cacheWrite: 0 }, cost: 0.02, totalMessages: 1 } };
+        }
+        return { type: 'response', success: true, command: 'prompt', data: { disposition: 'started' } };
+      }),
+    };
+
+    // Wedge: a dead tail sits on the chain forever.
+    state._settledFooterChain = new Promise<void>(() => {});
+    await ctrl.sendPrompt('turn A');
+    ctrl._trackStreaming({ type: 'agent_settled' });   // queues behind the wedge
+    await flush();
+    expect(provider.postSessionStatsSettled).not.toHaveBeenCalled();
+
+    // Transport restart / session switch: generation reset must hand the
+    // next settle a FRESH chain.
+    state._resetSessionGenerationState();
+    state._pendingRuns.push({ turnId: state._currentTurnId, startedAt: Date.now() - 1_000 });
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await flush();
+    await flush();
+    expect(provider.postSessionStatsSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it('a hung settled fetch times out: miss + recovery flag, and the next footer is honest-cumulative', async () => {
+    // RPC lost to a pi respawn: the fetch neither resolves nor rejects.
+    // The tail must give up after _settleRpcTimeoutMs, raise the recovery
+    // flag, and keep the chain alive for the next settle.
+    let responded = false;
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      // get_session_stats is served by the transport mock below; the
+      // factory only sees the other commands (get_commands, …).
+      if (cmd.type === 'get_session_stats') {
+        return responded
+          ? { type: 'response', success: true, command: 'get_session_stats', data: { tokens: { total: 70, input: 70, output: 7, cacheRead: 0, cacheWrite: 0 }, cost: 0.03, totalMessages: 2 } }
+          : new Promise<unknown>(() => {}) as never;
+      }
+      return { type: 'response', success: true, command: cmd.type };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    state._settleRpcTimeoutMs = 10;
+    state._transport = {
+      isRunning: true,
+      send: vi.fn(async (cmd: { type: string }) => {
+        if (cmd.type === 'get_session_stats') {
+          if (!responded) return new Promise<unknown>(() => {}); // hangs forever
+          return { type: 'response', success: true, command: 'get_session_stats', data: { tokens: { total: 70, input: 70, output: 7, cacheRead: 0, cacheWrite: 0 }, cost: 0.03, totalMessages: 2 } };
+        }
+        return { type: 'response', success: true, command: 'prompt', data: { disposition: 'started' } };
+      }),
+    };
+
+    await ctrl.sendPrompt('turn A');
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await new Promise((r) => setTimeout(r, 40)); // let the 10 ms timeout win
+    expect(provider.postSessionStatsSettled).not.toHaveBeenCalled();
+    expect(state._pendingBaselineReset).toBe(state._sessionGen);
+
+    // Next turn: the fetch responds. The flag must make it post as-is
+    // (honest cumulative) instead of silently merging the lost turn.
+    responded = true;
+    await ctrl.sendPrompt('turn B');
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await flush();
+    await flush();
+    expect(provider.postSessionStatsSettled).toHaveBeenCalledTimes(1);
+    const footer: SessionStats = provider.postSessionStatsSettled.mock.calls[0][0];
+    expect(footer.tokens?.input).toBe(70); // as-is, not diffed
+    expect(state._pendingBaselineReset).toBeNull();
+  });
+
+  it('a hung resume seed times out and the footer still posts', async () => {
+    // The seed's RPC was lost (never resolves). The settle must not hang
+    // on it forever: after the timeout it proceeds with whatever baseline
+    // exists and posts.
+    const { ctrl, provider } = makeControllerForStats((cmd) => {
+      if (cmd.type !== 'get_session_stats') {
+        return { type: 'response', success: true, command: cmd.type };
+      }
+      return {
+        type: 'response', success: true, command: 'get_session_stats',
+        data: { tokens: { total: 42, input: 42, output: 4, cacheRead: 0, cacheWrite: 0 }, cost: 0.01, totalMessages: 1 },
+      };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const state = ctrl as any;
+    state._settleRpcTimeoutMs = 10;
+    state._seedBaselinePromise = new Promise<void>(() => {}); // hangs forever
+
+    state._pendingRuns.push({ turnId: state._currentTurnId, startedAt: Date.now() - 1_000 });
+    ctrl._trackStreaming({ type: 'agent_settled' });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(provider.postSessionStatsSettled).toHaveBeenCalledTimes(1);
+    const footer: SessionStats = provider.postSessionStatsSettled.mock.calls[0][0];
+    // No baseline available (seed never wrote) → honest cumulative as-is.
+    expect(footer.tokens?.input).toBe(42);
   });
 
   it('a prompt accepted during the agent_end → agent_settled window cannot steal the finished run footer', async () => {
