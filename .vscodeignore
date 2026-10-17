@@ -54,6 +54,7 @@ test/
 .index/
 
 # Firecrawl skill scratch output — not part of the extension
+.firecrawl
 .firecrawl-*
 
 # Sample workspace — dev-only fixture
