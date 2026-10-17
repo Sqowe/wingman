@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-10-16
+
+### Changed
+
+- **The Current Date Template setting now edits as a multi-line field.** In the Settings UI
+  it rendered as a single-line input, which made the three-line default (and any longer
+  template) unreadable; it now opens as a resizable multi-line text area.
+
 ## [0.3.3] - 2026-10-16
 
 ### Fixed
@@ -506,7 +514,8 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/wingman/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/sqowe/wingman/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/sqowe/wingman/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/sqowe/wingman/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/sqowe/wingman/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/sqowe/wingman/compare/v0.3.0...v0.3.1

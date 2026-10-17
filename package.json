@@ -2,7 +2,7 @@
   "name": "sqowe-wingman",
   "displayName": "Sqowe Wingman",
   "description": "A VS Code client for the pi coding agent",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "publisher": "sqowe",
   "license": "MIT",
   "repository": {
@@ -288,6 +288,7 @@
         },
         "sqoweWingman.currentDateTemplate": {
           "type": "string",
+          "editPresentation": "multilineText",
           "default": "Current date: {{date}} ({{weekday}}, time zone {{timeZone}}).\nUse this as the reference point for all time-related reasoning.\nIgnore any internal assumption about today's date, including dates implied by the serving infrastructure.",
           "markdownDescription": "Template for the `<current_date>` section Wingman injects into pi's system prompt, so models reason from your actual date instead of their training data or the provider server's clock. Placeholders: `{{date}}` (`YYYY-MM-DD`), `{{weekday}}` (full English weekday), `{{timeZone}}` (IANA zone of this machine). Unknown placeholders stay verbatim. Empty falls back to the built-in default shown here. Changing this reloads the agent to apply. Kill switch: `WINGMAN_CURRENT_DATE=off` in the environment VS Code starts from.",
           "scope": "window"
