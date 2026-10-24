@@ -115,6 +115,93 @@ describe('newSession — transport throws', () => {
   });
 });
 
+// ─── a second request while one is in flight ───────────────────────────────
+//
+// The shortcut can legitimately reach the command twice: the webview forwards
+// it, and VS Code's own keybinding fires for the same keystroke. pi's
+// new_session rebuilds the whole runtime, so the second request must not run.
+
+describe('newSession — a request arrives while one is in flight', () => {
+  it('ignores the second request', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const controller = makeController({
+      sendCommand: vi.fn(async () => {
+        await gate;
+        return { type: 'response', success: true, command: 'new_session' };
+      }),
+    });
+
+    const first = newSession(controller as never);
+    try {
+      // The second request arrives while the first is still running.
+      await newSession(controller as never);
+      expect(controller.sendCommand).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+    }
+    await first;
+    expect(controller.sendCommand).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── a duplicate that arrives just after the first one finished ─────────────
+//
+// The webview path and the workbench keybinding are not synchronised, so the
+// second request can land just after the first one completed. A short
+// cooldown swallows it — but a failed session must stay retryable.
+
+describe('newSession — a duplicate arrives just after the first one finished', () => {
+  it('ignores it', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    const controller = makeController();
+
+    try {
+      await newSession(controller as never);
+      now.mockReturnValue(1_200);
+      await newSession(controller as never);
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(controller.sendCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts a new request once the cooldown has passed', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    const controller = makeController();
+
+    try {
+      await newSession(controller as never);
+      now.mockReturnValue(2_000);
+      await newSession(controller as never);
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(controller.sendCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it('lets a failed session be retried immediately', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+    const controller = makeController({
+      sendCommand: vi.fn(async () => ({
+        type: 'response', success: false, command: 'new_session', error: 'cancelled',
+      })),
+    });
+
+    try {
+      await newSession(controller as never);
+      now.mockReturnValue(1_100);
+      await newSession(controller as never);
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(controller.sendCommand).toHaveBeenCalledTimes(2);
+  });
+});
+
 // ─── non-fatal restore failure ───────────────────────────────────────────────
 //
 // pi has already created the session by the time the re-apply runs. If it is

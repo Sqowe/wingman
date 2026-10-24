@@ -119,6 +119,54 @@ describe('App — question card placement', () => {
   });
 });
 
+describe('App — the new-session shortcut', () => {
+  it('asks the host for a new session and keeps the chord away from VS Code', () => {
+    render(<App />);
+
+    // VS Code listens on the frame's window, one step past `document`.
+    const vscodeListener = vi.fn();
+    window.addEventListener('keydown', vscodeListener);
+
+    try {
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'n',
+          code: 'KeyN',
+          metaKey: true,
+          altKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+      expect(postMessage).toHaveBeenCalledWith({ type: 'newSession' });
+      // If the chord reached VS Code, its own keybinding would run the command
+      // a second time and two sessions would be created for one keystroke.
+      expect(vscodeListener).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', vscodeListener);
+    }
+  });
+
+  it('does not ask for a new session again while the key is held down', () => {
+    render(<App />);
+
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'n',
+        code: 'KeyN',
+        metaKey: true,
+        altKey: true,
+        repeat: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+
+    expect(postMessage).not.toHaveBeenCalledWith({ type: 'newSession' });
+  });
+});
+
 describe('App — image attachments dropped by the host', () => {
   /** Attach a PNG through the composer's file input and send the prompt. */
   async function sendPromptWithImage(): Promise<void> {

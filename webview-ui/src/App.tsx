@@ -264,19 +264,32 @@ export default function App() {
   // module takes the copy over instead (see lib/selection-copy.ts).
   useEffect(() => installSelectionCopy(), []);
 
-  // Forward the New Session shortcut (Cmd/Ctrl+Alt+N) to the host. VS Code
-  // keybindings do not reach the extension while the webview iframe has focus,
-  // so the package.json keybinding only fires when the view frame (not its
-  // content) is focused; this covers the common case of typing in the composer.
+  // Forward the New Session shortcut (Cmd/Ctrl+Alt+N) to the host.
+  //
+  // The chord is handled here and stopped there on purpose. VS Code forwards
+  // key events from a webview iframe to the workbench, and the view keeps the
+  // `focusedView` context key while its webview has focus — so the
+  // package.json keybinding (cmd+alt+n, `when: focusedView ==
+  // sqoweWingman.chat`) fires as well, and the command would run twice: once
+  // from here, once from VS Code. Two new sessions for one keystroke.
+  //
+  // The listener sits on `document` because a key event bubbles document →
+  // window and VS Code's own listener is on the frame's window: stopping the
+  // event on `document` keeps it from ever reaching VS Code. The keybinding
+  // still covers the case where the view frame itself has focus, because that
+  // never reaches the webview at all.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.altKey && e.code === 'KeyN') {
         e.preventDefault();
+        e.stopPropagation();
+        // Holding the key down must not ask for a new session again.
+        if (e.repeat) return;
         vscode.postMessage({ type: 'newSession' });
       }
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
   }, []);
 
   const handleSend = useCallback((text: string, images?: AttachedImage[]) => {

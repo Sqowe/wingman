@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The New Session shortcut no longer starts two sessions.** Cmd/Ctrl+Alt+N
+  reached the command twice: once through the chat view, which forwards it to
+  the host, and once through VS Code's own keybinding — the workbench forwards
+  key events out of a webview, so the binding fired while the chat had focus.
+  The chat now keeps the shortcut to itself, and the command ignores a request
+  that arrives while a new session is still being created.
+
 - **Cmd+C now copies the text you selected in the chat.** VS Code cancels the
   browser's own copy inside a webview and replaces it with a round trip that
   re-focuses the last focused element — in Wingman that is the composer's
