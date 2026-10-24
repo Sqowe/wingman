@@ -12,7 +12,7 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { AgentController } from '../agent/controller';
-import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo, AgentMemoryInfo, UiDialogMessage, UiDialogAnswerMessage } from '../shared/messages';
+import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo, AgentMemoryInfo, UiDialogMessage, UiDialogAnswerMessage, ImageDropReason, SendPromptMessage } from '../shared/messages';
 import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES, MAX_PATCH_BYTES, MAX_IMAGE_BYTES, MAX_IMAGES_PER_PROMPT, MAX_TOTAL_IMAGE_BYTES, ALLOWED_IMAGE_MIME_TYPES, type AllowedImageMimeType } from '../shared/limits';
 import { isWithinOrEqualDir, isSameDir } from '../shared/path-guard';
 import type { RpcEvent } from '../agent/transport';
@@ -20,6 +20,26 @@ import type { DiffService } from '../diff/diff-service';
 
 /** Maximum ms between accepted prompts (simple rate-limit). */
 const PROMPT_RATE_LIMIT_MS = 500;
+
+/**
+ * Internal-only metadata carried alongside a validated `sendPrompt` message.
+ * Not part of the wire protocol — it travels from the message validator to
+ * the send handler, which turns it into the `promptAccepted` acknowledgement.
+ */
+interface SendPromptMeta {
+  /** Number of attachments the webview sent that the host did not forward. */
+  imagesDropped: number;
+  /** Cause of the drop; null when nothing was dropped. */
+  dropReason: ImageDropReason | null;
+}
+
+/**
+ * A validated webview message. `sendPrompt` carries the extra `meta` field
+ * with the image accounting; every other message is the wire type as-is.
+ */
+type ValidatedWebviewMessage =
+  | Exclude<WebviewMessage, SendPromptMessage>
+  | (SendPromptMessage & { meta?: SendPromptMeta });
 
 /** Maximum clipboard writes accepted per window (simple rate-limit, defense-in-depth). */
 const COPY_RATE_LIMIT_MS = 200;
@@ -212,7 +232,7 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
             break;
 
           case 'sendPrompt':
-            void this._handleSendPrompt(message.text, message.images);
+            void this._handleSendPrompt(message.text, message.images, message.meta);
             break;
 
           case 'copyToClipboard':
@@ -252,6 +272,15 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
           case 'uiDialogAnswer':
             this._handleUiDialogAnswer(message);
             break;
+
+          case 'diag':
+            // Diagnostic trace from the webview (image-attachment path).
+            // Written to the output channel so it lands in the persisted
+            // window log and can be read after the fact.
+            this._controller?.outputChannel?.appendLine(
+              `[webview] ${message.scope}: ${message.detail}`,
+            );
+            break;
         }
       }),
     );
@@ -286,7 +315,7 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
    * Returns the typed message or null if validation fails.
    * Unknown/malformed messages are logged at debug level to aid schema-drift diagnosis.
    */
-  private _validateMessage(raw: unknown): WebviewMessage | null {
+  private _validateMessage(raw: unknown): ValidatedWebviewMessage | null {
     if (typeof raw !== 'object' || raw === null) {
       this._controller?.outputChannel?.appendLine(
         `[WingmanViewProvider] dropped non-object message: ${typeof raw}`,
@@ -305,6 +334,23 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
       case 'ready':
         return { type: 'ready' };
 
+      case 'diag': {
+        // Diagnostic trace from the webview (image-attachment path). The
+        // detail is free-form, so it is sanitised: a scope outside the known
+        // namespace is ignored, and the detail is length-capped and stripped
+        // of newlines and control characters — it ends up verbatim in a log
+        // file, so it must not be able to forge log lines or flood them.
+        if (typeof msg['scope'] !== 'string' || typeof msg['detail'] !== 'string') return null;
+        if (!/^composer\.[A-Za-z]+$/.test(msg['scope'])) return null;
+        const scope = msg['scope'];
+        const detail = msg['detail']
+          .replace(/[\r\n\t]+/g, ' ')
+          // eslint-disable-next-line no-control-regex
+          .replace(/[\x00-\x1F\x7F]/g, ' ')
+          .slice(0, 500);
+        return { type: 'diag', scope, detail };
+      }
+
       case 'sendPrompt':
         if (typeof msg['text'] !== 'string') {
           this._controller?.outputChannel?.appendLine(
@@ -316,10 +362,62 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
           // Short-circuit: skip expensive validation when model is text-only or unknown.
           const rawImages = msg['images'];
           const supportsImages = this._lastModelState?.supportsImages === true;
-          const images = (supportsImages && rawImages !== undefined)
-            ? this._validateImages(rawImages)
-            : [];
-          return { type: 'sendPrompt', text: msg['text'], ...(images.length ? { images } : {}) };
+          const rawCount = Array.isArray(rawImages) ? rawImages.length : 0;
+          const rawBytes = Array.isArray(rawImages)
+            ? rawImages.reduce((sum, im) => {
+                const d = (im as Record<string, unknown> | null)?.['data'];
+                return sum + (typeof d === 'string' ? d.length : 0);
+              }, 0)
+            : 0;
+          this._controller?.outputChannel?.appendLine(
+            `[WingmanViewProvider] sendPrompt: raw images=${rawCount} base64chars=${rawBytes} ` +
+            `supportsImages=${supportsImages} model=${this._lastModelState?.modelName ?? 'unknown'}`,
+          );
+          let images: AttachedImage[] = [];
+          let imagesDropped = 0;
+          let dropReason: ImageDropReason | null = null;
+          if (rawCount > 0) {
+            const modelState = this._lastModelState;
+            if (modelState === undefined || modelState === null) {
+              // The host does not know the model's capabilities yet — that is
+              // not the same as "the model cannot take images", and the
+              // webview must not be told a lie.
+              imagesDropped = rawCount;
+              dropReason = 'model-unknown';
+              this._controller?.outputChannel?.appendLine(
+                `[WingmanViewProvider] sendPrompt: DROPPED ${rawCount} image(s) — the model's ` +
+                `capabilities are not known yet`,
+              );
+            } else if (modelState.supportsImages !== true) {
+              // The active model is known and cannot take images at all.
+              imagesDropped = rawCount;
+              dropReason = 'modality';
+              this._controller?.outputChannel?.appendLine(
+                `[WingmanViewProvider] sendPrompt: DROPPED ${rawCount} image(s) — the active model ` +
+                `does not accept image input`,
+              );
+            } else {
+              images = this._validateImages(rawImages);
+              imagesDropped = rawCount - images.length;
+              if (imagesDropped > 0) {
+                dropReason = 'validation';
+                this._controller?.outputChannel?.appendLine(
+                  `[WingmanViewProvider] sendPrompt: DROPPED ${imagesDropped} image(s) — ` +
+                  `the payload failed validation`,
+                );
+              }
+            }
+          }
+          this._controller?.outputChannel?.appendLine(
+            `[WingmanViewProvider] sendPrompt: validated ${images.length}/${rawCount} image(s)` +
+            (dropReason ? ` (dropped ${imagesDropped}: ${dropReason})` : ''),
+          );
+          return {
+            type: 'sendPrompt',
+            text: msg['text'],
+            ...(images.length ? { images } : {}),
+            meta: { imagesDropped, dropReason },
+          };
         }
 
       case 'copyToClipboard': {
@@ -1145,19 +1243,55 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     this._view?.webview.postMessage(message);
   }
 
-  private async _handleSendPrompt(text: string, images?: AttachedImage[]): Promise<void> {
+  private async _handleSendPrompt(
+    text: string,
+    images?: AttachedImage[],
+    meta?: { imagesDropped: number; dropReason: ImageDropReason | null },
+  ): Promise<void> {
     if (!this._controller) return;
 
     // Validate: must be a non-empty string when no images, or any string when images present.
     if (typeof text !== 'string') return;
     const hasImages = (images?.length ?? 0) > 0;
-    if (!hasImages && text.trim().length === 0) return;
+    const dropped = meta?.imagesDropped ?? 0;
+    const dropReason = meta?.dropReason ?? null;
 
-    // Host-side modality gate: drop images silently when the active model is
-    // text-only. The webview enforces this too, but the host is authoritative.
-    const effectiveImages = (hasImages && this._lastModelState?.supportsImages === true)
-      ? images
-      : undefined;
+    if (!hasImages && text.trim().length === 0) {
+      // Nothing left to send. The webview may still have attached images that
+      // were dropped on the way in (an image-only prompt whose attachments
+      // were all rejected), and it already shows a user turn with an image
+      // badge — so the loss must be acknowledged here, or the webview would
+      // wait forever for a warning that never comes.
+      if (dropped > 0) {
+        this._postMessage({
+          type: 'promptAccepted',
+          imagesSent: 0,
+          imagesDropped: dropped,
+          dropReason,
+        });
+      }
+      return;
+    }
+
+    // Host-side modality gate. The validator already dropped the images when
+    // the model could not take them; this is the second line of defence for
+    // the case where the model changed between the validation and the send.
+    // Whatever it strips is counted in the acknowledgement, so the webview is
+    // never left with a silent loss.
+    const modelState = this._lastModelState;
+    const gateReason: ImageDropReason =
+      modelState === undefined || modelState === null ? 'model-unknown' : 'modality';
+    const gated = (hasImages && modelState?.supportsImages !== true) ? (images?.length ?? 0) : 0;
+    const effectiveImages = gated > 0 ? undefined : images;
+    const forwarded = effectiveImages?.length ?? 0;
+    const totalDropped = dropped + gated;
+    const totalReason: ImageDropReason | null =
+      totalDropped === 0 ? null : gated > 0 ? gateReason : dropReason;
+
+    this._controller?.outputChannel?.appendLine(
+      `[WingmanViewProvider] sendPrompt: received ${hasImages ? images!.length : 0} image(s), ` +
+      `forwarding ${forwarded}`,
+    );
 
     // Length guard — only applies to non-empty text.
     if (text.length > 0 && Buffer.byteLength(text, 'utf8') > MAX_PROMPT_BYTES) {
@@ -1194,6 +1328,17 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
     this._promptInFlight = true;
     try {
       await this._controller.sendPrompt(text, effectiveImages);
+      // Confirm what actually went to pi: the webview sent N images, but the
+      // modality gate or the payload validation may have dropped some of
+      // them. Without this the webview cannot tell that an image was lost on
+      // the way to the model — and the warning it shows must name the real
+      // cause, not always the model's modality.
+      this._postMessage({
+        type: 'promptAccepted',
+        imagesSent: forwarded,
+        imagesDropped: totalDropped,
+        dropReason: totalReason,
+      });
     } catch (err) {
       void vscode.window.showErrorMessage(String(err));
       this._postMessage({ type: 'promptRejected', reason: 'error' });

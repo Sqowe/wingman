@@ -1320,6 +1320,14 @@ export class AgentController implements vscode.Disposable {
       ? images.map((img) => ({ type: 'image' as const, data: img.data, mimeType: img.mimeType }))
       : undefined;
 
+    if (rpcImages) {
+      const chars = rpcImages.reduce((sum, im) => sum + im.data.length, 0);
+      this._outputChannel.appendLine(
+        `[AgentController] sendPrompt: sending ${rpcImages.length} image(s), ${chars} base64 chars ` +
+        `(${rpcImages.map((im) => im.mimeType).join(', ')})`,
+      );
+    }
+
     const response = await this._transport.send({
       type: 'prompt',
       message: text,

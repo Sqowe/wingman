@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-24
+
+### Fixed
+
+- **A pasted image of an unsupported type is no longer dropped in silence.** The
+  composer accepted only PNG / JPEG / GIF / WebP and silently skipped anything
+  else — no chip, no warning, and a prompt that reached the model without the
+  image. An unsupported file is now named in an inline note together with the
+  list of supported types.
+- **Pressing Enter while an attached image is still being read no longer ships
+  the prompt without it.** The image was not in the attachment state yet, so it
+  was left out of the prompt and then discarded together with the rest of the
+  attachments. The composer now holds the send, says why, and keeps both the
+  text and the attachment for the next attempt.
+- **The prompt now carries every attachment, not the ones from the last
+  render.** The send path read the attachment state from the snapshot the
+  event handler was created with, so an image added between the last render
+  and the key press was left out of the prompt — and then cleared with the
+  rest of the attachments. The send now reads the live state.
+- **An image the clipboard cannot hand over as a file is reported.** When the
+  clipboard holds something that looks like an image but the browser refuses
+  to expose it as a file, the composer says so and points at the attach button
+  instead of dropping the paste without a word.
+- **A file that cannot be read is reported.** A failed, cancelled or empty
+  `FileReader` read left the user with no chip and no explanation; the composer
+  now names the file and suggests the attach button.
+- **An attachment is no longer sent twice.** The send path read the attachment
+  mirror, which the reducer only clears on the next render — a second Enter in
+  the same turn could therefore send the very same image again. The mirror is
+  now cleared synchronously when the prompt is sent.
+- **An image-only prompt whose image was dropped is no longer lost in silence.**
+  The host acknowledged a prompt only after it had forwarded something, so an
+  image-only prompt whose attachment was rejected produced no acknowledgement
+  at all: the webview showed a user turn with an image badge and waited for a
+  warning that never came. The loss is now always acknowledged.
+- **A pending image read can no longer block the composer.** Reads in flight
+  are aborted when the attachments are cleared (send, model switch, unmount) and
+  the counter is reset, so an orphaned read could not keep every later prompt
+  — plain text included — waiting for an image that was already gone. A read
+  that never finishes no longer blocks the prompt either: after ten seconds
+  the text is sent without the image and the user is told. The timeout is
+  measured per read, so a read that hangs no longer holds back a younger one
+  that is still making progress, and the note says what was actually sent.
+  The internal abort itself stays silent — only the reason the read was
+  dropped is explained.
+- **An attachment rejected by the attachment caps is reported.** Hitting the
+  per-prompt image cap dropped the file without a word.
+
+### Added
+
+- **The host acknowledges every prompt with the number of images it forwarded
+  and the reason for any drop** (new `promptAccepted` message). The webview
+  compares that with the number of attachments it sent and warns. The host
+  names the actual cause — the model does not take images, the model's
+  capabilities are not known yet, or the file itself was rejected — so the
+  warning never sends the user after the wrong fix.
+- **Diagnostics for the image-attachment path.** Every hop now reports into the
+  "Sqowe Wingman" output channel: the webview logs what the clipboard or the
+  file picker actually delivered (item kinds and MIME types, per-file accept or
+  reject reasons, read start/finish/failure, the number of attachments at send
+  time), the host logs the raw image count, the model-modality gate decision
+  and the validation result — including the case where images are dropped
+  because the active model does not accept image input, which used to leave no
+  trace at all — and the controller logs the size of the RPC payload it sends
+  to pi. The webview reaches the host through a new `diag` message type that
+  carries no user data beyond file names, MIME types and byte counts. Ordinary
+  text pastes leave no trace — only the image pipeline is logged. The trace
+  channel is restricted to the `composer.*` scope, and its detail is length-
+  capped and stripped of control characters, so it can neither flood nor forge
+  entries in the log file.
+- **Inline notes stay visible for 5 s instead of 3 s**, so a note about a
+  rejected image or an unusable model is not missed.
+
 ## [0.4.0] - 2026-10-24
 
 ### Added

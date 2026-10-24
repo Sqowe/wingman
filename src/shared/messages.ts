@@ -156,6 +156,42 @@ export interface PromptRejectedMessage {
 }
 
 /**
+ * Confirms that the host accepted a prompt and states how many of the attached
+ * images were actually forwarded to pi.
+ *
+ * The webview sends the images it attached; the host may drop some of them
+ * (the active model does not accept image input, a payload failed validation).
+ * Without this acknowledgement the webview cannot tell a complete prompt from
+ * a silently truncated one — the image simply never reaches the model. The
+ * webview compares `imagesSent` with the number it sent and warns the user
+ * about the difference.
+ */
+export interface PromptAcceptedMessage {
+  type: 'promptAccepted';
+  /** Number of image attachments the host forwarded to pi. */
+  imagesSent: number;
+  /** Number of attachments the webview sent that the host did not forward. */
+  imagesDropped: number;
+  /**
+   * Why they were dropped — `modality` when the active model does not accept
+   * image input, `validation` when the payload itself was rejected. Null when
+   * nothing was dropped. The webview names the actual cause instead of always
+   * blaming the model.
+   */
+  dropReason: ImageDropReason | null;
+}
+
+/**
+ * Why the host dropped image attachments from a prompt.
+ *
+ * - `modality` — the active model is known and does not accept image input.
+ * - `model-unknown` — the host has not received the model's capabilities yet,
+ *   so it cannot tell whether images would be accepted.
+ * - `validation` — the payload itself was rejected (MIME type, size, count).
+ */
+export type ImageDropReason = 'modality' | 'model-unknown' | 'validation';
+
+/**
  * Reports the liveness of the underlying agent transport (the pi process).
  * `running: false` after a successful start means pi exited or crashed; the
  * webview surfaces this rather than appearing to silently hang.
@@ -458,6 +494,7 @@ export type HostMessage =
   | PiStatusMessage
   | AgentEventMessage
   | PromptRejectedMessage
+  | PromptAcceptedMessage
   | AgentStatusMessage
   | DiffErrorMessage
   | CommandsListMessage
@@ -609,6 +646,25 @@ export type UiDialogAnswerMessage =
   | { type: 'uiDialogAnswer'; id: string; value: string; cancelled?: never }
   | { type: 'uiDialogAnswer'; id: string; cancelled: true; value?: never };
 
+/**
+ * Sent by the webview to report what happened inside a UI interaction that
+ * has no other observable trace — today: the image-attachment path (paste /
+ * attach / drop), where a silently rejected file would otherwise leave the
+ * user with "I added the image but the model never saw it".
+ *
+ * The host writes it verbatim to the "Sqowe Wingman" output channel, so the
+ * line lands in the persisted window log and can be read after the fact.
+ * Diagnostic only: it never changes behaviour and carries no user data beyond
+ * file names, MIME types and byte counts.
+ */
+export interface DiagMessage {
+  type: 'diag';
+  /** Dotted scope, e.g. `composer.paste` or `composer.addFiles`. */
+  scope: string;
+  /** Human-readable detail line. */
+  detail: string;
+}
+
 /** Union of every message the webview can send to the host. */
 export type WebviewMessage =
   | ReadyMessage
@@ -621,5 +677,6 @@ export type WebviewMessage =
   | RequestNewSessionMessage
   | OpenFileMessage
   | OpenFolderMessage
-  | UiDialogAnswerMessage;
+  | UiDialogAnswerMessage
+  | DiagMessage;
 

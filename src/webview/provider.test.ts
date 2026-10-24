@@ -677,6 +677,234 @@ describe('WingmanViewProvider — sendPrompt image validation', () => {
   });
 });
 
+// ─── Diagnostic channel ─────────────────────────────────────────────────────────
+
+describe('WingmanViewProvider — webview diagnostics', () => {
+  /** Controller stub whose output channel records every appended line. */
+  function makeCapturingController() {
+    const lines: string[] = [];
+    return {
+      lines,
+      controller: {
+        outputChannel: {
+          appendLine: (line: string) => { lines.push(line); },
+          dispose: () => {},
+        } as unknown as vscode.OutputChannel,
+        isStreaming: false,
+        sendAbort: vi.fn(async () => {}),
+        sendPrompt: vi.fn(async () => {}),
+        sendCommand: vi.fn(async () => ({ type: 'response' as const, success: true })),
+        getCommands: vi.fn(async () => {}),
+      },
+    };
+  }
+
+  function resolveWithCapturingOutput(): ReturnType<typeof resolveProvider> & { lines: string[] } {
+    const { view, sendMessage, postMessage } = makeWebviewView();
+    const provider = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    const { lines, controller } = makeCapturingController();
+    provider.setController(controller as unknown as AgentController);
+    provider.resolveWebviewView(
+      view,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    sendMessage({ type: 'ready' });
+    return { provider, controller, sendMessage, postMessage, lines };
+  }
+
+  it('writes a diag message to the output channel', () => {
+    const { sendMessage, lines } = resolveWithCapturingOutput();
+    sendMessage({ type: 'diag', scope: 'composer.paste', detail: '2 clipboard item(s)' });
+    expect(lines.some((l) => l.includes('[webview] composer.paste: 2 clipboard item(s)'))).toBe(true);
+  });
+
+  it('ignores a diag message from an unknown scope', () => {
+    const { sendMessage, lines } = resolveWithCapturingOutput();
+    sendMessage({ type: 'diag', scope: 'evil.forge', detail: 'spoofed host log line' });
+    expect(lines.some((l) => l.includes('spoofed host log line'))).toBe(false);
+  });
+
+  it('collapses newlines and caps the length of a diag detail', () => {
+    const { sendMessage, lines } = resolveWithCapturingOutput();
+    sendMessage({ type: 'diag', scope: 'composer.send', detail: 'first\nsecond\r\nthird' });
+    const written = lines.find((l) => l.includes('[webview] composer.send'));
+    expect(written).toBeTruthy();
+    expect(written!.split('\n')).toHaveLength(1);
+    expect(written).toContain('first second third');
+
+    sendMessage({ type: 'diag', scope: 'composer.send', detail: 'x'.repeat(5000) });
+    const long = lines.filter((l) => l.includes('[webview] composer.send')).pop();
+    expect(long!.length).toBeLessThan(600);
+  });
+
+  it('logs the raw image count and the gate decision for sendPrompt', async () => {
+    const { sendMessage, lines } = resolveWithCapturingOutput();
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'hi',
+      images: [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    });
+    await flushMicrotasks();
+    // The model state is unknown here, so the host gate drops the image — and
+    // says so in the log instead of dropping it silently.
+    expect(lines.some((l) => l.includes('sendPrompt: raw images=1'))).toBe(true);
+    expect(lines.some((l) => l.includes('DROPPED 1 image(s)'))).toBe(true);
+  });
+
+  it('logs the validated image count for a supported image', async () => {
+    const { provider, sendMessage, lines } = resolveWithCapturingOutput();
+    provider.postModelState({
+      modelId: 'test', modelName: 'TestModel', provider: 'test',
+      thinkingLevel: null, supportsImages: true,
+    });
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'hi',
+      images: [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    });
+    await flushMicrotasks();
+    expect(lines.some((l) => l.includes('validated 1/1 image(s)'))).toBe(true);
+  });
+
+  it('acknowledges the prompt with the number of images actually forwarded', async () => {
+    const { provider, sendMessage, postMessage } = resolveWithCapturingOutput();
+    provider.postModelState({
+      modelId: 'test', modelName: 'TestModel', provider: 'test',
+      thinkingLevel: null, supportsImages: true,
+    });
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'hi',
+      images: [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    });
+    await flushMicrotasks();
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'promptAccepted', imagesSent: 1, imagesDropped: 0, dropReason: null,
+    });
+  });
+
+  it('acknowledges a prompt without images with zero', async () => {
+    const { sendMessage, postMessage } = resolveWithCapturingOutput();
+    sendMessage({ type: 'sendPrompt', text: 'hi' });
+    await flushMicrotasks();
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'promptAccepted', imagesSent: 0, imagesDropped: 0, dropReason: null,
+    });
+  });
+
+  it('reports the modality gate as the drop reason', async () => {
+    const { provider, sendMessage, postMessage } = resolveWithCapturingOutput();
+    provider.postModelState({
+      modelId: 'text-only', modelName: 'TextModel', provider: 'openai',
+      thinkingLevel: null, supportsImages: false,
+    });
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'hi',
+      images: [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    });
+    await flushMicrotasks();
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'promptAccepted', imagesSent: 0, imagesDropped: 1, dropReason: 'modality',
+    });
+  });
+
+  it('reports an unknown model state separately from a text-only model', async () => {
+    const { sendMessage, postMessage } = resolveWithCapturingOutput();
+    // No model state at all — the host cannot tell whether the model would
+    // accept images, and must not claim that it would not.
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'hi',
+      images: [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    });
+    await flushMicrotasks();
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'promptAccepted', imagesSent: 0, imagesDropped: 1, dropReason: 'model-unknown',
+    });
+  });
+
+  it('reports a rejected payload as a validation drop', async () => {
+    const { provider, sendMessage, postMessage } = resolveWithCapturingOutput();
+    provider.postModelState({
+      modelId: 'test', modelName: 'TestModel', provider: 'test',
+      thinkingLevel: null, supportsImages: true,
+    });
+    sendMessage({
+      type: 'sendPrompt',
+      text: 'hi',
+      // Not an allowed MIME type — the payload is rejected by validation.
+      images: [{ data: 'AA==', mimeType: 'image/bmp', size: 1 }],
+    });
+    await flushMicrotasks();
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'promptAccepted', imagesSent: 0, imagesDropped: 1, dropReason: 'validation',
+    });
+  });
+
+  it('acknowledges an image-only prompt whose image was dropped, and sends nothing', async () => {
+    const { provider, controller, sendMessage, postMessage } = resolveWithCapturingOutput();
+    provider.postModelState({
+      modelId: 'test', modelName: 'TestModel', provider: 'test',
+      thinkingLevel: null, supportsImages: false,
+    });
+    // An image-only prompt: no text, one image that the modality gate drops.
+    sendMessage({
+      type: 'sendPrompt',
+      text: '',
+      images: [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    });
+    await flushMicrotasks();
+
+    // The loss must be acknowledged — the webview already shows a user turn
+    // with an image badge and waits for a warning that never comes otherwise.
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'promptAccepted', imagesSent: 0, imagesDropped: 1, dropReason: 'modality',
+    });
+    // Nothing is left to send, so pi must not be called with an empty prompt.
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges an image-only prompt whose image failed validation', async () => {
+    const { provider, controller, sendMessage, postMessage } = resolveWithCapturingOutput();
+    provider.postModelState({
+      modelId: 'test', modelName: 'TestModel', provider: 'test',
+      thinkingLevel: null, supportsImages: true,
+    });
+    sendMessage({
+      type: 'sendPrompt',
+      text: '',
+      images: [{ data: 'AA==', mimeType: 'image/bmp', size: 1 }],
+    });
+    await flushMicrotasks();
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'promptAccepted', imagesSent: 0, imagesDropped: 1, dropReason: 'validation',
+    });
+    expect(controller.sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it('sends an image-only prompt whose image survived', async () => {
+    const { provider, controller, sendMessage, postMessage } = resolveWithCapturingOutput();
+    provider.postModelState({
+      modelId: 'test', modelName: 'TestModel', provider: 'test',
+      thinkingLevel: null, supportsImages: true,
+    });
+    sendMessage({
+      type: 'sendPrompt',
+      text: '',
+      images: [{ data: 'AA==', mimeType: 'image/png', size: 1 }],
+    });
+    await flushMicrotasks();
+    expect(controller.sendPrompt).toHaveBeenCalledWith('', [
+      { data: 'AA==', mimeType: 'image/png', size: 1 },
+    ]);
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'promptAccepted', imagesSent: 1, imagesDropped: 0, dropReason: null,
+    });
+  });
+});
+
 // ─── postInstructionFiles ─────────────────────────────────────────────────────────
 
 describe('WingmanViewProvider — postInstructionFiles', () => {

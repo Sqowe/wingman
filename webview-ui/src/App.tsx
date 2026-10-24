@@ -68,6 +68,15 @@ export default function App() {
   const pendingEvents = useRef<RpcEvent[]>([]);
   const rafId = useRef<number | undefined>(undefined);
 
+  /**
+   * Number of image attachments the last sent prompt carried. The host
+   * answers with `promptAccepted` telling how many images it actually
+   * forwarded to pi; a smaller number means images were dropped on the way
+   * (the active model does not accept image input, or validation failed) and
+   * the user has to be told — otherwise the model just never sees them.
+   */
+  const sentImageCountRef = useRef(0);
+
   const flushEvents = useCallback(() => {
     rafId.current = undefined;
     const batch = pendingEvents.current;
@@ -111,12 +120,41 @@ export default function App() {
 
         case 'promptRejected': {
           const label = PROMPT_REJECTED_LABELS[msg.reason] ?? 'Prompt rejected.';
+          sentImageCountRef.current = 0;
           setPromptError(label);
           if (errorTimerRef.current !== undefined) clearTimeout(errorTimerRef.current);
           errorTimerRef.current = setTimeout(() => {
             errorTimerRef.current = undefined;
             setPromptError(null);
           }, 3_000);
+          break;
+        }
+
+        case 'promptAccepted': {
+          const sent = sentImageCountRef.current;
+          sentImageCountRef.current = 0;
+          // Name the actual cause: the host reports whether it dropped the
+          // images because the model cannot take them or because the payload
+          // failed validation. Blaming the model for a bad file sends the
+          // user down the wrong fix.
+          const dropped = Math.max(msg.imagesDropped, sent - msg.imagesSent);
+          if (dropped > 0) {
+            const plural = dropped > 1 ? 's' : '';
+            const label =
+              msg.dropReason === 'modality'
+                ? `${dropped} image${plural} not sent — the active model does not accept image input.`
+                : msg.dropReason === 'model-unknown'
+                  ? `${dropped} image${plural} not sent — the model's capabilities are not known yet, try again in a moment.`
+                  : msg.dropReason === 'validation'
+                    ? `${dropped} image${plural} not sent — the file could not be prepared (check its format and size).`
+                    : `${dropped} image${plural} not sent to the model.`;
+            setPromptError(label);
+            if (errorTimerRef.current !== undefined) clearTimeout(errorTimerRef.current);
+            errorTimerRef.current = setTimeout(() => {
+              errorTimerRef.current = undefined;
+              setPromptError(null);
+            }, 5_000);
+          }
           break;
         }
 
@@ -239,6 +277,9 @@ export default function App() {
     // Record the turn in the transcript. Pass the real text (may be empty for
     // an image-only prompt); the attached-image count renders as a badge.
     if (text || imageCount > 0) addUserMessage(text, imageCount);
+    // Remember what we sent so the host's acknowledgement can be compared
+    // with it — a dropped image must not pass unnoticed.
+    sentImageCountRef.current = imageCount;
     vscode.postMessage({ type: 'sendPrompt', text, ...(imageCount > 0 ? { images } : {}) });
   }, [addUserMessage]);
 
