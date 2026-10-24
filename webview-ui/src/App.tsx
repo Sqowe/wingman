@@ -14,6 +14,7 @@ import { useDialogOutbox } from './store/useDialogOutbox';
 import type { UiWidget } from './store';
 import { MessageList } from './components/MessageList';
 import { Composer } from './components/Composer';
+import { installSelectionCopy } from './lib/selection-copy';
 import type { RpcEvent } from '../../src/agent/transport';
 import './App.css';
 
@@ -256,6 +257,12 @@ export default function App() {
 
   // Deliver question-card answers the store has queued (see useDialogOutbox).
   useDialogOutbox();
+
+  // Copy the chat selection with Cmd/Ctrl+C. VS Code cancels the browser's own
+  // copy inside a webview and replaces it with a round trip that re-focuses
+  // the composer, so the chat selection never reaches the clipboard — the
+  // module takes the copy over instead (see lib/selection-copy.ts).
+  useEffect(() => installSelectionCopy(), []);
 
   // Forward the New Session shortcut (Cmd/Ctrl+Alt+N) to the host. VS Code
   // keybindings do not reach the extension while the webview iframe has focus,

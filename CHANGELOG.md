@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cmd+C now copies the text you selected in the chat.** VS Code cancels the
+  browser's own copy inside a webview and replaces it with a round trip that
+  re-focuses the last focused element — in Wingman that is the composer's
+  input box — so the chat selection never reached the clipboard and the chord
+  copied nothing at all. The webview now takes the copy over and writes the
+  selection through the host, the same path the copy buttons use. The chord
+  still copies from the composer as before, and Edit → Copy works too.
+
 ## [0.4.2] - 2026-10-24
 
 ### Fixed
