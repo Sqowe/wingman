@@ -395,28 +395,28 @@ export interface InstructionFilesMessage {
   info: InstructionFilesInfo | null;
 }
 
-// ─── Claude Code project memory (shared, read-only) ───────────────────────
+// ─── Shared agent memory (read-only, per source) ─────────────────────────
 
-/** One remembered fact from Claude Code's project memory folder. */
-export interface ClaudeMemoryEntry {
-  /** Absolute path to the memory file (inside `ClaudeMemoryInfo.dir`). */
+/** One remembered artifact in a shared agent-memory store. */
+export interface AgentMemoryEntry {
+  /** Absolute path to the memory file (inside `AgentMemoryInfo.dir`). */
   path: string;
-  /** Display title (parsed from the MEMORY.md index link, filename fallback). */
+  /** Display title (parsed from the store's index, filename fallback). */
   title: string;
 }
 
-export interface ClaudeMemoryInfo {
-  /** Absolute path to the resolved `.../memory/` directory. */
+export interface AgentMemoryInfo {
+  /** Absolute path to the resolved memory directory. */
   dir: string;
-  /** True total number of fact files. May exceed `files.length` (see below). */
+  /** True total number of memory artifacts. May exceed `files.length` (see below). */
   count: number;
   /**
-   * The reported fact files for display/clicking. A bounded subset: the
+   * The reported memory files for display/clicking. A bounded subset: the
    * extension caps the transmitted list (200 entries) and the host drops any
    * malformed or out-of-dir entries, so this can be shorter than `count`. Every
    * listed entry has an absolute path contained within `dir`.
    */
-  files: ClaudeMemoryEntry[];
+  files: AgentMemoryEntry[];
 }
 
 /**
@@ -427,7 +427,18 @@ export interface ClaudeMemoryInfo {
  */
 export interface ClaudeMemoryMessage {
   type: 'claudeMemory';
-  info: ClaudeMemoryInfo | null;
+  info: AgentMemoryInfo | null;
+}
+
+/**
+ * Sent after session (re)start when the bundled codex-memory extension reports
+ * this machine's shared Codex memories. Same contract as `claudeMemory`:
+ * `info: null` = no Codex memory store, or an unreadable/malformed report.
+ * Arrives unsolicited from `session_start`, queued until the webview is ready.
+ */
+export interface CodexMemoryMessage {
+  type: 'codexMemory';
+  info: AgentMemoryInfo | null;
 }
 
 /**
@@ -462,6 +473,7 @@ export type HostMessage =
   | ChatConfigMessage
   | InstructionFilesMessage
   | ClaudeMemoryMessage
+  | CodexMemoryMessage
   | SessionStatsSettledMessage;
 
 // ─── Webview → Host ──────────────────────────────────────────────────────────
@@ -545,10 +557,11 @@ export interface RequestNewSessionMessage {
 }
 
 /**
- * Sent by the webview to open a Claude Code memory file in the editor.
- * The host guards that `path` resolves inside the most recently reported
- * `ClaudeMemoryInfo.dir` before opening — the webview must never be able to
- * name an arbitrary filesystem path (path-traversal defence).
+ * Sent by the webview to open a shared memory file (Claude Code or Codex) in
+ * the editor. The host guards that `path` resolves inside one of the most
+ * recently reported `AgentMemoryInfo.dir` directories before opening — the
+ * webview must never be able to name an arbitrary filesystem path
+ * (path-traversal defence).
  */
 export interface OpenFileMessage {
   type: 'openFile';
@@ -556,9 +569,10 @@ export interface OpenFileMessage {
 }
 
 /**
- * Sent by the webview to reveal the Claude Code memory folder in the OS file
- * manager. The host guards that `path` resolves (symlink-safe) to exactly the
- * most recently reported `ClaudeMemoryInfo.dir` before revealing.
+ * Sent by the webview to reveal a shared memory folder in the OS file
+ * manager. The host guards that `path` resolves (symlink-safe) to exactly one
+ * of the most recently reported `AgentMemoryInfo.dir` directories before
+ * revealing.
  */
 export interface OpenFolderMessage {
   type: 'openFolder';

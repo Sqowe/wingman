@@ -12,7 +12,7 @@ import * as crypto from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import type { AgentController } from '../agent/controller';
-import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo, ClaudeMemoryInfo, UiDialogMessage, UiDialogAnswerMessage } from '../shared/messages';
+import type { HostMessage, PiStatus, WebviewMessage, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo, AgentMemoryInfo, UiDialogMessage, UiDialogAnswerMessage } from '../shared/messages';
 import { MAX_PROMPT_BYTES, MAX_CLIPBOARD_BYTES, MAX_PATCH_BYTES, MAX_IMAGE_BYTES, MAX_IMAGES_PER_PROMPT, MAX_TOTAL_IMAGE_BYTES, ALLOWED_IMAGE_MIME_TYPES, type AllowedImageMimeType } from '../shared/limits';
 import { isWithinOrEqualDir, isSameDir } from '../shared/path-guard';
 import type { RpcEvent } from '../agent/transport';
@@ -69,7 +69,9 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   /** Last instruction files info — replayed on webview (re)ready. undefined = never set. */
   private _lastInstructionFiles: InstructionFilesInfo | null | undefined;
   /** Last Claude Code memory info — replayed on webview (re)ready. undefined = never set. */
-  private _lastClaudeMemory: ClaudeMemoryInfo | null | undefined;
+  private _lastClaudeMemory: AgentMemoryInfo | null | undefined;
+  /** Last Codex memory info — replayed on webview (re)ready. undefined = never set. */
+  private _lastCodexMemory: AgentMemoryInfo | null | undefined;
   /** Timestamp of the last accepted sendPrompt — for basic rate-limiting. */
   private _lastPromptAt = 0;
   /** Timestamp of the last accepted clipboard write — for basic rate-limiting. */
@@ -191,6 +193,10 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
             // Replay Claude Code memory so the banner popover is accurate immediately.
             if (this._lastClaudeMemory !== undefined) {
               this._postMessage({ type: 'claudeMemory', info: this._lastClaudeMemory });
+            }
+            // Replay Codex memory likewise.
+            if (this._lastCodexMemory !== undefined) {
+              this._postMessage({ type: 'codexMemory', info: this._lastCodexMemory });
             }
             // Replay the terminal session-stats summary so the chat footer card
             // is correct immediately after a webview reload (mid-session).
@@ -831,10 +837,18 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   }
 
   /** Push Claude Code memory info to the webview (and cache for replay on ready). */
-  public postClaudeMemory(info: ClaudeMemoryInfo | null): void {
+  public postClaudeMemory(info: AgentMemoryInfo | null): void {
     this._lastClaudeMemory = info;
     if (this._webviewReady) {
       this._postMessage({ type: 'claudeMemory', info });
+    }
+  }
+
+  /** Push Codex memory info to the webview (and cache for replay on ready). */
+  public postCodexMemory(info: AgentMemoryInfo | null): void {
+    this._lastCodexMemory = info;
+    if (this._webviewReady) {
+      this._postMessage({ type: 'codexMemory', info });
     }
   }
 
@@ -977,21 +991,15 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
    * (`path.relative`-based) so name-prefix siblings (`/mem-evil` vs `/mem`) and
    * Windows casing are handled consistently.
    */
-  private _resolveWithinMemoryDir(target: string): { target: string; exists: boolean; isDir: boolean } | null {
-    const dir = this._lastClaudeMemory?.dir;
-    if (!dir) {
+  private _resolveWithinMemoryDir(target: string): { target: string; exists: boolean; isDir: boolean; realDir: string } | null {
+    // Every reported memory dir is an acceptable anchor (Claude Code's
+    // per-project folder, Codex's machine-wide store).
+    const dirs = [this._lastClaudeMemory?.dir, this._lastCodexMemory?.dir].filter(
+      (d): d is string => typeof d === 'string' && d.length > 0,
+    );
+    if (dirs.length === 0) {
       this._controller?.outputChannel?.appendLine(
         '[WingmanViewProvider] openFile/openFolder rejected: no memory dir reported',
-      );
-      return null;
-    }
-    let realDir: string;
-    try {
-      realDir = fs.realpathSync(path.resolve(dir));
-    } catch (err) {
-      // The memory dir itself is gone / unreadable — refuse rather than guess.
-      this._controller?.outputChannel?.appendLine(
-        `[WingmanViewProvider] openFile/openFolder rejected: memory dir realpath failed (${String(err)})`,
       );
       return null;
     }
@@ -1017,19 +1025,39 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
       }
       exists = false;
     }
-    if (!isWithinOrEqualDir(realDir, resolvedTarget)) {
+    let resolvedAny = false;
+    for (const dir of dirs) {
+      let realDir: string;
+      try {
+        realDir = fs.realpathSync(path.resolve(dir));
+      } catch {
+        // This memory dir is gone / unreadable — try the next anchor.
+        continue;
+      }
+      resolvedAny = true;
+      if (isWithinOrEqualDir(realDir, resolvedTarget)) {
+        return { target: resolvedTarget, exists, isDir, realDir };
+      }
+    }
+    if (!resolvedAny) {
+      // Every reported memory dir vanished (store deleted between report and
+      // click) — say so, instead of blaming the path.
       this._controller?.outputChannel?.appendLine(
-        `[WingmanViewProvider] openFile/openFolder rejected: path outside memory dir (${resolvedTarget})`,
+        '[WingmanViewProvider] openFile/openFolder rejected: memory dir realpath failed (no reported dir exists)',
       );
       return null;
     }
-    return { target: resolvedTarget, exists, isDir };
+    this._controller?.outputChannel?.appendLine(
+      `[WingmanViewProvider] openFile/openFolder rejected: path outside memory dir (${resolvedTarget})`,
+    );
+    return null;
   }
 
   /**
-   * Open a Claude Code memory file in the editor. Guarded to the reported memory
-   * dir; a directory target is rejected here (use openFolder). A missing file
-   * still reaches `vscode.open`, which surfaces a non-blocking warning.
+   * Open a shared memory file (Claude Code or Codex) in the editor. Guarded to
+   * the reported memory dirs; a directory target is rejected here (use
+   * openFolder). A missing file still reaches `vscode.open`, which surfaces a
+   * non-blocking warning.
    */
   private async _handleOpenFile(filePath: string): Promise<void> {
     const resolved = this._resolveWithinMemoryDir(filePath);
@@ -1051,23 +1079,17 @@ export class WingmanViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Reveal the Claude Code memory folder in the OS file manager. Guarded so only
-   * the reported memory dir itself can be revealed. Uses `revealFileInOS` rather
+   * Reveal a shared memory folder in the OS file manager. Guarded so only a
+   * reported memory dir itself can be revealed. Uses `revealFileInOS` rather
    * than `vscode.open`, which does not reliably open directories across
    * platforms/VS Code versions.
    */
   private async _handleOpenFolder(folderPath: string): Promise<void> {
     const resolved = this._resolveWithinMemoryDir(folderPath);
     if (!resolved) return;
-    // Contract (OpenFolderMessage): only the memory dir *itself* may be revealed,
-    // not a subdirectory within it.
-    let realDir: string;
-    try {
-      realDir = fs.realpathSync(path.resolve(this._lastClaudeMemory!.dir));
-    } catch {
-      return;
-    }
-    if (!isSameDir(realDir, resolved.target)) {
+    // Contract (OpenFolderMessage): only a memory dir *itself* may be revealed,
+    // not a subdirectory within it. The anchor that validated is authoritative.
+    if (!isSameDir(resolved.realDir, resolved.target)) {
       this._controller?.outputChannel?.appendLine(
         '[WingmanViewProvider] openFolder rejected: target is not the memory dir itself',
       );

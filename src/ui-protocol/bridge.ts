@@ -16,7 +16,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AgentTransport, RpcEvent } from '../agent/transport';
 import { parseMultiSelectTitle, parseOption, parseQuestionHeader, parseTitlePreviews, shouldRouteToCard, splitTitleBlocks } from '../shared/dialog-options';
-import type { InstructionFilesInfo, InstructionFileEntry, ClaudeMemoryInfo, ClaudeMemoryEntry, UiDialogMessage, UiDialogOption, UiDialogAnswerMessage } from '../shared/messages';
+import type { InstructionFilesInfo, InstructionFileEntry, AgentMemoryInfo, AgentMemoryEntry, UiDialogMessage, UiDialogOption, UiDialogAnswerMessage } from '../shared/messages';
 import { isStrictlyWithinDir } from '../shared/path-guard';
 import type { WingmanViewProvider } from '../webview/provider';
 
@@ -214,6 +214,9 @@ export const INSTRUCTION_FILES_STATUS_KEY = 'wingman:instructionFiles';
 /** Reserved status key for the Claude Code memory report — see claude-memory ext. */
 export const CLAUDE_MEMORY_STATUS_KEY = 'wingman:claudeMemory';
 
+/** Reserved status key for the Codex memory report — see codex-memory ext. */
+export const CODEX_MEMORY_STATUS_KEY = 'wingman:codexMemory';
+
 /**
  * Which surface a blocking `select` / `input` dialog is drawn on.
  *
@@ -234,7 +237,9 @@ export class UiProtocolBridge implements vscode.Disposable {
   /** Callback invoked when the reserved instructionFiles status key is received. */
   private _onInstructionFilesReport?: (info: InstructionFilesInfo | null) => void;
   /** Callback invoked when the reserved claudeMemory status key is received. */
-  private _onClaudeMemoryReport?: (info: ClaudeMemoryInfo | null) => void;
+  private _onClaudeMemoryReport?: (info: AgentMemoryInfo | null) => void;
+  /** Callback invoked when the reserved codexMemory status key is received. */
+  private _onCodexMemoryReport?: (info: AgentMemoryInfo | null) => void;
   /**
    * Maps pending blocking-request ids to their client-side timeout handle.
    * When the timer fires, the id value is replaced with `null` (expired) so
@@ -252,11 +257,13 @@ export class UiProtocolBridge implements vscode.Disposable {
   constructor(
     outputChannel: vscode.OutputChannel,
     onInstructionFilesReport?: (info: InstructionFilesInfo | null) => void,
-    onClaudeMemoryReport?: (info: ClaudeMemoryInfo | null) => void,
+    onClaudeMemoryReport?: (info: AgentMemoryInfo | null) => void,
+    onCodexMemoryReport?: (info: AgentMemoryInfo | null) => void,
   ) {
     this._outputChannel = outputChannel;
     this._onInstructionFilesReport = onInstructionFilesReport;
     this._onClaudeMemoryReport = onClaudeMemoryReport;
+    this._onCodexMemoryReport = onCodexMemoryReport;
   }
 
   public setTransport(transport: AgentTransport | undefined): void {
@@ -714,62 +721,84 @@ export class UiProtocolBridge implements vscode.Disposable {
       return;
     }
 
-    // Reserved key: parse and route to the claudeMemory callback (see the
-    // bundled claude-memory extension). Malformed/absent payload -> null.
-    if (req.statusKey === CLAUDE_MEMORY_STATUS_KEY) {
-      if (!this._onClaudeMemoryReport) return;
-      try {
-        const parsed = JSON.parse(req.statusText ?? 'null') as Record<string, unknown> | null;
-        if (
-          parsed &&
-          typeof parsed === 'object' &&
-          typeof parsed['dir'] === 'string' &&
-          path.isAbsolute(parsed['dir'] as string) &&
-          Array.isArray(parsed['files'])
-        ) {
-          const dir = parsed['dir'] as string;
-          const resolvedDir = path.resolve(dir);
-          // Validate each entry: absolute path, string title, and a path that is
-          // strictly contained within `dir` (a file, not the dir itself). Uses a
-          // shared, platform-aware containment check. This is UI-render hygiene
-          // and defence-in-depth — the provider still enforces a symlink-safe
-          // guard before actually opening anything.
-          const validFiles = (parsed['files'] as unknown[]).filter(
-            (e): e is ClaudeMemoryEntry => {
-              if (!e || typeof e !== 'object') return false;
-              const entry = e as Record<string, unknown>;
-              if (typeof entry['path'] !== 'string' || typeof entry['title'] !== 'string') return false;
-              if (!path.isAbsolute(entry['path'])) return false;
-              return isStrictlyWithinDir(resolvedDir, entry['path']);
-            },
-          );
-          // `count` is the true total from the extension (the transmitted list
-          // is capped). Sanitize across the process trust boundary: clamp to a
-          // non-negative integer, and never report fewer than the entries kept.
-          const rawCount = Number(parsed['count']);
-          const reported = Number.isFinite(rawCount)
-            ? Math.max(validFiles.length, Math.max(0, Math.floor(rawCount)))
-            : validFiles.length;
-          this._onClaudeMemoryReport({
-            // Forward the canonical dir so what the UI displays matches what the
-            // host guard validates against.
-            dir: resolvedDir,
-            count: reported,
-            files: validFiles,
-          });
-        } else {
-          this._onClaudeMemoryReport(null);
-        }
-      } catch (err) {
-        this._outputChannel.appendLine(
-          `[UiProtocolBridge] claudeMemory: malformed JSON in setStatus payload: ${String(err)}`,
-        );
-        this._onClaudeMemoryReport(null);
+    // Reserved keys: parse and route to the memory callbacks (see the
+    // bundled claude-memory / codex-memory extensions). Malformed/absent
+    // payload -> null. Both use the same payload contract, so one shared
+    // parser serves both.
+    const memoryCallback =
+      req.statusKey === CLAUDE_MEMORY_STATUS_KEY
+        ? this._onClaudeMemoryReport
+        : req.statusKey === CODEX_MEMORY_STATUS_KEY
+          ? this._onCodexMemoryReport
+          : undefined;
+    // Reserved keys are always consumed — even without a callback — so they
+    // never leak to the generic status strip.
+    if (
+      req.statusKey === CLAUDE_MEMORY_STATUS_KEY ||
+      req.statusKey === CODEX_MEMORY_STATUS_KEY
+    ) {
+      if (memoryCallback) {
+        memoryCallback(this._parseAgentMemoryPayload(req.statusText, req.statusKey));
       }
       return;
     }
 
     this._provider?.postUiStatus(req.statusKey, req.statusText ?? null);
+  }
+
+  /**
+   * Parse and validate a shared agent-memory setStatus payload
+   * (`{ dir, count, files }` or `null`). `dir` must be absolute; each file
+   * entry must have an absolute path strictly inside `dir`; `count` is
+   * clamped to a non-negative integer never below the kept entries. This is
+   * UI-render hygiene and defence-in-depth — the provider still enforces a
+   * symlink-safe guard before actually opening anything.
+   */
+  private _parseAgentMemoryPayload(
+    rawText: string | undefined,
+    statusKey: string,
+  ): AgentMemoryInfo | null {
+    try {
+      const parsed = JSON.parse(rawText ?? 'null') as Record<string, unknown> | null;
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        typeof parsed['dir'] === 'string' &&
+        path.isAbsolute(parsed['dir'] as string) &&
+        Array.isArray(parsed['files'])
+      ) {
+        const dir = parsed['dir'] as string;
+        const resolvedDir = path.resolve(dir);
+        const validFiles = (parsed['files'] as unknown[]).filter(
+          (e): e is AgentMemoryEntry => {
+            if (!e || typeof e !== 'object') return false;
+            const entry = e as Record<string, unknown>;
+            if (typeof entry['path'] !== 'string' || typeof entry['title'] !== 'string') return false;
+            if (!path.isAbsolute(entry['path'])) return false;
+            return isStrictlyWithinDir(resolvedDir, entry['path']);
+          },
+        );
+        // `count` is the true total from the extension (the transmitted list
+        // is capped). Sanitize across the process trust boundary.
+        const rawCount = Number(parsed['count']);
+        const reported = Number.isFinite(rawCount)
+          ? Math.max(validFiles.length, Math.max(0, Math.floor(rawCount)))
+          : validFiles.length;
+        return {
+          // Forward the canonical dir so what the UI displays matches what the
+          // host guard validates against.
+          dir: resolvedDir,
+          count: reported,
+          files: validFiles,
+        };
+      }
+      return null;
+    } catch (err) {
+      this._outputChannel.appendLine(
+        `[UiProtocolBridge] ${statusKey}: malformed JSON in setStatus payload: ${String(err)}`,
+      );
+      return null;
+    }
   }
 
   private _handleSetWidget(req: SetWidgetRequest): void {

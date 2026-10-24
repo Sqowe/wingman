@@ -12,7 +12,7 @@ import * as vscode from 'vscode';
 import { isAllowedExtraEnvKey, RpcTransport } from './rpc-transport';
 import type { AgentTransport, RpcEvent } from './transport';
 import type { WingmanViewProvider } from '../webview/provider';
-import type { PiStatus, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo, ClaudeMemoryInfo } from '../shared/messages';
+import type { PiStatus, PiCommand, SessionStats, ModelState, AttachedImage, InstructionFilesInfo, AgentMemoryInfo } from '../shared/messages';
 import { UiProtocolBridge } from '../ui-protocol/bridge';
 import type { DialogStyle } from '../ui-protocol/bridge';
 import { normalizeBundledExtensionPaths, buildExtraArgs } from './spawn-args';
@@ -404,11 +404,15 @@ export class AgentController implements vscode.Disposable {
           waiter.resolve(info);
         }
       },
-      (info: ClaudeMemoryInfo | null) => {
+      (info: AgentMemoryInfo | null) => {
         // Bridge callback: the claude-memory extension reports unsolicited from
         // session_start, so there's no command/nonce dance — just forward to the
         // webview (the provider queues it until the webview is ready).
         this._provider?.postClaudeMemory(info);
+      },
+      (info: AgentMemoryInfo | null) => {
+        // Bridge callback: same contract for the codex-memory extension.
+        this._provider?.postCodexMemory(info);
       },
     );
   }

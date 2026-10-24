@@ -1150,7 +1150,120 @@ describe('UiProtocolBridge — reserved setStatus key (wingman:claudeMemory)', (
   });
 });
 
-// ─── In-chat question cards ───────────────────────────────────────────────────
+// ─── Reserved setStatus key (wingman:codexMemory) ────────────────────────────
+
+describe('UiProtocolBridge — reserved setStatus key (wingman:codexMemory)', () => {
+  function makeSetStatusEvent(statusKey: string, statusText?: string) {
+    return {
+      type: 'extension_ui_request',
+      id: 'm1',
+      method: 'setStatus',
+      statusKey,
+      statusText,
+    };
+  }
+
+  function makeBridge(onMemory: (info: unknown) => void) {
+    return new UiProtocolBridge(
+      { appendLine: () => {} } as unknown as import('vscode').OutputChannel,
+      undefined,
+      undefined,
+      onMemory as never,
+    );
+  }
+
+  it('routes the reserved key to the codex memory callback instead of postUiStatus', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = makeBridge((info) => received.push(info));
+    const provider = { postUiStatus: vi.fn() };
+    bridge2.setProvider(provider as never);
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:codexMemory',
+      JSON.stringify({
+        dir: '/home/u/.codex/memories_v2',
+        count: 2,
+        files: [
+          { path: '/home/u/.codex/memories_v2/memory_summary.md', title: 'memory_summary.md' },
+          { path: '/home/u/.codex/memories_v2/MEMORY.md', title: 'MEMORY.md' },
+        ],
+      }),
+    ) as never);
+    expect(provider.postUiStatus).not.toHaveBeenCalled();
+    expect(received).toHaveLength(1);
+    const info = received[0] as { dir: string; count: number; files: unknown[] };
+    expect(info.dir).toBe('/home/u/.codex/memories_v2');
+    expect(info.count).toBe(2);
+    expect(info.files).toHaveLength(2);
+    bridge2.dispose();
+  });
+
+  it('keeps routing claudeMemory to its own callback while codexMemory goes to the codex callback', () => {
+    const claude: Array<unknown> = [];
+    const codex: Array<unknown> = [];
+    const bridge2 = new UiProtocolBridge(
+      { appendLine: () => {} } as unknown as import('vscode').OutputChannel,
+      undefined,
+      (info) => claude.push(info),
+      (info) => codex.push(info),
+    );
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:claudeMemory',
+      JSON.stringify({ dir: '/mem/claude', count: 1, files: [{ path: '/mem/claude/a.md', title: 'A' }] }),
+    ) as never);
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:codexMemory',
+      JSON.stringify({ dir: '/mem/codex', count: 1, files: [{ path: '/mem/codex/b.md', title: 'B' }] }),
+    ) as never);
+    expect(claude).toHaveLength(1);
+    expect(codex).toHaveLength(1);
+    expect((claude[0] as { dir: string }).dir).toBe('/mem/claude');
+    expect((codex[0] as { dir: string }).dir).toBe('/mem/codex');
+    bridge2.dispose();
+  });
+
+  it('validates the payload with the same contract as claudeMemory (null on malformed)', () => {
+    const received: Array<unknown> = [];
+    const bridge2 = makeBridge((info) => received.push(info));
+    // dir missing -> null
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:codexMemory',
+      JSON.stringify({ count: 0, files: [] }),
+    ) as never);
+    // malformed JSON -> null
+    bridge2.handleEvent(makeSetStatusEvent('wingman:codexMemory', 'NOT JSON') as never);
+    // out-of-dir entry dropped, count kept
+    bridge2.handleEvent(makeSetStatusEvent(
+      'wingman:codexMemory',
+      JSON.stringify({
+        dir: '/mem',
+        count: 2,
+        files: [
+          { path: '/mem/a.md', title: 'A' },
+          { path: '/etc/passwd', title: 'Escape' },
+        ],
+      }),
+    ) as never);
+    expect(received[0]).toBeNull();
+    expect(received[1]).toBeNull();
+    const info = received[2] as { count: number; files: unknown[] };
+    expect(info.files).toHaveLength(1);
+    expect(info.count).toBe(2);
+    bridge2.dispose();
+  });
+
+  it('swallows the reserved codex key when no callback is provided', () => {
+    const bridge2 = new UiProtocolBridge(
+      { appendLine: () => {} } as unknown as import('vscode').OutputChannel,
+    );
+    const provider = { postUiStatus: vi.fn() };
+    bridge2.setProvider(provider as never);
+    bridge2.handleEvent(makeSetStatusEvent('wingman:codexMemory', '{"dir":"/m","files":[]}') as never);
+    expect(provider.postUiStatus).not.toHaveBeenCalled();
+    bridge2.dispose();
+  });
+});
+
+// ─── In-chat question cards ─────────────────────────────────────────────────────
 //
 // Routing a blocking dialog to the webview instead of a native widget
 // (docs/design/in-chat-question-cards.md). The contract that matters most is

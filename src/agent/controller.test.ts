@@ -43,6 +43,7 @@ function makeProvider() {
     postSessionReset: vi.fn(),
     postInstructionFiles: vi.fn(),
     postClaudeMemory: vi.fn(),
+    postCodexMemory: vi.fn(),
   };
 }
 
@@ -1855,6 +1856,47 @@ describe('AgentController — claudeMemory bridge report', () => {
       statusText: 'NOT JSON',
     });
     expect(provider.postClaudeMemory).toHaveBeenCalledWith(null);
+  });
+
+  it('forwards a codexMemory report from the bridge to provider.postCodexMemory', () => {
+    const controller = new AgentController();
+    const provider = makeProvider();
+    controller.setProvider(provider as unknown as WingmanViewProvider);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bridge = (controller as any)._uiBridge;
+    bridge.handleEvent({
+      type: 'extension_ui_request',
+      id: 'm3',
+      method: 'setStatus',
+      statusKey: 'wingman:codexMemory',
+      statusText: JSON.stringify({
+        dir: '/codex/memories_v2',
+        count: 1,
+        files: [{ path: '/codex/memories_v2/memory_summary.md', title: 'memory_summary.md' }],
+      }),
+    });
+    expect(provider.postCodexMemory).toHaveBeenCalledTimes(1);
+    const info = provider.postCodexMemory.mock.calls[0][0] as { dir: string; files: unknown[] };
+    expect(info.dir).toBe('/codex/memories_v2');
+    expect(info.files).toHaveLength(1);
+    // The claude callback must not have fired for a codex report.
+    expect(provider.postClaudeMemory).not.toHaveBeenCalled();
+  });
+
+  it('forwards null to provider.postCodexMemory on a malformed report', () => {
+    const controller = new AgentController();
+    const provider = makeProvider();
+    controller.setProvider(provider as unknown as WingmanViewProvider);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bridge = (controller as any)._uiBridge;
+    bridge.handleEvent({
+      type: 'extension_ui_request',
+      id: 'm4',
+      method: 'setStatus',
+      statusKey: 'wingman:codexMemory',
+      statusText: 'NOT JSON',
+    });
+    expect(provider.postCodexMemory).toHaveBeenCalledWith(null);
   });
 });
 

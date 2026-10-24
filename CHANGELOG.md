@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-24
+
+### Added
+
+- **Codex memory sharing (read-only)** — a new bundled `codex-memory` pi extension
+  mirrors `claude-memory` for OpenAI Codex: it reads this machine's Codex memory
+  store (`~/.codex/memories[_v2]/` — the one store Codex CLI, its VS Code
+  extension and the ChatGPT desktop app share) and injects it read-only into pi's
+  system prompt under a `## Codex memory (shared, read-only)` heading. The status
+  banner gains a parallel **Codex memory** group (the `· N memories` count now
+  aggregates both sources) whose rows open the artifacts; `raw_memories.md` is
+  never injected. Because Codex's store is global per machine rather than
+  per-project, what gets injected beyond `memory_summary.md` (always included
+  whole — Codex prompt-loads that file itself) is configurable:
+  `sqoweWingman.codexMemoryScope` (`summary` | `project` | `all`, default
+  `summary`; `project` filters `MEMORY.md` task-group blocks by their mandatory
+  `applies_to: cwd=` tag against the workspace, either direction of path
+  prefix) and `sqoweWingman.codexMemoryMaxChars` (budget for inlined blocks,
+  default 12000; the rest is listed by name). The feature is gated by
+  `sqoweWingman.shareCodexMemory` (default `true`, inert when no store exists)
+  with a `WINGMAN_CODEX_MEMORY=off` kill switch. Under the hood the claude and
+  codex reports now share one payload path: `ClaudeMemoryEntry`/`ClaudeMemoryInfo`
+  became the generic `AgentMemoryEntry`/`AgentMemoryInfo`, the bridge parses both
+  reserved keys (`wingman:claudeMemory`, `wingman:codexMemory`) with one
+  validator, the webview banner renders both groups through one `AgentMemoryGroup`
+  component, and the `openFile`/`openFolder` guard accepts either reported memory
+  dir as its containment anchor.
+
 ## [0.3.5] - 2026-10-16
 
 ### Fixed
@@ -523,7 +551,8 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/wingman/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/sqowe/wingman/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sqowe/wingman/compare/v0.3.5...v0.4.0
 [0.3.5]: https://github.com/sqowe/wingman/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/sqowe/wingman/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/sqowe/wingman/compare/v0.3.2...v0.3.3

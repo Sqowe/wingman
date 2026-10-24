@@ -2,7 +2,7 @@
   "name": "sqowe-wingman",
   "displayName": "Sqowe Wingman",
   "description": "A VS Code client for the pi coding agent",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "publisher": "sqowe",
   "license": "MIT",
   "repository": {
@@ -284,6 +284,36 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Share Claude Code's project memory (read-only) with the pi agent. When enabled, Wingman loads the bundled `claude-memory` extension, which injects the facts Claude Code recorded for this project (`~/.claude/projects/<slug>/memory/`) into pi's system prompt and lists them in the status banner. Only has an effect when a Claude Code memory folder exists for the project. Toggling reloads the agent to apply.",
+          "scope": "window"
+        },
+        "sqoweWingman.shareCodexMemory": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Share OpenAI Codex's local memories (read-only) with the pi agent. When enabled, Wingman loads the bundled `codex-memory` extension, which injects what Codex remembered on this machine (`~/.codex/memories[_v2]/` — the store Codex CLI, its VS Code extension and the desktop app share) into pi's system prompt and lists the artifacts in the status banner. Codex memories are off by default in Codex itself; when the store is absent this does nothing. Toggling reloads the agent to apply.",
+          "scope": "window"
+        },
+        "sqoweWingman.codexMemoryScope": {
+          "type": "string",
+          "default": "summary",
+          "enum": [
+            "summary",
+            "project",
+            "all"
+          ],
+          "enumDescriptions": [
+            "Inject only `memory_summary.md` (the dense summary Codex itself prompt-loads; its index already routes into the rest of the store).",
+            "Also inject `MEMORY.md` task-group blocks tagged `applies_to: cwd=` matching this workspace (cwd or git root, either direction of path prefix).",
+            "Also inject every `MEMORY.md` task-group block, regardless of project."
+          ],
+          "markdownDescription": "What the shared Codex memory injects beyond `memory_summary.md` (which is always included whole). `memory_summary.md`'s \"What's in Memory\" index and `MEMORY.md` blocks carry per-project `cwd` tags, so `project` filters the global store down to this workspace. Unrecognized values fall back to `summary`. Changing reloads the agent to apply.",
+          "scope": "window"
+        },
+        "sqoweWingman.codexMemoryMaxChars": {
+          "type": "number",
+          "default": 12000,
+          "minimum": 1000,
+          "maximum": 200000,
+          "markdownDescription": "Char budget for Codex `MEMORY.md` task-group blocks eagerly inlined into pi's system prompt (beyond `memory_summary.md`, which is always included whole and does not consume this budget). Whole blocks are inlined until the budget is hit; the remainder is listed by name for the agent to read on demand. `memory_summary.md` additionally has a hard cap (100 000 chars) — past it the summary is truncated with a pointer to the full file. Changing reloads the agent to apply. Kill switch: `WINGMAN_CODEX_MEMORY=off` in the environment VS Code starts from.",
           "scope": "window"
         },
         "sqoweWingman.currentDateTemplate": {

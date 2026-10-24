@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import type { RpcEvent } from '../../../src/agent/transport';
-import type { PiCommand, ModelState, InstructionFilesInfo, ClaudeMemoryInfo, UiDialogMessage, UiDialogOption, SessionStats } from '../../../src/shared/messages';
+import type { PiCommand, ModelState, InstructionFilesInfo, AgentMemoryInfo, UiDialogMessage, UiDialogOption, SessionStats } from '../../../src/shared/messages';
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -298,7 +298,12 @@ interface ChatState {
    * Claude Code project memory shared into pi (read-only). null = no memory
    * folder / unreadable; undefined = not yet received.
    */
-  claudeMemory: ClaudeMemoryInfo | null | undefined;
+  claudeMemory: AgentMemoryInfo | null | undefined;
+  /**
+   * Codex local memories shared into pi (read-only). null = no memory store /
+   * unreadable; undefined = not yet received.
+   */
+  codexMemory: AgentMemoryInfo | null | undefined;
   /** Active status entries from pi's setStatus() calls (keyed by statusKey). */
   uiStatuses: UiStatusEntry[];
   /** Active widget blocks from pi's setWidget() calls (keyed by widgetKey). */
@@ -378,7 +383,9 @@ interface ChatActions {
   /** Update resolved instruction files from an instructionFiles host message. */
   setInstructionFiles: (info: InstructionFilesInfo | null) => void;
   /** Update shared Claude Code memory from a claudeMemory host message. */
-  setClaudeMemory: (info: ClaudeMemoryInfo | null) => void;
+  setClaudeMemory: (info: AgentMemoryInfo | null) => void;
+  /** Update shared Codex memory from a codexMemory host message. */
+  setCodexMemory: (info: AgentMemoryInfo | null) => void;
   /** Replace the chat footer summary with a fresh terminal-of-session snapshot.
    *  Always replaces the prior summary (one footer per transcript). */
   setSessionStatsSettled: (stats: SessionStats) => void;
@@ -674,6 +681,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   pendingDialogAnswers: [],
   instructionFiles: undefined,
   claudeMemory: undefined,
+  codexMemory: undefined,
 
   addUserMessage: (text, imageCount) =>
     set((state) => ({
@@ -848,7 +856,8 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   setChatConfig: (showViewDiffButton: boolean) => set(() => ({ showViewDiffButton })),
 
   setInstructionFiles: (info: InstructionFilesInfo | null) => set(() => ({ instructionFiles: info })),
-  setClaudeMemory: (info: ClaudeMemoryInfo | null) => set(() => ({ claudeMemory: info })),
+  setClaudeMemory: (info: AgentMemoryInfo | null) => set(() => ({ claudeMemory: info })),
+  setCodexMemory: (info: AgentMemoryInfo | null) => set(() => ({ codexMemory: info })),
 
   setSessionStatsSettled: (stats) =>
     set((state) => {
@@ -982,6 +991,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         showViewDiffButton: state.showViewDiffButton,
         instructionFiles: state.instructionFiles,
         claudeMemory: state.claudeMemory,
+        codexMemory: state.codexMemory,
         toolCardExpanded: state.toolCardExpanded,
         // Carried through untouched: dispatchEvents only folds agent render
         // events, and a question card never arrives that way (the bridge

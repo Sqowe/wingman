@@ -7,7 +7,7 @@
  *  - rAF-coalesced dispatch of streaming deltas (never re-renders per delta).
  */
 import React, { useEffect, useRef, useCallback, useState } from 'react';
-import type { HostMessage, PiStatus, AttachedImage, InstructionFileEntry, InstructionFilesInfo, ClaudeMemoryInfo } from '@shared/messages';
+import type { HostMessage, PiStatus, AttachedImage, InstructionFileEntry, InstructionFilesInfo, AgentMemoryInfo } from '@shared/messages';
 import { vscode } from './vscodeApi';
 import { useChatStore, normalizeShowViewDiffButton } from './store';
 import { useDialogOutbox } from './store/useDialogOutbox';
@@ -58,6 +58,8 @@ export default function App() {
   const setInstructionFiles = useChatStore((s) => s.setInstructionFiles);
   const claudeMemory = useChatStore((s) => s.claudeMemory);
   const setClaudeMemory = useChatStore((s) => s.setClaudeMemory);
+  const codexMemory = useChatStore((s) => s.codexMemory);
+  const setCodexMemory = useChatStore((s) => s.setCodexMemory);
   const setSessionStatsSettled = useChatStore((s) => s.setSessionStatsSettled);
   const addQuestionCard = useChatStore((s) => s.addQuestionCard);
   const withdrawQuestionCard = useChatStore((s) => s.withdrawQuestionCard);
@@ -180,6 +182,10 @@ export default function App() {
           setClaudeMemory(msg.info);
           break;
 
+        case 'codexMemory':
+          setCodexMemory(msg.info);
+          break;
+
         case 'sessionStatsSettled':
           // Replace-in-place: store drops any prior summary and appends
           // the new one. Triggered only on `agent_settled` from the host,
@@ -265,7 +271,7 @@ export default function App() {
 
   return (
     <div className="app" ref={containerRef}>
-      <PiStatusBanner status={piStatus} instructionFiles={instructionFiles} claudeMemory={claudeMemory} />
+      <PiStatusBanner status={piStatus} instructionFiles={instructionFiles} claudeMemory={claudeMemory} codexMemory={codexMemory} />
 
       {uiTitle && (
         <div className="ui-title" aria-label="Session title">{uiTitle}</div>
@@ -326,10 +332,12 @@ function PiStatusBanner({
   status,
   instructionFiles,
   claudeMemory,
+  codexMemory,
 }: {
   status: PiStatus | null;
   instructionFiles: InstructionFilesInfo | null | undefined;
-  claudeMemory: ClaudeMemoryInfo | null | undefined;
+  claudeMemory: AgentMemoryInfo | null | undefined;
+  codexMemory: AgentMemoryInfo | null | undefined;
 }) {
   const [popoverOpen, setPopoverOpen] = React.useState(false);
   const bannerRef = React.useRef<HTMLDivElement>(null);
@@ -368,11 +376,11 @@ function PiStatusBanner({
   const fileCount = instructionFiles?.files.length;
   const showCount = instructionFiles !== undefined && instructionFiles !== null && fileCount !== undefined;
   const instructionSuffix = showCount && fileCount! > 0 ? ` · ${fileCount} instruction${fileCount === 1 ? '' : 's'}` : '';
-  const memoryCount = claudeMemory?.count;
+  const claudeCount = claudeMemory != null ? Math.max(0, claudeMemory.count) : 0;
+  const codexCount = codexMemory != null ? Math.max(0, codexMemory.count) : 0;
+  const memoryTotal = claudeCount + codexCount;
   const memorySuffix =
-    claudeMemory != null && memoryCount !== undefined && memoryCount > 0
-      ? ` · ${memoryCount} ${memoryCount === 1 ? 'memory' : 'memories'}`
-      : '';
+    memoryTotal > 0 ? ` · ${memoryTotal} ${memoryTotal === 1 ? 'memory' : 'memories'}` : '';
   const countSuffix = `${instructionSuffix}${memorySuffix}`;
 
   const canOpenPopover = status.kind === 'found' || status.kind === 'version-warning';
@@ -414,6 +422,7 @@ function PiStatusBanner({
           path={status.path}
           instructionFiles={instructionFiles}
           claudeMemory={claudeMemory}
+          codexMemory={codexMemory}
         />
       )}
     </div>
@@ -424,10 +433,12 @@ function InstructionFilesPopover({
   path,
   instructionFiles,
   claudeMemory,
+  codexMemory,
 }: {
   path: string;
   instructionFiles: InstructionFilesInfo | null | undefined;
-  claudeMemory: ClaudeMemoryInfo | null | undefined;
+  claudeMemory: AgentMemoryInfo | null | undefined;
+  codexMemory: AgentMemoryInfo | null | undefined;
 }) {
   return (
     <div className="instruction-files-popover" role="tooltip">
@@ -453,7 +464,18 @@ function InstructionFilesPopover({
         )}
       </div>
       {claudeMemory != null && claudeMemory.count > 0 && (
-        <ClaudeMemoryGroup memory={claudeMemory} />
+        <AgentMemoryGroup
+          memory={claudeMemory}
+          title="Project memory"
+          badge="from Claude Code · read-only"
+        />
+      )}
+      {codexMemory != null && codexMemory.count > 0 && (
+        <AgentMemoryGroup
+          memory={codexMemory}
+          title="Codex memory"
+          badge="from OpenAI Codex · read-only"
+        />
       )}
     </div>
   );
@@ -462,7 +484,15 @@ function InstructionFilesPopover({
 /** Popover cap: render at most this many memory rows, then a "+N more" escape row. */
 const MEMORY_ROW_CAP = 8;
 
-function ClaudeMemoryGroup({ memory }: { memory: ClaudeMemoryInfo }) {
+function AgentMemoryGroup({
+  memory,
+  title,
+  badge,
+}: {
+  memory: AgentMemoryInfo;
+  title: string;
+  badge: string;
+}) {
   const openFile = (filePath: string) => vscode.postMessage({ type: 'openFile', path: filePath });
   const openFolder = (folderPath: string) => vscode.postMessage({ type: 'openFolder', path: folderPath });
   const shown = memory.files.slice(0, MEMORY_ROW_CAP);
@@ -471,8 +501,8 @@ function ClaudeMemoryGroup({ memory }: { memory: ClaudeMemoryInfo }) {
   return (
     <div className="memory-group">
       <div className="memory-group__header">
-        <span className="memory-group__title">Project memory · {memory.count}</span>
-        <span className="memory-group__badge">from Claude Code · read-only</span>
+        <span className="memory-group__title">{title} · {memory.count}</span>
+        <span className="memory-group__badge">{badge}</span>
       </div>
       <ul className="memory-group__list">
         {shown.map((entry) => (

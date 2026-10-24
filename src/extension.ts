@@ -82,6 +82,48 @@ function readShareClaudeMemory(): boolean {
 }
 
 /**
+ * Read the `sqoweWingman.shareCodexMemory` setting (defaults to `true`).
+ * Gates whether the bundled `codex-memory` pi extension is loaded (`-e`), which
+ * shares Codex's local memories (read-only) with pi. Inert by construction
+ * when the machine has no Codex memory store.
+ */
+function readShareCodexMemory(): boolean {
+  return vscode.workspace
+    .getConfiguration('sqoweWingman')
+    .get<boolean>('shareCodexMemory', true);
+}
+
+/** What beyond `memory_summary.md` the codex-memory extension injects. */
+type CodexMemoryScope = 'summary' | 'project' | 'all';
+
+/**
+ * Read the `sqoweWingman.codexMemoryScope` setting (defaults to `summary`).
+ * An unrecognized value (hand-edited settings.json) falls back to `summary`
+ * rather than disabling sharing.
+ */
+function readCodexMemoryScope(): CodexMemoryScope {
+  const raw = vscode.workspace
+    .getConfiguration('sqoweWingman')
+    .get<string>('codexMemoryScope', 'summary');
+  return raw === 'project' || raw === 'all' ? raw : 'summary';
+}
+
+/**
+ * Read the `sqoweWingman.codexMemoryMaxChars` setting (defaults to `12000`).
+ * Bounds the eagerly inlined MEMORY.md task-group blocks; anything beyond is
+ * listed by name for the agent to read on demand. Clamped to the same
+ * [1000, 200000] range the setting declares, so the host and the extension
+ * agree regardless of hand-edited values.
+ */
+function readCodexMemoryMaxChars(): number {
+  const raw = vscode.workspace
+    .getConfiguration('sqoweWingman')
+    .get<number>('codexMemoryMaxChars', 12000);
+  if (!Number.isFinite(raw)) return 12000;
+  return Math.min(200000, Math.max(1000, Math.floor(raw)));
+}
+
+/**
  * Read the `sqoweWingman.currentDateTemplate` setting (default = the shipped
  * template in package.json). Forwarded to the bundled current-date pi
  * extension through the child env; a blank value makes the extension fall
@@ -106,9 +148,14 @@ function readCurrentDateTemplate(): string {
 function buildPiExtraEnv(): Record<string, string> {
   const env: Record<string, string> = {
     WINGMAN_CURRENT_DATE_TEMPLATE: readCurrentDateTemplate(),
+    WINGMAN_CODEX_MEMORY_SCOPE: readCodexMemoryScope(),
+    WINGMAN_CODEX_MEMORY_MAX_CHARS: String(readCodexMemoryMaxChars()),
   };
   if (process.env['WINGMAN_CURRENT_DATE']) {
     env['WINGMAN_CURRENT_DATE'] = process.env['WINGMAN_CURRENT_DATE'];
+  }
+  if (process.env['WINGMAN_CODEX_MEMORY']) {
+    env['WINGMAN_CODEX_MEMORY'] = process.env['WINGMAN_CODEX_MEMORY'];
   }
   return env;
 }
@@ -130,10 +177,12 @@ export function activate(context: vscode.ExtensionContext): void {
   // ── Controller ────────────────────────────────────────────────────────────
   // Bundled pi extensions loaded via `-e`. `gate` (optional) makes an extension
   // conditional on a setting: instruction-report and current-date are always on;
-  // claude-memory is gated by `sqoweWingman.shareClaudeMemory`.
+  // claude-memory is gated by `sqoweWingman.shareClaudeMemory`;
+  // codex-memory by `sqoweWingman.shareCodexMemory`.
   const bundledExtensionDefs: Array<{ rel: string; label: string; gate?: () => boolean }> = [
     { rel: 'pi-extensions/instruction-report/index.js', label: 'instruction file visibility' },
     { rel: 'pi-extensions/claude-memory/index.js', label: 'Claude Code memory sharing', gate: readShareClaudeMemory },
+    { rel: 'pi-extensions/codex-memory/index.js', label: 'Codex memory sharing', gate: readShareCodexMemory },
     { rel: 'pi-extensions/current-date/index.js', label: 'current date in the system prompt' },
   ];
   const bundledExtensions = bundledExtensionDefs.map((e) => {
@@ -229,6 +278,32 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!readShareClaudeMemory()) {
           provider.postClaudeMemory(null);
         }
+        void reloadAgent(
+          controller,
+          () => locatePi((m) => controller.outputChannel.appendLine(m)),
+          (s) => applyPiStatus(s, provider),
+        );
+      }
+      if (e.affectsConfiguration('sqoweWingman.shareCodexMemory')) {
+        // Mirror of shareClaudeMemory: recompute the -e set and respawn pi;
+        // clear the banner group when the toggle goes off.
+        controller.setBundledExtensionPaths(enabledBundledExtensionPaths());
+        if (!readShareCodexMemory()) {
+          provider.postCodexMemory(null);
+        }
+        void reloadAgent(
+          controller,
+          () => locatePi((m) => controller.outputChannel.appendLine(m)),
+          (s) => applyPiStatus(s, provider),
+        );
+      }
+      if (
+        e.affectsConfiguration('sqoweWingman.codexMemoryScope') ||
+        e.affectsConfiguration('sqoweWingman.codexMemoryMaxChars')
+      ) {
+        // Both reach the codex-memory extension through the child env, which is
+        // fixed at spawn — respawn pi to apply.
+        controller.setExtraEnv(buildPiExtraEnv());
         void reloadAgent(
           controller,
           () => locatePi((m) => controller.outputChannel.appendLine(m)),

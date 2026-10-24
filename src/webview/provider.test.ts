@@ -781,6 +781,61 @@ describe('WingmanViewProvider — postClaudeMemory', () => {
   });
 });
 
+// ─── postCodexMemory ───────────────────────────────────────────
+
+describe('WingmanViewProvider — postCodexMemory', () => {
+  const sample = {
+    dir: '/codex/memories_v2',
+    count: 2,
+    files: [
+      { path: '/codex/memories_v2/memory_summary.md', title: 'memory_summary.md' },
+      { path: '/codex/memories_v2/MEMORY.md', title: 'MEMORY.md' },
+    ],
+  };
+
+  it('posts a codexMemory message to the webview when ready', () => {
+    const { provider, postMessage } = resolveProvider();
+    provider.postCodexMemory(sample);
+    expect(postMessage).toHaveBeenCalledWith({ type: 'codexMemory', info: sample });
+  });
+
+  it('posts null info when there is no Codex memory store', () => {
+    const { provider, postMessage } = resolveProvider();
+    provider.postCodexMemory(null);
+    expect(postMessage).toHaveBeenCalledWith({ type: 'codexMemory', info: null });
+  });
+
+  it('replays cached Codex memory on webview ready', async () => {
+    const { view: v2, postMessage: pm2, sendMessage: sm2 } = makeWebviewView();
+    const p2 = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    p2.setController(makeController() as unknown as AgentController);
+    p2.resolveWebviewView(
+      v2,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    p2.postCodexMemory(sample);
+    expect(pm2).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'codexMemory' }));
+    sm2({ type: 'ready' });
+    await flushMicrotasks();
+    expect(pm2).toHaveBeenCalledWith({ type: 'codexMemory', info: sample });
+  });
+
+  it('does not replay when Codex memory was never set (undefined)', async () => {
+    const { view: v3, postMessage: pm3, sendMessage: sm3 } = makeWebviewView();
+    const p3 = new WingmanViewProvider(vscode.Uri.parse('vscode-resource://ext'));
+    p3.setController(makeController() as unknown as AgentController);
+    p3.resolveWebviewView(
+      v3,
+      {} as vscode.WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: () => new vscode.Disposable(() => {}) },
+    );
+    sm3({ type: 'ready' });
+    await flushMicrotasks();
+    expect(pm3).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'codexMemory' }));
+  });
+});
+
 // ─── openFile / openFolder (symlink-safe memory-dir guard) ──────────────────
 
 describe('WingmanViewProvider — openFile / openFolder', () => {
@@ -810,6 +865,28 @@ describe('WingmanViewProvider — openFile / openFolder', () => {
     await flushMicrotasks();
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0][0]).toBe('vscode.open');
+  });
+
+  it('accepts either reported memory dir (Claude and Codex anchors)', async () => {
+    // Both sources report their own dir; a file from the Codex store must open
+    // even though the Claude dir was reported too (and vice versa).
+    const codexDir = nodePath.join(tmpDir, 'memories_v2');
+    fs.mkdirSync(codexDir);
+    const codexFile = nodePath.join(codexDir, 'memory_summary.md');
+    fs.writeFileSync(codexFile, 'v1');
+    const { provider, sendMessage } = resolveProvider();
+    provider.postClaudeMemory({ dir: memDir, count: 1, files: [{ path: fileA, title: 'A' }] });
+    provider.postCodexMemory({ dir: codexDir, count: 1, files: [{ path: codexFile, title: 'memory_summary.md' }] });
+    const spy = vi.spyOn(vscode.commands, 'executeCommand');
+    sendMessage({ type: 'openFile', path: codexFile });
+    await flushMicrotasks();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toBe('vscode.open');
+    // And the Codex store's dir itself can be revealed via openFolder.
+    sendMessage({ type: 'openFolder', path: codexDir });
+    await flushMicrotasks();
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy.mock.calls[1][0]).toBe('revealFileInOS');
   });
 
   it('rejects a path outside the memory dir (path traversal)', async () => {

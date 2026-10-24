@@ -780,6 +780,44 @@ describe('store.setClaudeMemory', () => {
   });
 });
 
+// ─── setCodexMemory ───────────────────────────────────────────
+
+describe('store.setCodexMemory', () => {
+  beforeEach(() => {
+    useChatStore.setState({ codexMemory: undefined, claudeMemory: undefined });
+  });
+
+  it('starts undefined (not yet received)', () => {
+    expect(useChatStore.getState().codexMemory).toBeUndefined();
+  });
+
+  it('sets memory info independently of claudeMemory', () => {
+    const info = { dir: '/codex/memories_v2', count: 2, files: [
+      { path: '/codex/memories_v2/memory_summary.md', title: 'memory_summary.md' },
+      { path: '/codex/memories_v2/MEMORY.md', title: 'MEMORY.md' },
+    ] };
+    useChatStore.getState().setCodexMemory(info);
+    expect(useChatStore.getState().codexMemory).toEqual(info);
+    // Claude slot untouched.
+    expect(useChatStore.getState().claudeMemory).toBeUndefined();
+  });
+
+  it('clears to null (no memory store / unreadable)', () => {
+    useChatStore.getState().setCodexMemory({ dir: '/codex/memories_v2', count: 0, files: [] });
+    useChatStore.getState().setCodexMemory(null);
+    expect(useChatStore.getState().codexMemory).toBeNull();
+  });
+
+  it('is preserved across resetSession (re-reported on restart, not cleared)', () => {
+    const info = { dir: '/codex/memories_v2', count: 1, files: [
+      { path: '/codex/memories_v2/MEMORY.md', title: 'MEMORY.md' },
+    ] };
+    useChatStore.getState().setCodexMemory(info);
+    useChatStore.getState().resetSession();
+    expect(useChatStore.getState().codexMemory).toEqual(info);
+  });
+});
+
 // ─── normalizeShowViewDiffButton ──────────────────────────────────────────────
 
 describe('store.normalizeShowViewDiffButton', () => {
