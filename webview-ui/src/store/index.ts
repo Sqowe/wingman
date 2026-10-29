@@ -8,6 +8,7 @@
 import { create } from 'zustand';
 import type { RpcEvent } from '../../../src/agent/transport';
 import type { PiCommand, ModelState, InstructionFilesInfo, AgentMemoryInfo, UiDialogMessage, UiDialogOption, SessionStats } from '../../../src/shared/messages';
+import { buildMultiSelectReply } from '../../../src/shared/dialog-options';
 
 // ─── Domain types ─────────────────────────────────────────────────────────────
 
@@ -79,6 +80,8 @@ export interface QuestionCardItem {
   header?: string;
   options: UiDialogOption[];
   instructions?: string;
+  /** `multiSelect` only: the card offers a field for the user's own text. */
+  allowsCustomText?: boolean;
   /**
    * `open`      — awaiting the user; the only state that accepts input.
    * `answered`  — the user chose; `answer` holds what was sent.
@@ -95,7 +98,8 @@ export interface QuestionCardItem {
    */
   answer?: string;
   /**
-   * The text typed on a `text` card so far.
+   * The text typed so far — the answer on a `text` card, or the own-text field
+   * on a `multiSelect` card with `allowsCustomText`.
    *
    * Held in the store rather than in the component: the transcript is
    * virtualised, so a card that scrolls out of view is unmounted, and a local
@@ -390,10 +394,14 @@ interface ChatActions {
    * No-op unless the card is open, so a double click cannot answer twice.
    */
   answerQuestionCard: (id: string, value: string) => void;
-  /** Submit a multiSelect card's ticked options as comma-separated indices. */
+  /**
+   * Submit a multiSelect card: comma-separated indices, plus the own-text
+   * field's draft after `; ` when the card offers one and it is not blank.
+   */
   submitQuestionSelection: (id: string) => void;
   /**
-   * Record the text typed on a `text` card.
+   * Record the text typed on a `text` card, or into a `multiSelect` card's
+   * own-text field (only on a card with `allowsCustomText`).
    *
    * Kept in the store rather than in the card component: the message list is
    * virtualised, so a card that scrolls out of view is unmounted, and a local
@@ -791,6 +799,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
         // not alias state to something outside it.
         options: [...dialog.options],
         ...(dialog.instructions !== undefined ? { instructions: dialog.instructions } : {}),
+        ...(dialog.allowsCustomText ? { allowsCustomText: true } : {}),
         status: 'open',
         selected: [],
         expanded: false,
@@ -843,8 +852,9 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
       // Bare 1-based indices, comma-separated. Senders require every token to
       // parse as an in-range index and keep the whole reply as free text if any
       // does not, so labels must never appear here. An empty selection sends an
-      // empty string, which is the sender's "none of these".
-      const value = card.selected.join(',');
+      // empty string, which is the sender's "none of these". Own text goes after
+      // the separator, and only on a card whose sender declared it accepts it.
+      const value = buildMultiSelectReply(card.selected, card.allowsCustomText ? (card.draft ?? '') : '');
       return {
         items: state.items.map((item) =>
           item.itemKind === 'question' && item.id === id
@@ -859,7 +869,9 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
     set((state) => ({
       items: state.items.map((item) => {
         if (item.itemKind !== 'question' || item.id !== id) return item;
-        if (item.status !== 'open' || item.kind !== 'text') return item;
+        if (item.status !== 'open') return item;
+        const hasField = item.kind === 'text' || (item.kind === 'multiSelect' && item.allowsCustomText === true);
+        if (!hasField) return item;
         return { ...item, draft: text };
       }),
     })),

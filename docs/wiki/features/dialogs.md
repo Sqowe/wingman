@@ -31,6 +31,10 @@ For a **multiple-choice** question you get checkboxes instead: tick as many as a
 press **Submit**. Submitting with nothing ticked is a valid answer — it tells the agent none
 of the options apply.
 
+If the asking extension accepts it, there is also an optional **Your own answer** field under
+the checkboxes. Type a comment alongside your ticks, or leave every box empty and answer only
+in your own words. Enter sends, Shift+Enter adds a line.
+
 Every open question also has a **Dismiss** button. Dismissing declines the question, and
 extensions generally treat that as cancelling the whole set of questions they were asking —
 the same as pressing Escape on a quick-pick.

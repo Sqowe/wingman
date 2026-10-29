@@ -1510,8 +1510,21 @@ button.question-card__option:focus-visible,
   margin-top: 8px;
 }
 
+/* The optional own-text field under a multiple choice's checkboxes. */
+.question-card__custom {
+  margin-top: 8px;
+}
+
+.question-card__custom-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+
 /* The answer the user wrote, kept in the transcript as the card's record. */
 .question-card__answer-text {
+  margin-top: 4px;
   padding: 6px 8px;
   border-radius: 3px;
   background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));

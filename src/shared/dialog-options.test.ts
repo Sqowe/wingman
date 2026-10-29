@@ -19,9 +19,12 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  acceptsMultiSelectText,
+  buildMultiSelectReply,
   MAX_QUICK_PICK_OPTION_CHARS,
   OPTION_DETAIL_SEPARATOR,
   parseInputDialog,
+  parseMultiSelectReply,
   parseMultiSelectTitle,
   parseOption,
   parseQuestionHeader,
@@ -405,6 +408,90 @@ describe('parseInputDialog', () => {
     expect(parseInputDialog('Enter a value', '')).toBeNull();
     // rpiv's pre-2.13 follow-up: question, blank line, "Type your answer:".
     expect(parseInputDialog('[REST API] How should I handle it?\n\nType your answer:', '')).toBeNull();
+  });
+});
+
+describe('acceptsMultiSelectText()', () => {
+  it('accepts rpiv\'s placeholder for indices plus own text', () => {
+    // `MULTI_SELECT_PLACEHOLDER` in rpc-fallback.ts — not localised.
+    expect(acceptsMultiSelectText('1,3; custom answer')).toBe(true);
+  });
+
+  it('accepts the same shape with other spacing or text', () => {
+    expect(acceptsMultiSelectText('2 , 4 ;your words')).toBe(true);
+    expect(acceptsMultiSelectText('1; свой ответ')).toBe(true);
+  });
+
+  it('rejects a placeholder of bare indices', () => {
+    // The format of a sender that predates own text — it would keep "1,3; x"
+    // as text and drop the ticks.
+    expect(acceptsMultiSelectText('1,3')).toBe(false);
+  });
+
+  it('rejects a missing, empty or unrelated placeholder', () => {
+    expect(acceptsMultiSelectText(undefined)).toBe(false);
+    expect(acceptsMultiSelectText('')).toBe(false);
+    expect(acceptsMultiSelectText('Type here; anything')).toBe(false);
+    expect(acceptsMultiSelectText('1,3;')).toBe(false);
+  });
+});
+
+describe('buildMultiSelectReply()', () => {
+  it('sends bare indices when there is no text', () => {
+    expect(buildMultiSelectReply([1, 3], '')).toBe('1,3');
+  });
+
+  it('appends the text after the separator', () => {
+    expect(buildMultiSelectReply([1, 3], 'and the README')).toBe('1,3; and the README');
+  });
+
+  it('sends text alone with an empty index part', () => {
+    // rpiv: an empty selection before the separator is "none ticked".
+    expect(buildMultiSelectReply([], 'none of these, but this')).toBe('; none of these, but this');
+  });
+
+  it('sends an empty string for nothing at all', () => {
+    expect(buildMultiSelectReply([], '')).toBe('');
+  });
+
+  it('drops text that is only whitespace', () => {
+    expect(buildMultiSelectReply([2], '  \n\t ')).toBe('2');
+    expect(buildMultiSelectReply([], '   ')).toBe('');
+  });
+
+  it('keeps the text as typed, separators and line breaks included', () => {
+    // rpiv re-joins everything after the first separator.
+    expect(buildMultiSelectReply([1], 'a; b\nc ')).toBe('1; a; b\nc ');
+  });
+});
+
+describe('parseMultiSelectReply()', () => {
+  it('reads indices without text', () => {
+    expect(parseMultiSelectReply('1,3')).toEqual({ indices: [1, 3] });
+  });
+
+  it('reads indices and text', () => {
+    expect(parseMultiSelectReply('1,3; and the README')).toEqual({ indices: [1, 3], text: 'and the README' });
+  });
+
+  it('reads text alone', () => {
+    expect(parseMultiSelectReply('; just this')).toEqual({ indices: [], text: 'just this' });
+  });
+
+  it('reads the empty reply', () => {
+    expect(parseMultiSelectReply('')).toEqual({ indices: [] });
+  });
+
+  it('keeps a separator inside the text', () => {
+    expect(parseMultiSelectReply('2; a; b')).toEqual({ indices: [2], text: 'a; b' });
+  });
+
+  it('round-trips what buildMultiSelectReply builds', () => {
+    for (const [selected, text] of [[[1, 2], 'x'], [[], 'y; z'], [[4], ''], [[], '']] as const) {
+      const parsed = parseMultiSelectReply(buildMultiSelectReply(selected, text));
+      expect(parsed.indices).toEqual(selected);
+      expect(parsed.text).toBe(text.trim().length > 0 ? text.trim() : undefined);
+    }
   });
 });
 

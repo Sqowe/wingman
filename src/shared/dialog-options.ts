@@ -427,3 +427,59 @@ export function parseInputDialog(
     ...(parsed.instructions !== undefined ? { instructions: parsed.instructions } : {}),
   };
 }
+
+// ─── Multiple choice with the user's own text ────────────────────────────────
+
+/** Separates the ticked indices from the user's own text in a multiple-choice reply. */
+export const MULTI_SELECT_TEXT_SEPARATOR = ';';
+
+/** Matches the placeholder rpiv sends with a multiple choice that takes own text. */
+const CUSTOM_TEXT_PLACEHOLDER_RE = /^\s*\d+(?:\s*,\s*\d+)*\s*;\s*\S/;
+
+/**
+ * True when a multiple-choice `input` declares that it accepts the user's own
+ * text after the indices.
+ *
+ * `parseInputDialog` already reads a non-empty placeholder as "this is a
+ * multiple choice". This reads it once more, for the finer question: does the
+ * stated format include own text? rpiv states it as `"1,3; custom answer"`
+ * (`MULTI_SELECT_PLACEHOLDER`, not localised) — indices, the separator, then
+ * text. rpiv 2.2.0 sent `"1,3"`, bare indices, which promises no own text; a
+ * sender that only parses indices would keep a `"1,3; text"` reply as text and
+ * lose the ticks. Only the full shape offers a text field; anything else
+ * leaves the card checkboxes only.
+ */
+export function acceptsMultiSelectText(placeholder: string | undefined): boolean {
+  return placeholder !== undefined && CUSTOM_TEXT_PLACEHOLDER_RE.test(placeholder);
+}
+
+/**
+ * Build a multiple-choice reply: bare comma-separated indices, then the user's
+ * own text after the separator when there is any.
+ *
+ * `"1,3"`, `"1,3; text"`, `"; text"` (text only) or `""` (none of these) — the
+ * four replies rpiv tells apart (`rpc-fallback.ts`, `askMultiSelect`). Text that
+ * is only whitespace is dropped rather than sent: rpiv would trim it to nothing
+ * anyway. The text is otherwise untouched; rpiv joins everything after the
+ * first separator back together, so a `;` or a line break inside it survives.
+ */
+export function buildMultiSelectReply(selected: readonly number[], text: string): string {
+  const indices = selected.join(',');
+  if (text.trim().length === 0) return indices;
+  return `${indices}${MULTI_SELECT_TEXT_SEPARATOR} ${text}`;
+}
+
+/**
+ * Read a reply built by `buildMultiSelectReply` back into its parts — for the
+ * transcript record, which is derived from what was actually sent.
+ */
+export function parseMultiSelectReply(reply: string): { indices: number[]; text?: string } {
+  const at = reply.indexOf(MULTI_SELECT_TEXT_SEPARATOR);
+  const head = at < 0 ? reply : reply.slice(0, at);
+  const text = at < 0 ? '' : reply.slice(at + MULTI_SELECT_TEXT_SEPARATOR.length).trim();
+  const indices = head
+    .split(',')
+    .map((token) => Number.parseInt(token.trim(), 10))
+    .filter((n) => Number.isFinite(n));
+  return { indices, ...(text.length > 0 ? { text } : {}) };
+}

@@ -1464,7 +1464,62 @@ describe('UiProtocolBridge — question cards', () => {
     expect(card.question).toBe('Which files should I touch?');
     expect(card.options.map((o) => o.index)).toEqual([1, 2, 3]);
     expect(card.instructions).toContain('comma-separated');
+    // A placeholder of bare indices (rpiv 2.2.0) does not promise own text.
+    expect(card.allowsCustomText).toBeUndefined();
     expect(mockShowInputBox).not.toHaveBeenCalled();
+  });
+
+  it('offers own text when the placeholder declares it, without the typing instructions', async () => {
+    provider.acceptCards();
+    const title = [
+      'Which files should I touch?',
+      '',
+      '1. Router — Rewrite the routes.',
+      '2. Models — Convert the models.',
+      '',
+      'Enter the numbers of all that apply, comma-separated (e.g. "1,3"). Add "; custom answer" to include your own text, or type only custom text.',
+    ].join('\n');
+    // rpiv's `MULTI_SELECT_PLACEHOLDER`.
+    bridge.handleEvent(makeRequest('input', { title, placeholder: '1,3; custom answer' }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+    const card = provider.postedCards[0];
+    expect(card.kind).toBe('multiSelect');
+    expect(card.allowsCustomText).toBe(true);
+    // "Type the numbers" next to checkboxes and a text field invites typing
+    // "1,3" into the field, so it is left out.
+    expect(card.instructions).toBeUndefined();
+  });
+
+  it('never offers own text on a free-text card', async () => {
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('input', {
+      title: 'Which files?\n\n1. Router — Rewrite.\n2. Models — Convert.\n\nType your answer:',
+      placeholder: '',
+    }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+    expect(provider.postedCards[0].kind).toBe('text');
+    expect(provider.postedCards[0].allowsCustomText).toBeUndefined();
+    expect(provider.postedCards[0].instructions).toBe('Type your answer:');
+  });
+
+  it('sends ticks and own text the way the sender parses them', async () => {
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('input', {
+      title: 'Which files?\n\n1. Router — Rewrite.\n2. Models — Convert.\n\nEnter numbers.',
+      placeholder: '1,3; custom answer',
+    }));
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+
+    provider.answerCard('test-id-1', '2; and the fixtures');
+
+    await vi.waitFor(() => expect(transport.sentRaw).toHaveLength(1));
+    expect(transport.sentRaw[0]).toEqual({
+      type: 'extension_ui_response',
+      id: 'test-id-1',
+      value: '2; and the fixtures',
+    });
   });
 
   it('sends the indices a multi-select card collected', async () => {

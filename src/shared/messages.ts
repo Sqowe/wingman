@@ -347,9 +347,17 @@ export interface UiDialogMessage {
   /**
    * The sender's how-to-answer instructions, when it supplied any.  Display
    * only: the card provides checkboxes, so "type the numbers" no longer
-   * applies, but the text can carry other detail worth showing.
+   * applies, but the text can carry other detail worth showing.  Left out of a
+   * card with `allowsCustomText`, where they would invite typing "1,3" into the
+   * text field.
    */
   instructions?: string;
+  /**
+   * `multiSelect` only: the sender accepts the user's own text after the
+   * indices (`"1,3; text"`), so the card offers a field for it.  Set from the
+   * request's placeholder (see `acceptsMultiSelectText`).
+   */
+  allowsCustomText?: boolean;
 }
 
 /**
@@ -636,7 +644,10 @@ export interface OpenFolderMessage {
  *  - `multiSelect` — the chosen options' 1-based indices, comma-separated
  *    (`"1,3"`).  Bare indices, never labels: the sender requires every token to
  *    parse as an in-range index, and keeps the whole reply as free text if any
- *    token does not.  An empty string is a deliberate "none selected".
+ *    token does not.  An empty string is a deliberate "none selected".  On a
+ *    card with `allowsCustomText`, the user's own text follows after `; `
+ *    (`"1,3; text"`, or `"; text"` with nothing ticked) — built only by
+ *    `buildMultiSelectReply`.
  *  - `text` — what the user typed, verbatim.  Not reformatted and not
  *    relabelled: the sender takes this string as the answer itself.
  *

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multiple-choice cards take your own words too.** When the asking
+  extension accepts it, a multiple-choice card now has an optional text field
+  under the checkboxes, so you can tick options and add a comment, or answer
+  only in your own words, in one go. Enter sends, Shift+Enter adds a line. The
+  card shows the field only when the extension says it understands this reply;
+  otherwise it stays checkboxes only, as before.
+
 ### Fixed
 
 - **Typing in a question card's answer field keeps the caret in the field.**

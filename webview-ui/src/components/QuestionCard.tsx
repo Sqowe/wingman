@@ -29,10 +29,11 @@
  * pi is blocked while `status === 'open'`, so the card must always offer a way
  * out: every state has either an answer control or a Dismiss.
  */
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import type { QuestionCardItem } from '../store';
 import { useChatStore } from '../store';
 import type { UiDialogOption } from '../../../src/shared/messages';
+import { parseMultiSelectReply } from '../../../src/shared/dialog-options';
 import { MemoMarkdown } from './Markdown';
 
 interface Props {
@@ -94,6 +95,7 @@ export const QuestionCard = React.memo(function QuestionCard({ item }: Props) {
           <MultiSelectBody
             item={item}
             onToggle={(index) => toggleQuestionOption(item.id, index)}
+            onDraft={(text) => setQuestionDraft(item.id, text)}
             onSubmit={() => submitQuestionSelection(item.id)}
             onDismiss={() => dismissQuestionCard(item.id)}
           />
@@ -163,14 +165,19 @@ function SelectBody({
 function MultiSelectBody({
   item,
   onToggle,
+  onDraft,
   onSubmit,
   onDismiss,
 }: {
   item: QuestionCardItem;
   onToggle: (index: number) => void;
+  onDraft: (text: string) => void;
   onSubmit: () => void;
   onDismiss: () => void;
 }) {
+  const fieldId = useId();
+  const ownText = item.allowsCustomText ? (item.draft ?? '') : '';
+  const nothing = item.selected.length === 0 && ownText.trim().length === 0;
   return (
     <>
       {item.instructions && (
@@ -208,6 +215,29 @@ function MultiSelectBody({
           );
         })}
       </ul>
+      {item.allowsCustomText && (
+        <div className="question-card__custom">
+          <label className="question-card__custom-label" htmlFor={fieldId}>
+            Your own answer (optional)
+          </label>
+          <textarea
+            id={fieldId}
+            className="question-card__input"
+            value={ownText}
+            onChange={(event) => onDraft(event.target.value)}
+            rows={2}
+            title="Enter sends the answer, Shift+Enter starts a new line"
+            onKeyDown={(event) => {
+              // Same keys as the free-text card: Enter sends, Shift+Enter keeps
+              // the newline, and an IME composition is left to finish.
+              if (event.key !== 'Enter' || event.shiftKey) return;
+              if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+              event.preventDefault();
+              onSubmit();
+            }}
+          />
+        </div>
+      )}
       <CardActions onDismiss={onDismiss}>
         <button
           type="button"
@@ -215,7 +245,7 @@ function MultiSelectBody({
           onClick={onSubmit}
           // Deliberately enabled with nothing ticked: the sender reads an empty
           // reply as "none of these", which is a legitimate answer.
-          title={item.selected.length === 0 ? 'Submit with nothing selected' : undefined}
+          title={nothing ? 'Submit with nothing selected' : undefined}
         >
           Submit{item.selected.length > 0 ? ` (${item.selected.length})` : ''}
         </button>
@@ -374,6 +404,10 @@ function SettledBody({
   // the user wrote, and its option list is reference rather than a choice, so
   // the toggle reads differently there.
   const isText = item.kind === 'text';
+  // A multiple choice may carry the user's own text after the indices.
+  const ownText = item.kind === 'multiSelect' && item.status === 'answered' && item.answer !== undefined
+    ? parseMultiSelectReply(item.answer).text
+    : undefined;
 
   return (
     <>
@@ -392,7 +426,9 @@ function SettledBody({
         <div className="question-card__answer-text">{item.answer}</div>
       )}
 
-      {item.status === 'answered' && chosen.length === 0 && !isText && (
+      {ownText !== undefined && <div className="question-card__answer-text">{ownText}</div>}
+
+      {item.status === 'answered' && chosen.length === 0 && !isText && ownText === undefined && (
         <p className="question-card__note">No options were selected.</p>
       )}
 
@@ -445,13 +481,8 @@ function chosenOptions(item: QuestionCardItem): UiDialogOption[] {
   }
   // A free-text card records the answer the user wrote, not a picked option.
   if (item.kind === 'text') return [];
-  // multiSelect: the answer is comma-separated indices.
-  const picked = new Set(
-    item.answer
-      .split(',')
-      .map((token) => Number.parseInt(token.trim(), 10))
-      .filter((n) => Number.isFinite(n)),
-  );
+  // multiSelect: comma-separated indices, own text (if any) after the separator.
+  const picked = new Set(parseMultiSelectReply(item.answer).indices);
   return item.options.filter((o) => o.index !== undefined && picked.has(o.index));
 }
 

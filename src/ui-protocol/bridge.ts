@@ -15,7 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AgentTransport, RpcEvent } from '../agent/transport';
-import { parseInputDialog, parseOption, parseQuestionHeader, parseTitlePreviews, shouldRouteToCard, splitTitleBlocks } from '../shared/dialog-options';
+import { acceptsMultiSelectText, parseInputDialog, parseOption, parseQuestionHeader, parseTitlePreviews, shouldRouteToCard, splitTitleBlocks } from '../shared/dialog-options';
 import type { InstructionFilesInfo, InstructionFileEntry, AgentMemoryInfo, AgentMemoryEntry, UiDialogMessage, UiDialogOption, UiDialogAnswerMessage } from '../shared/messages';
 import { isStrictlyWithinDir } from '../shared/path-guard';
 import type { WingmanViewProvider } from '../webview/provider';
@@ -193,6 +193,10 @@ function buildInputCard(id: string, req: InputRequest): UiDialogMessage | null {
   const parsed = parseInputDialog(req.title, req.placeholder);
   if (!parsed) return null;
   const { header, question } = parseQuestionHeader(parsed.question);
+  // Own text after the indices, only where the sender's placeholder states that
+  // format. The sender's "enter the numbers … add '; custom answer'" text then
+  // goes: next to checkboxes and a field it invites typing "1,3" into the field.
+  const allowsCustomText = parsed.kind === 'multiSelect' && acceptsMultiSelectText(req.placeholder);
   return {
     type: 'uiDialog',
     id,
@@ -200,7 +204,8 @@ function buildInputCard(id: string, req: InputRequest): UiDialogMessage | null {
     question,
     ...(header !== undefined ? { header } : {}),
     options: parsed.options.map((raw) => toDialogOption(raw, {})),
-    ...(parsed.instructions !== undefined ? { instructions: parsed.instructions } : {}),
+    ...(allowsCustomText ? { allowsCustomText: true } : {}),
+    ...(!allowsCustomText && parsed.instructions !== undefined ? { instructions: parsed.instructions } : {}),
   };
 }
 

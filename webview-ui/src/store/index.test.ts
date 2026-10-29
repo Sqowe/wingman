@@ -1038,7 +1038,40 @@ describe('question cards', () => {
     useChatStore.getState().addQuestionCard(MULTI_DIALOG);
     useChatStore.getState().setQuestionDraft('req-2', 'half typed');
 
+    // A multiple choice without allowsCustomText has no field to type into.
     expect(onlyCard().draft).toBeUndefined();
+  });
+
+  // ── Multiple choice with own text ──
+
+  it('submitQuestionSelection appends own text after the separator', () => {
+    useChatStore.getState().addQuestionCard({ ...MULTI_DIALOG, allowsCustomText: true });
+    useChatStore.getState().toggleQuestionOption('req-2', 1);
+    useChatStore.getState().toggleQuestionOption('req-2', 3);
+    useChatStore.getState().setQuestionDraft('req-2', 'and the README');
+    useChatStore.getState().submitQuestionSelection('req-2');
+
+    expect(answers()).toEqual([{ id: 'req-2', value: '1,3; and the README' }]);
+  });
+
+  it('submitQuestionSelection sends own text alone with an empty index part', () => {
+    useChatStore.getState().addQuestionCard({ ...MULTI_DIALOG, allowsCustomText: true });
+    useChatStore.getState().setQuestionDraft('req-2', 'none of these');
+    useChatStore.getState().submitQuestionSelection('req-2');
+    expect(answers()).toEqual([{ id: 'req-2', value: '; none of these' }]);
+  });
+
+  it('submitQuestionSelection drops a blank own text', () => {
+    useChatStore.getState().addQuestionCard({ ...MULTI_DIALOG, allowsCustomText: true });
+    useChatStore.getState().toggleQuestionOption('req-2', 2);
+    useChatStore.getState().setQuestionDraft('req-2', '   ');
+    useChatStore.getState().submitQuestionSelection('req-2');
+    expect(answers()).toEqual([{ id: 'req-2', value: '2' }]);
+  });
+
+  it('addQuestionCard carries allowsCustomText through', () => {
+    useChatStore.getState().addQuestionCard({ ...MULTI_DIALOG, allowsCustomText: true });
+    expect(onlyCard().allowsCustomText).toBe(true);
   });
 
   it('setQuestionReferenceExpanded opens and closes the reference list', () => {

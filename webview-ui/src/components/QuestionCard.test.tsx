@@ -441,6 +441,94 @@ describe('QuestionCard — a written answer', () => {
   });
 });
 
+// ── Multiple choice with own text ──
+
+describe('QuestionCard — multiple choice with own text', () => {
+  const WITH_TEXT: UiDialogMessage = {
+    ...MULTI_DIALOG,
+    id: 'req-7',
+    allowsCustomText: true,
+    instructions: undefined,
+  };
+  const field = () => screen.getByRole('textbox', { name: 'Your own answer (optional)' });
+
+  it('offers an optional text field below the checkboxes, unfocused', () => {
+    renderCard(WITH_TEXT);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(3);
+    // The checkboxes are the main control; the field must not grab the caret.
+    expect(field()).not.toHaveFocus();
+  });
+
+  it('has no field when the sender did not declare own text', () => {
+    renderCard(MULTI_DIALOG);
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  });
+
+  it('sends ticks and text together', () => {
+    const { rerender } = renderCard(WITH_TEXT);
+    fireEvent.click(screen.getAllByRole('checkbox')[0]);
+    rerender();
+    fireEvent.change(field(), { target: { value: 'and the README' } });
+    rerender();
+
+    fireEvent.click(screen.getByRole('button', { name: /Submit/ }));
+
+    expect(answers()).toEqual([{ id: 'req-7', value: '1; and the README' }]);
+  });
+
+  it('sends text alone', () => {
+    const { rerender } = renderCard(WITH_TEXT);
+    fireEvent.change(field(), { target: { value: 'none of these' } });
+    rerender();
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    expect(answers()).toEqual([{ id: 'req-7', value: '; none of these' }]);
+  });
+
+  it('sends from the field on Enter, and adds a line on Shift+Enter', () => {
+    const { rerender } = renderCard(WITH_TEXT);
+    fireEvent.change(field(), { target: { value: 'x' } });
+    rerender();
+
+    fireEvent.keyDown(field(), { key: 'Enter', shiftKey: true });
+    expect(answers()).toHaveLength(0);
+    fireEvent.keyDown(field(), { key: 'Enter' });
+    expect(answers()).toEqual([{ id: 'req-7', value: '; x' }]);
+  });
+
+  it('does not send on the Enter that confirms an IME candidate', () => {
+    const { rerender } = renderCard(WITH_TEXT);
+    fireEvent.change(field(), { target: { value: 'こんにちは' } });
+    rerender();
+    fireEvent.keyDown(field(), { key: 'Enter', isComposing: true });
+    expect(answers()).toHaveLength(0);
+  });
+
+  it('records the ticked rows and the text', () => {
+    const { rerender } = renderCard(WITH_TEXT);
+    fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    rerender();
+    fireEvent.change(field(), { target: { value: 'plus the docs' } });
+    rerender();
+    fireEvent.click(screen.getByRole('button', { name: /Submit/ }));
+    rerender();
+
+    expect(screen.getByText('Tests')).toBeInTheDocument();
+    expect(screen.getByText('plus the docs')).toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  });
+
+  it('does not claim nothing was selected when only text was sent', () => {
+    const { rerender } = renderCard(WITH_TEXT);
+    fireEvent.change(field(), { target: { value: 'my own' } });
+    rerender();
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    rerender();
+
+    expect(screen.getByText('my own')).toBeInTheDocument();
+    expect(screen.queryByText('No options were selected.')).not.toBeInTheDocument();
+  });
+});
+
 // ── Dismissal ────────────────────────────────────────────────────────────────
 
 describe('QuestionCard — dismissal', () => {
