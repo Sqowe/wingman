@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Typing in a question card's answer field keeps the caret in the field.**
+  The message list handed its rows to the virtualised list as a component
+  created afresh on every render, so each change in the chat — a streamed
+  token, a keystroke in the answer field — threw away the visible rows and
+  built them again. The field you were typing in was replaced after every key
+  and lost focus. Rows are now kept and only updated.
+
 ## [0.4.4] - 2026-10-29
 
 ### Fixed

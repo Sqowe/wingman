@@ -166,6 +166,13 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
     [items],
   );
 
+  // Row inputs travel through `itemData`, not a closure: react-window renders
+  // `children` as a component type, so an inline `(props) => <Row …/>` would be
+  // a new type on every render and remount every visible row. A remount throws
+  // away a focused text field (the question card's typed answer) on each
+  // keystroke, along with any other row-local state.
+  const itemData = useMemo<RowData>(() => ({ items, setRowHeight }), [items, setRowHeight]);
+
   if (items.length === 0) {
     return (
       <div className="message-list message-list--empty" aria-label="Chat messages">
@@ -186,6 +193,7 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
       itemCount={items.length}
       itemSize={getItemSize}
       itemKey={itemKey}
+      itemData={itemData}
       overscanCount={4}
       onScroll={({ scrollOffset, scrollUpdateWasRequested }) => {
         if (scrollUpdateWasRequested) return;
@@ -197,25 +205,26 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
         isAtBottom.current = totalHeight - scrollOffset - height < 60;
       }}
     >
-      {(props) => (
-        <Row
-          {...props}
-          items={items}
-          setRowHeight={setRowHeight}
-        />
-      )}
+      {Row}
     </VariableSizeList>
   );
 }
 
 // ─── Row ──────────────────────────────────────────────────────────────────────
 
-interface RowProps extends ListChildComponentProps {
+/** What every row needs from the list, handed over as react-window's `itemData`. */
+interface RowData {
   items: ChatItem[];
   setRowHeight: (index: number, size: number) => void;
 }
 
-const Row = React.memo(function Row({ index, style, items, setRowHeight }: RowProps) {
+/**
+ * Declared at module scope so its identity never changes — see `itemData` in
+ * MessageList. `React.memo` only skips work; it is the stable type that keeps a
+ * row mounted.
+ */
+const Row = React.memo(function Row({ index, style, data }: ListChildComponentProps<RowData>) {
+  const { items, setRowHeight } = data;
   const rowRef = useRef<HTMLDivElement>(null);
   const item = items[index];
 

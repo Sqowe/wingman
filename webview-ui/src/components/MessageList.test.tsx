@@ -13,8 +13,14 @@
  * scrolling on each of those renders snapped the transcript to a position
  * computed from stale row heights, and the view jumped away from the card
  * being typed into.
+ *
+ * And one more property, pinned at the end: a re-render must update the rows
+ * on screen, never remount them. react-window 1.x renders `children` as a
+ * component type, so an inline row renderer is a new type on every render and
+ * React replaced every visible row — including the answer field the user was
+ * typing in, which lost the caret on each keystroke.
  */
-import { render, act } from '@testing-library/react';
+import { render, act, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { VariableSizeList } from 'react-window';
 import { MessageList } from './MessageList';
@@ -371,5 +377,41 @@ describe('MessageList — auto-scroll', () => {
 
     // 400 + 400 rows in a 300px viewport.
     expect(offsetOf(container)).toBe(500);
+  });
+});
+
+describe('MessageList — row identity across re-renders', () => {
+  it('keeps the answer field, and its focus, while the user types', () => {
+    const { rerender } = render(
+      <MessageList items={[userItem(), questionItem()]} transcriptEpoch={0} height={VIEWPORT} width={300} />,
+    );
+    const field = screen.getByRole('textbox', { name: 'Your answer' });
+    field.focus();
+    expect(field).toHaveFocus();
+
+    // One keystroke: the card writes the draft to the store, which hands the
+    // list a new item object and re-renders it.
+    fireEvent.change(field, { target: { value: 'a' } });
+    rerender(
+      <MessageList items={[userItem(), questionItem('a')]} transcriptEpoch={0} height={VIEWPORT} width={300} />,
+    );
+
+    const after = screen.getByRole('textbox', { name: 'Your answer' });
+    expect(after).toBe(field);
+    expect(after).toHaveFocus();
+    expect(after).toHaveValue('a');
+  });
+
+  it('does not remount a row when another item arrives', () => {
+    const { rerender } = render(
+      <MessageList items={[userItem()]} transcriptEpoch={0} height={VIEWPORT} width={300} />,
+    );
+    const bubble = screen.getByLabelText('Your message');
+
+    rerender(
+      <MessageList items={[userItem(), assistantItem()]} transcriptEpoch={0} height={VIEWPORT} width={300} />,
+    );
+
+    expect(screen.getByLabelText('Your message')).toBe(bubble);
   });
 });
