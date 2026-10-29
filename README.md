@@ -11,7 +11,7 @@ it **reuses pi's own configuration** — the same `~/.pi/agent/` global config a
 `.pi/` resources the pi CLI uses. Wingman is a different front-end over the same brain, not a
 separate tool with its own settings.
 
-> **Status — `0.4.3` preview.** Phases 0–8 are complete: native chat, tool cards, native diff,
+> **Status — `0.4.4` preview.** Phases 0–8 are complete: native chat, tool cards, native diff,
 > commands, the extension-UI protocol bridge, sessions, and config/trust are all built and
 > tested. Phase 9 (packaging / Marketplace) is in progress, so for now you install from source
 > (see below). See [CHANGELOG.md](CHANGELOG.md) for what's new in each release, and the
@@ -49,8 +49,9 @@ separate tool with its own settings.
   quick-picks, modals, and input boxes instead of terminal selectors. When an extension asks a
   *real* question — several options, each with a paragraph explaining it, sometimes a code
   preview — it appears as a card in the chat instead, where the whole thing wraps: every option and
-  explanation in full, previews as expandable code blocks, and multiple choice as real checkboxes
-  rather than typing `1,3` into a box. Short prompts (allow / deny) stay on the faster quick-pick.
+  explanation in full, previews as expandable code blocks, multiple choice as real checkboxes
+  rather than typing `1,3` into a box, and a "type something" escape as a text field you can write
+  an answer in. Short prompts (allow / deny) stay on the faster quick-pick.
   Configurable with `sqoweWingman.dialogStyle`. **Question cards are built and tested with one
   extension only:**
   [`npm:@juicesharp/rpiv-ask-user-question`](https://www.npmjs.com/package/@juicesharp/rpiv-ask-user-question)
@@ -239,8 +240,8 @@ instead, point the trailing arg in `.vscode/launch.json` at `${workspaceFolder}`
 ### Option B — Package a VSIX and install it into your daily VS Code
 
 ```sh
-npm run vsce:package                       # produces sqowe-wingman-0.4.3.vsix
-code --install-extension sqowe-wingman-0.4.3.vsix
+npm run vsce:package                       # produces sqowe-wingman-0.4.4.vsix
+code --install-extension sqowe-wingman-0.4.4.vsix
 ```
 
 Or in VS Code: **Extensions** view ▸ **⋯** menu ▸ *Install from VSIX…* ▸ pick the file, then

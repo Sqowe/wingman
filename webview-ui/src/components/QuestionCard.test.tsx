@@ -62,6 +62,23 @@ const MULTI_DIALOG: UiDialogMessage = {
   instructions: 'Enter the numbers of all that apply.',
 };
 
+/**
+ * The follow-up behind a sender's "Type something." row: the answer is prose,
+ * and the option list the sender repeats is reference material, not a choice.
+ */
+const TEXT_DIALOG: UiDialogMessage = {
+  type: 'uiDialog',
+  id: 'req-3',
+  kind: 'text',
+  question: 'How should I handle it?',
+  header: 'REST API file',
+  options: [
+    { raw: '1. Keep — Leave it untouched.', index: 1, headline: 'Keep', description: 'Leave it untouched.' },
+    { raw: '2. Rewrite — Replace it.', index: 2, headline: 'Rewrite', description: 'Replace it.' },
+  ],
+  instructions: 'Type your answer:',
+};
+
 /** Add a card to the store and render it. */
 function renderCard(dialog: UiDialogMessage) {
   useChatStore.getState().addQuestionCard(dialog);
@@ -283,6 +300,147 @@ describe('QuestionCard — multiple choice', () => {
   });
 });
 
+// ── A written answer ─────────────────────────────────────────────────────────
+
+describe('QuestionCard — a written answer', () => {
+  it('offers a text field, not a choice', () => {
+    renderCard(TEXT_DIALOG);
+
+    expect(screen.getByRole('textbox', { name: 'Your answer' })).toBeInTheDocument();
+    // The sender wants prose: checkboxes would make it read the reply as free
+    // text anyway, and the answer would be lost.
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.getByText('Type your answer:')).toBeInTheDocument();
+  });
+
+  it('keeps Submit disabled until there is something to send', () => {
+    const { rerender } = renderCard(TEXT_DIALOG);
+
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeDisabled();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Your answer' }), {
+      target: { value: 'my own answer' },
+    });
+    rerender();
+
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled();
+  });
+
+  it('sends the typed text verbatim', () => {
+    const { rerender } = renderCard(TEXT_DIALOG);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Your answer' }), {
+      target: { value: 'my own answer' },
+    });
+    rerender();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+
+    // The text is the answer itself: not reformatted, not relabelled.
+    expect(answers()).toEqual([{ id: 'req-3', value: 'my own answer' }]);
+  });
+
+  it('sends on Enter and keeps the newline on Shift+Enter', () => {
+    const { rerender } = renderCard(TEXT_DIALOG);
+    const field = screen.getByRole('textbox', { name: 'Your answer' });
+
+    fireEvent.change(field, { target: { value: 'my own answer' } });
+    rerender();
+
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Your answer' }), {
+      key: 'Enter',
+      shiftKey: true,
+    });
+    expect(answers()).toHaveLength(0);
+
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Your answer' }), { key: 'Enter' });
+    expect(answers()).toEqual([{ id: 'req-3', value: 'my own answer' }]);
+  });
+
+  it('keeps the repeated option list as reference, collapsed', () => {
+    const { rerender } = renderCard(TEXT_DIALOG);
+
+    // Nothing to pick — the list is there to consult while typing.
+    expect(screen.queryByText('Leave it untouched.')).not.toBeInTheDocument();
+
+    const toggle = screen.getByRole('button', { name: /Show the options/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle);
+    rerender();
+
+    expect(screen.getByText('Keep')).toBeInTheDocument();
+    expect(screen.getByText('Leave it untouched.')).toBeInTheDocument();
+    // Still not a choice: nothing about the list can be submitted.
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+  });
+
+  it('keeps the reference list open when the card is re-mounted', () => {
+    const { rerender, unmount } = renderCard(TEXT_DIALOG);
+
+    fireEvent.click(screen.getByRole('button', { name: /Show the options/ }));
+    rerender();
+
+    // The transcript is virtualised: a row that scrolls out of view is
+    // unmounted, and the list the user opened must not close under them.
+    unmount();
+    renderCard(TEXT_DIALOG);
+
+    expect(screen.getByText('Leave it untouched.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Hide the options/ })).toBeInTheDocument();
+  });
+
+  it('records the answer in the transcript', () => {
+    const { rerender } = renderCard(TEXT_DIALOG);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Your answer' }), {
+      target: { value: 'my own answer' },
+    });
+    rerender();
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    rerender();
+
+    expect(screen.getByText('my own answer')).toBeInTheDocument();
+    expect(screen.getByText('Answered')).toBeInTheDocument();
+    // The field is gone once answered.
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  });
+
+  it('does not send while an IME composition is still open', () => {
+    const { rerender } = renderCard(TEXT_DIALOG);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Your answer' }), {
+      target: { value: 'привет' },
+    });
+    rerender();
+
+    // Enter confirms an IME candidate window (Cyrillic, Japanese, …); it must
+    // not send the answer.
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Your answer' }), {
+      key: 'Enter',
+      isComposing: true,
+    });
+
+    expect(answers()).toHaveLength(0);
+  });
+
+  it('keeps the half-typed answer when the card is re-mounted', () => {
+    const { rerender, unmount } = renderCard(TEXT_DIALOG);
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Your answer' }), {
+      target: { value: 'half typed' },
+    });
+    rerender();
+
+    // The transcript is virtualised: a row that scrolls out of view is
+    // unmounted, so the draft cannot live in the component.
+    unmount();
+    renderCard(TEXT_DIALOG);
+
+    expect(screen.getByRole('textbox', { name: 'Your answer' })).toHaveValue('half typed');
+  });
+});
+
 // ── Dismissal ────────────────────────────────────────────────────────────────
 
 describe('QuestionCard — dismissal', () => {
@@ -298,6 +456,12 @@ describe('QuestionCard — dismissal', () => {
     renderCard(MULTI_DIALOG);
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(answers()).toEqual([{ id: 'req-2', cancelled: true }]);
+  });
+
+  it('offers Dismiss on a free-text card too', () => {
+    renderCard(TEXT_DIALOG);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(answers()).toEqual([{ id: 'req-3', cancelled: true }]);
   });
 });
 

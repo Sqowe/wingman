@@ -872,6 +872,20 @@ describe('question cards', () => {
     instructions: 'Enter the numbers of all that apply.',
   };
 
+  // The follow-up behind a sender's "Type something." row: the answer is the
+  // user's own text, and the option list is reference material.
+  const TEXT_DIALOG: UiDialogMessage = {
+    type: 'uiDialog',
+    id: 'req-3',
+    kind: 'text',
+    question: 'How should I handle it?',
+    options: [
+      { raw: '1. Keep — Leave it.', index: 1, headline: 'Keep', description: 'Leave it.' },
+      { raw: '2. Rewrite — Replace it.', index: 2, headline: 'Rewrite', description: 'Replace it.' },
+    ],
+    instructions: 'Type your answer:',
+  };
+
   const cards = () => items().filter((i): i is QuestionCardItem => i.itemKind === 'question');
   const onlyCard = () => {
     const found = cards();
@@ -1006,6 +1020,79 @@ describe('question cards', () => {
 
     expect(onlyCard().selected).toEqual([1]);
     expect(answers()).toHaveLength(1);
+  });
+
+  // ── A written answer ───────────────────────────────────────────────────────
+
+  it('setQuestionDraft keeps the half-typed text on the card', () => {
+    useChatStore.getState().addQuestionCard(TEXT_DIALOG);
+    useChatStore.getState().setQuestionDraft('req-3', 'half typed');
+
+    // The draft lives in the store: the transcript is virtualised, so a card
+    // that scrolls out of view is unmounted and a local value would be lost.
+    expect(onlyCard().draft).toBe('half typed');
+    expect(answers()).toHaveLength(0);
+  });
+
+  it('setQuestionDraft ignores a card that is not a text card', () => {
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    useChatStore.getState().setQuestionDraft('req-2', 'half typed');
+
+    expect(onlyCard().draft).toBeUndefined();
+  });
+
+  it('setQuestionReferenceExpanded opens and closes the reference list', () => {
+    useChatStore.getState().addQuestionCard(TEXT_DIALOG);
+    expect(onlyCard().referenceExpanded).toBeUndefined();
+
+    useChatStore.getState().setQuestionReferenceExpanded('req-3', true);
+    expect(onlyCard().referenceExpanded).toBe(true);
+
+    useChatStore.getState().setQuestionReferenceExpanded('req-3', false);
+    expect(onlyCard().referenceExpanded).toBe(false);
+  });
+
+  it('setQuestionReferenceExpanded ignores a card that is not a text card', () => {
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    useChatStore.getState().setQuestionReferenceExpanded('req-2', true);
+
+    expect(onlyCard().referenceExpanded).toBeUndefined();
+  });
+
+  it('submitQuestionText sends the typed text verbatim', () => {
+    useChatStore.getState().addQuestionCard(TEXT_DIALOG);
+    useChatStore.getState().submitQuestionText('req-3', 'my own answer');
+
+    // The text is the answer itself: not reformatted, not relabelled.
+    expect(answers()).toEqual([{ id: 'req-3', value: 'my own answer' }]);
+    expect(onlyCard()).toMatchObject({ status: 'answered', answer: 'my own answer' });
+  });
+
+  it('submitQuestionText refuses a blank answer', () => {
+    // A blank reply is not an answer: the sender behind a "Type something." row
+    // reads it as "go back to the options" and re-asks the question.
+    useChatStore.getState().addQuestionCard(TEXT_DIALOG);
+    useChatStore.getState().submitQuestionText('req-3', '   ');
+
+    expect(answers()).toHaveLength(0);
+    expect(onlyCard().status).toBe('open');
+  });
+
+  it('submitQuestionText ignores a card that is not a text card', () => {
+    useChatStore.getState().addQuestionCard(MULTI_DIALOG);
+    useChatStore.getState().submitQuestionText('req-2', 'my own answer');
+
+    expect(answers()).toHaveLength(0);
+    expect(onlyCard().status).toBe('open');
+  });
+
+  it('submitQuestionText is a no-op once the card is answered', () => {
+    useChatStore.getState().addQuestionCard(TEXT_DIALOG);
+    useChatStore.getState().submitQuestionText('req-3', 'first');
+    useChatStore.getState().submitQuestionText('req-3', 'second');
+
+    // pi accepts exactly one response per request.
+    expect(answers()).toEqual([{ id: 'req-3', value: 'first' }]);
   });
 
   // ── Dismissal and withdrawal ──────────────────────────────────────────────

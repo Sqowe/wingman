@@ -74,7 +74,7 @@ export interface QuestionCardItem {
   itemKind: 'question';
   /** pi's request id. Opaque here; echoed back so the host can correlate. */
   id: string;
-  kind: 'select' | 'multiSelect';
+  kind: 'select' | 'multiSelect' | 'text';
   question: string;
   header?: string;
   options: UiDialogOption[];
@@ -90,9 +90,26 @@ export interface QuestionCardItem {
   withdrawnReason?: 'timeout' | 'sessionReset' | 'agentStopped';
   /**
    * What was sent back, kept for the transcript record. For `select` this is the
-   * chosen option's `raw`; for `multiSelect`, the comma-separated indices.
+   * chosen option's `raw`; for `multiSelect`, the comma-separated indices; for
+   * `text`, the answer the user typed.
    */
   answer?: string;
+  /**
+   * The text typed on a `text` card so far.
+   *
+   * Held in the store rather than in the component: the transcript is
+   * virtualised, so a card that scrolls out of view is unmounted, and a local
+   * `useState` would take the half-typed answer with it.
+   */
+  draft?: string;
+  /**
+   * Whether the option list a `text` card repeats is expanded.
+   *
+   * In the store for the same reason as `draft`: the reference list is what a
+   * user scrolls back to while composing an answer, and a virtualised row that
+   * unmounts must not close it under them.
+   */
+  referenceExpanded?: boolean;
   /** Indices (1-based) ticked so far on a multiSelect card, before submitting. */
   selected: number[];
   /**
@@ -366,6 +383,25 @@ interface ChatActions {
   answerQuestionCard: (id: string, value: string) => void;
   /** Submit a multiSelect card's ticked options as comma-separated indices. */
   submitQuestionSelection: (id: string) => void;
+  /**
+   * Record the text typed on a `text` card.
+   *
+   * Kept in the store rather than in the card component: the message list is
+   * virtualised, so a card that scrolls out of view is unmounted, and a local
+   * `useState` would lose the half-typed answer.
+   */
+  setQuestionDraft: (id: string, text: string) => void;
+  /** Expand or collapse the reference option list on a `text` card. */
+  setQuestionReferenceExpanded: (id: string, expanded: boolean) => void;
+  /**
+   * Submit a free-text answer typed on a `text` card.
+   *
+   * The text goes to the sender verbatim — it *is* the answer, not a reference
+   * to an option. A blank answer is not sent: the sender behind a "Type
+   * something." row reads an empty reply as "go back to the options" and
+   * re-asks the question, so sending one would silently reopen it.
+   */
+  submitQuestionText: (id: string, text: string) => void;
   /** Dismiss a card, cancelling the sender's whole questionnaire. */
   dismissQuestionCard: (id: string) => void;
   /** Mark a card withdrawn by the host; sends nothing (the host already settled it). */
@@ -806,6 +842,42 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
             : item,
         ),
         pendingDialogAnswers: [...state.pendingDialogAnswers, { id, value }],
+      };
+    }),
+
+  setQuestionDraft: (id, text) =>
+    set((state) => ({
+      items: state.items.map((item) => {
+        if (item.itemKind !== 'question' || item.id !== id) return item;
+        if (item.status !== 'open' || item.kind !== 'text') return item;
+        return { ...item, draft: text };
+      }),
+    })),
+
+  setQuestionReferenceExpanded: (id, expanded) =>
+    set((state) => ({
+      items: state.items.map((item) => {
+        if (item.itemKind !== 'question' || item.id !== id) return item;
+        if (item.status !== 'open' || item.kind !== 'text') return item;
+        return { ...item, referenceExpanded: expanded };
+      }),
+    })),
+
+  submitQuestionText: (id, text) =>
+    set((state) => {
+      const card = state.items.find(
+        (i): i is QuestionCardItem => i.itemKind === 'question' && i.id === id,
+      );
+      if (!card || card.status !== 'open' || card.kind !== 'text') return {};
+      // Whitespace is not an answer (see the action's doc comment).
+      if (text.trim().length === 0) return {};
+      return {
+        items: state.items.map((item) =>
+          item.itemKind === 'question' && item.id === id
+            ? { ...item, status: 'answered' as const, answer: text }
+            : item,
+        ),
+        pendingDialogAnswers: [...state.pendingDialogAnswers, { id, value: text }],
       };
     }),
 

@@ -15,7 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AgentTransport, RpcEvent } from '../agent/transport';
-import { parseMultiSelectTitle, parseOption, parseQuestionHeader, parseTitlePreviews, shouldRouteToCard, splitTitleBlocks } from '../shared/dialog-options';
+import { parseInputDialog, parseOption, parseQuestionHeader, parseTitlePreviews, shouldRouteToCard, splitTitleBlocks } from '../shared/dialog-options';
 import type { InstructionFilesInfo, InstructionFileEntry, AgentMemoryInfo, AgentMemoryEntry, UiDialogMessage, UiDialogOption, UiDialogAnswerMessage } from '../shared/messages';
 import { isStrictlyWithinDir } from '../shared/path-guard';
 import type { WingmanViewProvider } from '../webview/provider';
@@ -178,19 +178,25 @@ function buildSelectCard(id: string, req: SelectRequest): UiDialogMessage {
 }
 
 /**
- * Build a multiple-choice card from an `input` request, or return null when the
- * title is not a multiple-choice list (a plain prompt, or rpiv's own free-text
- * follow-up — both of which an input box handles well).
+ * Build a card from an `input` request that carries an option list, or return
+ * null when the title is not a list (a plain prompt — an input box handles
+ * that well).
+ *
+ * Two kinds of card come out of here, told apart by the request's
+ * `placeholder` (see `parseInputDialog`): a multiple-choice card with
+ * checkboxes, and a free-text card where the user writes the answer. The
+ * latter is what a sender sends behind its "Type something." row — the option
+ * list it repeats there is reference material, not a set of choices.
  */
-function buildMultiSelectCard(id: string, req: InputRequest): UiDialogMessage | null {
+function buildInputCard(id: string, req: InputRequest): UiDialogMessage | null {
   if (req.title === undefined) return null;
-  const parsed = parseMultiSelectTitle(req.title);
+  const parsed = parseInputDialog(req.title, req.placeholder);
   if (!parsed) return null;
   const { header, question } = parseQuestionHeader(parsed.question);
   return {
     type: 'uiDialog',
     id,
-    kind: 'multiSelect',
+    kind: parsed.kind,
     question,
     ...(header !== undefined ? { header } : {}),
     options: parsed.options.map((raw) => toDialogOption(raw, {})),
@@ -543,15 +549,21 @@ export class UiProtocolBridge implements vscode.Disposable {
   private async _handleInput(req: InputRequest): Promise<void> {
     // Multiple choice arrives here, not as a `select`: the sender packs the
     // question, the numbered option list and "enter the numbers,
-    // comma-separated" into one title.  A successfully parsed multiple-choice
-    // title is itself the routing signal — no length heuristic is applied.  No
-    // quick input surface in VS Code honours a line break, so the option list
-    // always collapses into one run of text there, and the user is asked to type
+    // comma-separated" into one title.  A successfully parsed option list is
+    // itself the routing signal — no length heuristic is applied.  No quick
+    // input surface in VS Code honours a line break, so the option list always
+    // collapses into one run of text there, and the user is asked to type
     // numbers for a list they cannot read (design doc §8).  That holds however
     // short the individual options are, which is why `shouldRouteToCard` (built
     // for a quick pick's row width) does not apply here.
+    //
+    // The same request shape also carries a sender's free-text follow-up (the
+    // one behind its "Type something." row), which is told apart by the
+    // request's placeholder — see `parseInputDialog`.  It gets a card with a
+    // text field rather than checkboxes: the sender wants prose, and checkboxes
+    // would make it read the reply as free text anyway.
     if (this._dialogStyle !== 'quickPick') {
-      const card = buildMultiSelectCard(req.id, req);
+      const card = buildInputCard(req.id, req);
       if (card) {
         const answered = await this._askViaCard(card);
         if (answered) return;

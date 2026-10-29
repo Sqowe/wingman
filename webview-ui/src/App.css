@@ -1484,6 +1484,41 @@ button.question-card__option:focus-visible,
   transform: rotate(90deg);
 }
 
+/* ── A written answer ── */
+
+/* The free-text card: a field the user types into, not a list to pick from. */
+.question-card__input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border)));
+  border-radius: 3px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font: inherit;
+  resize: vertical;
+}
+
+.question-card__input:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+/* The option list a free-text card repeats — reference, kept out of the way. */
+.question-card__reference {
+  margin-top: 8px;
+}
+
+/* The answer the user wrote, kept in the transcript as the card's record. */
+.question-card__answer-text {
+  padding: 6px 8px;
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ── Actions ── */
 
 .question-card__actions {
@@ -1505,6 +1540,16 @@ button.question-card__option:focus-visible,
 
 .question-card__submit:hover {
   background: var(--vscode-button-hoverBackground);
+}
+
+/* Submit is disabled until there is something to send (a free-text card). */
+.question-card__submit:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.question-card__submit:disabled:hover {
+  background: var(--vscode-button-background);
 }
 
 .question-card__dismiss {

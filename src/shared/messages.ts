@@ -331,8 +331,13 @@ export interface UiDialogMessage {
    *  - `multiSelect` — checkboxes; answering sends comma-separated indices
    *    (`"1,3"`), because that is what the sender parses.  Arrives as an
    *    `input` request whose title carries the option list, not as a `select`.
+   *  - `text` — a free-text answer the user writes; answering sends the typed
+   *    text verbatim.  This is the request behind a sender's "Type something."
+   *    row (see `parseInputDialog` in src/shared/dialog-options.ts): the sender
+   *    asks for its own text, and the option list it repeats is reference
+   *    material, not a set of choices.
    */
-  kind: 'select' | 'multiSelect';
+  kind: 'select' | 'multiSelect' | 'text';
   /** The question, chip prefix and folded-in previews already removed. */
   question: string;
   /** Short chip label (rpiv's `[REST API file]` prefix), when present. */
@@ -632,6 +637,8 @@ export interface OpenFolderMessage {
  *    (`"1,3"`).  Bare indices, never labels: the sender requires every token to
  *    parse as an in-range index, and keeps the whole reply as free text if any
  *    token does not.  An empty string is a deliberate "none selected".
+ *  - `text` — what the user typed, verbatim.  Not reformatted and not
+ *    relabelled: the sender takes this string as the answer itself.
  *
  * `cancelled: true` is the Dismiss control, equivalent to Escape on a quick
  * pick.  Senders treat it as cancelling the entire questionnaire.

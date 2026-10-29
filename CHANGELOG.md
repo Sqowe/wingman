@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-29
+
+### Fixed
+
+- **"Type something." now gives you a field to type in, instead of asking you
+  to pick an option again.** The row is a sentinel the asking extension adds to
+  every single-choice question; choosing it made it ask for your own answer —
+  and since version 2.13 it repeats the option list in that request, which
+  Wingman took for a multiple-choice question and drew as checkboxes. There was
+  no way to write anything. The request is now recognised for what it is and
+  drawn as a card with a text field: your answer is sent back verbatim, and the
+  repeated option list stays collapsed next to the field as reference.
+
+  The two requests are told apart by the answer format the extension declares
+  with the request: multiple choice declares one ("1,3"), a free-text answer
+  does not. An extension that offers a numbered list without declaring a format
+  now gets a text field instead of checkboxes — typing `1,3` still works.
+
 ## [0.4.3] - 2026-10-24
 
 ### Fixed
@@ -643,7 +661,8 @@ diff editor.
   the `sqoweWingman.piExecutablePath` setting or automatic detection from `PATH`
   and common install locations.
 
-[Unreleased]: https://github.com/sqowe/wingman/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/sqowe/wingman/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/sqowe/wingman/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/sqowe/wingman/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/sqowe/wingman/compare/v0.4.0...v0.4.2
 [0.4.0]: https://github.com/sqowe/wingman/compare/v0.3.5...v0.4.0

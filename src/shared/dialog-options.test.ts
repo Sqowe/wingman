@@ -21,6 +21,7 @@ import { describe, it, expect } from 'vitest';
 import {
   MAX_QUICK_PICK_OPTION_CHARS,
   OPTION_DETAIL_SEPARATOR,
+  parseInputDialog,
   parseMultiSelectTitle,
   parseOption,
   parseQuestionHeader,
@@ -341,6 +342,69 @@ describe('parseMultiSelectTitle()', () => {
   it('keeps a multi-block question together', () => {
     const parsed = parseMultiSelectTitle('Q?\n\nmore context\n\n1. A — a.\n2. B — b.\n\nEnter numbers.')!;
     expect(parsed.question).toBe('Q?\n\nmore context');
+  });
+});
+
+describe('parseInputDialog', () => {
+  // rpiv sends two requests whose titles have the same shape: the question, a
+  // numbered option list, and a closing instruction. The multiple-choice one
+  // prescribes a reply format in the placeholder; the free-text follow-up
+  // (behind the "Type something." row) leaves it empty.
+  const MULTI_TITLE = [
+    'Which files should I touch?',
+    '',
+    '1. Router — Rewrite the routes.',
+    '2. Models — Convert the models.',
+    '',
+    'Enter the numbers of all that apply, comma-separated (e.g. "1,3").',
+  ].join('\n');
+
+  const FREE_TEXT_TITLE = [
+    'How should I handle it?',
+    '',
+    '1. Keep the stub — Leave it untouched.',
+    '2. Rewrite for aiohttp — Replace the stub.',
+    '',
+    'Type your answer:',
+  ].join('\n');
+
+  it('reads a multiple choice as multiple choice when a reply format is given', () => {
+    const parsed = parseInputDialog(MULTI_TITLE, '1,3')!;
+    expect(parsed.kind).toBe('multiSelect');
+    expect(parsed.question).toBe('Which files should I touch?');
+    expect(parsed.options).toHaveLength(2);
+    expect(parsed.instructions).toContain('comma-separated');
+  });
+
+  it('reads the same shape as free text when the placeholder is empty', () => {
+    // The follow-up rpiv sends after "Type something." — identical shape to the
+    // multiple choice, but the answer is prose.
+    const parsed = parseInputDialog(FREE_TEXT_TITLE, '')!;
+    expect(parsed.kind).toBe('text');
+    expect(parsed.question).toBe('How should I handle it?');
+    expect(parsed.options.map((o) => parseOption(o).index)).toEqual([1, 2]);
+    expect(parsed.instructions).toBe('Type your answer:');
+  });
+
+  it('treats a missing placeholder as no prescribed reply format', () => {
+    expect(parseInputDialog(FREE_TEXT_TITLE, undefined)!.kind).toBe('text');
+  });
+
+  it('treats a whitespace-only placeholder as no prescribed reply format', () => {
+    expect(parseInputDialog(FREE_TEXT_TITLE, '   ')!.kind).toBe('text');
+  });
+
+  it('keeps the free-text list as reference, verbatim', () => {
+    // The raw lines must survive: the card shows them next to the field.
+    const parsed = parseInputDialog(FREE_TEXT_TITLE, '')!;
+    expect(parsed.options[0]).toBe('1. Keep the stub — Leave it untouched.');
+  });
+
+  it('returns null for a title with no option list', () => {
+    // A plain prompt stays an input box.
+    expect(parseInputDialog('Enter a value', '')).toBeNull();
+    // rpiv's pre-2.13 follow-up: question, blank line, "Type your answer:".
+    expect(parseInputDialog('[REST API] How should I handle it?\n\nType your answer:', '')).toBeNull();
   });
 });
 

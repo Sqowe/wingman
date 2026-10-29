@@ -1471,6 +1471,7 @@ describe('UiProtocolBridge — question cards', () => {
     provider.acceptCards();
     bridge.handleEvent(makeRequest('input', {
       title: 'Which files?\n\n1. Router — Rewrite.\n2. Models — Convert.\n\nEnter numbers.',
+      placeholder: '1,3',
     }));
     await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
 
@@ -1492,11 +1493,126 @@ describe('UiProtocolBridge — question cards', () => {
     provider.acceptCards();
     bridge.handleEvent(makeRequest('input', {
       title: 'Which files?\n\n1. Router\n2. Models\n\nEnter numbers.',
+      placeholder: '1,3',
     }));
 
     await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
     expect(provider.postedCards[0].kind).toBe('multiSelect');
     expect(mockShowInputBox).not.toHaveBeenCalled();
+  });
+
+  // ── The "Type something." follow-up wants prose, not a pick ──────────────
+
+  it('routes a free-text follow-up to a card with a text field', async () => {
+    // rpiv's "Type something." escape (rpc-fallback.ts askSingleSelect): since
+    // 2.13 the follow-up repeats the option list, so its title has the same
+    // shape as a multiple choice. What tells them apart is the placeholder —
+    // rpiv prescribes a reply format for multiple choice only, and leaves it
+    // empty for the free-text follow-up.
+    provider.acceptCards();
+    const title = [
+      '[REST API] How should I handle it?',
+      '',
+      '1. Keep the stub — Leave it untouched.',
+      '2. Rewrite for aiohttp — Replace the stub.',
+      '',
+      'Type your answer:',
+    ].join('\n');
+    bridge.handleEvent(makeRequest('input', { title, placeholder: '' }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+    const card = provider.postedCards[0];
+    expect(card.kind).toBe('text');
+    expect(card.header).toBe('REST API');
+    expect(card.question).toBe('How should I handle it?');
+    // The repeated list is reference material — kept for the user to consult
+    // while typing, never a set of choices.
+    expect(card.options.map((o) => o.index)).toEqual([1, 2]);
+    expect(card.instructions).toBe('Type your answer:');
+    expect(mockShowInputBox).not.toHaveBeenCalled();
+  });
+
+  it('sends a typed answer to pi verbatim', async () => {
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('input', {
+      title: 'How?\n\n1. A — a\n2. B — b\n\nType your answer:',
+      placeholder: '',
+    }));
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+
+    provider.answerCard('test-id-1', 'my own answer');
+
+    await vi.waitFor(() => expect(transport.sentRaw).toHaveLength(1));
+    // The text is the answer itself: not reformatted, not relabelled.
+    expect(transport.sentRaw[0]).toEqual({
+      type: 'extension_ui_response',
+      id: 'test-id-1',
+      value: 'my own answer',
+    });
+  });
+
+  it('treats an option list with no placeholder as free text', async () => {
+    // No prescribed reply format: the list is reference and the answer is prose.
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('input', {
+      title: 'How?\n\n1. A — a\n2. B — b\n\nType your answer:',
+    }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+    expect(provider.postedCards[0].kind).toBe('text');
+  });
+
+  it('walks rpiv\'s "Type something." round trip end to end', async () => {
+    // The real payloads, in the order rpiv sends them: a select carrying the
+    // sentinel, then the free-text follow-up that answering it triggers.
+    provider.acceptCards();
+    bridge.handleEvent(makeRequest('select', {
+      title: 'How should I handle it?',
+      options: [
+        '1. Keep the stub — Leave it untouched.',
+        '2. Rewrite for aiohttp — Replace the stub.',
+        '3. Type something.',
+      ],
+    }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(1));
+    expect(provider.postedCards[0].kind).toBe('select');
+
+    // The user picks the sentinel, byte-for-byte.
+    provider.answerCard('test-id-1', '3. Type something.');
+    await vi.waitFor(() => expect(transport.sentRaw).toHaveLength(1));
+    expect(transport.sentRaw[0]).toEqual({
+      type: 'extension_ui_response',
+      id: 'test-id-1',
+      value: '3. Type something.',
+    });
+
+    // rpiv comes back for the text — and repeats the option list, which is what
+    // made this look like a multiple choice.
+    bridge.handleEvent(makeRequest('input', {
+      id: 'test-id-2',
+      title: [
+        'How should I handle it?',
+        '',
+        '1. Keep the stub — Leave it untouched.',
+        '2. Rewrite for aiohttp — Replace the stub.',
+        '',
+        'Type your answer:',
+      ].join('\n'),
+      placeholder: '',
+    }));
+
+    await vi.waitFor(() => expect(provider.postedCards).toHaveLength(2));
+    expect(provider.postedCards[1].kind).toBe('text');
+
+    // And the typed answer goes back as it was written.
+    provider.answerCard('test-id-2', 'rewrite it, but keep the stub file');
+    await vi.waitFor(() => expect(transport.sentRaw).toHaveLength(2));
+    expect(transport.sentRaw[1]).toEqual({
+      type: 'extension_ui_response',
+      id: 'test-id-2',
+      value: 'rewrite it, but keep the stub file',
+    });
   });
 
   it('leaves a plain input prompt as an input box', async () => {

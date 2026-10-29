@@ -356,3 +356,74 @@ export function parseMultiSelectTitle(title: string): ParsedMultiSelect | null {
 
   return null;
 }
+
+// ─── The kind of reply an `input` request expects ────────────────────────────
+
+/**
+ * Which kind of answer an `input` request wants.
+ *
+ * - `multiSelect` — the reply is a list of option indices (`"1,3"`).
+ * - `text` — the reply is free text the user writes.
+ */
+export type InputDialogKind = 'multiSelect' | 'text';
+
+/** An `input` request that carries a numbered option list, with its kind resolved. */
+export interface ParsedInputDialog {
+  kind: InputDialogKind;
+  /** The question block, chip prefix still attached (run it through `parseQuestionHeader`). */
+  question: string;
+  /** The numbered option lines, verbatim, in the order the sender listed them. */
+  options: string[];
+  /** Everything after the option list — the sender's how-to-answer instructions. */
+  instructions?: string;
+}
+
+/**
+ * Parse an `input` request that carries an option list, and resolve which kind
+ * of reply it expects.
+ *
+ * ## Why the placeholder decides
+ *
+ * Two different requests look identical on the title alone. rpiv's multiple
+ * choice sends the question, the numbered list and "enter the numbers,
+ * comma-separated"; its free-text follow-up — the one behind the "Type
+ * something." row — sends the question, the *same* numbered list (since 2.13,
+ * so the user can refer to it while typing) and "Type your answer:"
+ * (`rpc-fallback.ts`, `askMultiSelect` / `askSingleSelect`). Two titles, one
+ * shape: a question, a numbered list, a closing instruction.
+ *
+ * pi's `input` request carries one more field that separates them — the
+ * `placeholder`, which is the sender's statement of *what shape the reply
+ * takes*. rpiv sets it for multiple choice ("1,3; custom answer", "1,3" in
+ * 2.2.0) and leaves it empty for the free-text follow-up, in every version
+ * from 2.2.0 to 2.15.0. An empty placeholder therefore means "no prescribed
+ * format" — the option list is reference material and the answer is text.
+ *
+ * Recognition stays by shape: no tool name, no extension name, no string
+ * matching on the instruction text (which is localized — "Type your answer:"
+ * in English, "Введите свой ответ:" in Russian).
+ *
+ * ## What happens when the guess is wrong
+ *
+ * A sender that offers a numbered list but no placeholder gets a text field
+ * rather than checkboxes. That is the softer failure: the user can still type
+ * `"1,3"`, and a sender that parses indices reads it exactly as before. The
+ * reverse — showing checkboxes for a request that wants text — loses the
+ * answer entirely, because the sender reads the reply as free text and the
+ * model gets `"1"` instead of what the user picked.
+ */
+export function parseInputDialog(
+  title: string,
+  placeholder: string | undefined,
+): ParsedInputDialog | null {
+  const parsed = parseMultiSelectTitle(title);
+  if (!parsed) return null;
+
+  const kind: InputDialogKind = (placeholder ?? '').trim().length > 0 ? 'multiSelect' : 'text';
+  return {
+    kind,
+    question: parsed.question,
+    options: parsed.options,
+    ...(parsed.instructions !== undefined ? { instructions: parsed.instructions } : {}),
+  };
+}
