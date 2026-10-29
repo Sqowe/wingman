@@ -25,6 +25,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not. An extension that offers a numbered list without declaring a format
   now gets a text field instead of checkboxes — typing `1,3` still works.
 
+- **Typing in a question card's answer field no longer yanks the transcript
+  away.** The card keeps the half-typed answer in the store, so every
+  keystroke re-rendered the list — and the list scrolled to the bottom on
+  *every* render, to a position computed from cached row heights. When one of
+  those heights was stale (a row measured while the panel was hidden, or the
+  heights left over from a previous session), the target sat a screen above the
+  content, and the view jumped up to the beginning of the last model output on
+  every character. The list now follows the bottom only when the bottom
+  actually moves — a new message, a taller row, a resized panel — and a row
+  that reports a zero height (a hidden panel measures nothing) no longer
+  replaces the height it had.
+
+- **A long or restored conversation now opens at the bottom.** The list
+  decides whether to follow the bottom from the scroll events it sees, and the
+  heights of the rows that were never on screen are still estimates — so a
+  transcript that did not fit was measured as "the reader had scrolled away"
+  and stayed at the top. Switching sessions had the same effect: the new
+  transcript inherited the scroll position of the old one. Both are fixed: the
+  first view of a transcript opens at its bottom, and a switch starts a fresh
+  one there.
+
 ## [0.4.3] - 2026-10-24
 
 ### Fixed

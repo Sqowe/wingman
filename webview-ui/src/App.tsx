@@ -35,6 +35,9 @@ export default function App() {
 
   // Zustand store bindings.
   const items = useChatStore((s) => s.items);
+  // Counts transcript replacements (session switch / reset) — the list needs it
+  // to know that the row heights it measured belong to rows that are gone.
+  const transcriptEpoch = useChatStore((s) => s.transcriptEpoch);
   const isStreaming = useChatStore((s) => s.isStreaming);
   const commands = useChatStore((s) => s.commands);
   const uiStatuses = useChatStore((s) => s.uiStatuses);
@@ -345,7 +348,12 @@ export default function App() {
       )}
 
       <div className="message-list-slot" ref={listSlotRef}>
-        <MessageList items={items} height={listHeight} width={listWidth} />
+        <MessageList
+          items={items}
+          transcriptEpoch={transcriptEpoch}
+          height={listHeight}
+          width={listWidth}
+        />
       </div>
 
       {/* aboveEditor widgets sit between the message list and the composer input. */}

@@ -294,6 +294,15 @@ export type UiDialogAnswer =
 
 interface ChatState {
   items: ChatItem[];
+  /**
+   * Counts how many times the transcript was replaced wholesale.
+   *
+   * The message list caches its row heights by index, so it has to know when
+   * the rows it measured are no longer the rows on screen — a restored or
+   * switched session, a reset. The item ids alone cannot say that reliably
+   * (two sessions can start with the same message), so the store says it.
+   */
+  transcriptEpoch: number;
   isStreaming: boolean;
   /** id of the AssistantItem currently being streamed (null when idle). */
   _currentAssistantId: string | null;
@@ -703,6 +712,7 @@ function applyEvent(state: ChatState, event: RpcEvent): void {
 
 export const useChatStore = create<ChatState & ChatActions>()((set) => ({
   items: [],
+  transcriptEpoch: 0,
   isStreaming: false,
   _currentAssistantId: null,
   commands: [],
@@ -1008,6 +1018,9 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
       // explicit rather than relying on Zustand's partial-merge default.
       ...state,
       items: [],
+      // The transcript was replaced: the rows the message list measured are
+      // gone.
+      transcriptEpoch: state.transcriptEpoch + 1,
       isStreaming: false,
       _currentAssistantId: null,
       // Clear all session-scoped UI state so stale widgets/prefills don't leak into new sessions.
@@ -1024,7 +1037,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
     })),
 
   setMessages: (messages: unknown[]) =>
-    set(() => {
+    set((state) => {
       const items: ChatItem[] = [];
       const toolsByCallId = new Map<string, ToolRunItem>();
       for (const msg of messages) {
@@ -1034,6 +1047,9 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
       }
       return {
         items,
+        // The transcript was replaced: the rows the message list measured are
+        // gone.
+        transcriptEpoch: state.transcriptEpoch + 1,
         isStreaming: false,
         _currentAssistantId: null,
         toolCardExpanded: {},
@@ -1049,6 +1065,7 @@ export const useChatStore = create<ChatState & ChatActions>()((set) => ({
       // Mutate a draft copy so we make one `set` call for the whole batch.
       const draft: ChatState = {
         items: [...state.items],
+        transcriptEpoch: state.transcriptEpoch,
         isStreaming: state.isStreaming,
         _currentAssistantId: state._currentAssistantId,
         commands: state.commands,

@@ -21,13 +21,40 @@ import { CollapsibleText } from './CollapsibleText';
 
 const DEFAULT_ROW_HEIGHT = 80;
 
+/**
+ * A stable identity for one transcript row.
+ *
+ * react-window keys its rows by this, and the list uses the first row's key
+ * to tell one transcript from another (see the row-height cache in
+ * `MessageList`).
+ */
+/** The key of the last row, or an empty string for an empty transcript. */
+function lastKeyOf(items: ChatItem[]): string {
+  return items.length > 0 ? keyOf(items[items.length - 1]) : '';
+}
+
+function keyOf(item: ChatItem): string {
+  if (item.itemKind === 'tool') return `tool-${item.toolCallId}`;
+  if (item.itemKind === 'question') return `question-${item.id}`;
+  return item.id;
+}
+
 interface Props {
   items: ChatItem[];
+  /**
+   * Counts transcript replacements — a session switch or a reset.
+   *
+   * The row heights are cached by index, so the list has to know when the
+   * rows it measured are not the rows on screen any more. The item ids cannot
+   * say that reliably (two sessions may open with the same message), so the
+   * store says it.
+   */
+  transcriptEpoch: number;
   height: number;
   width: number;
 }
 
-export function MessageList({ items, height, width }: Props) {
+export function MessageList({ items, transcriptEpoch, height, width }: Props) {
   const listRef = useRef<VariableSizeList>(null);
   const rowHeights = useRef<Record<number, number>>({});
   const isAtBottom = useRef(true);
@@ -39,6 +66,12 @@ export function MessageList({ items, height, width }: Props) {
   }, []);
 
   const setRowHeight = useCallback((index: number, size: number) => {
+    // A zero measurement is not a size: it is what a row reports while the
+    // panel is hidden and nothing is laid out. Storing it would collapse the
+    // row in react-window and poison the offsets of every row below it, so a
+    // non-layout measurement is ignored entirely — the ResizeObserver reports
+    // the real height as soon as the row is laid out again.
+    if (size <= 0) return;
     if (rowHeights.current[index] === size) return;
     rowHeights.current[index] = size;
     // forceUpdate=true so rows below reflow immediately when a row's height
@@ -48,38 +81,87 @@ export function MessageList({ items, height, width }: Props) {
     // on steady-state streaming ticks where the measured height is unchanged.
     listRef.current?.resetAfterIndex(index, true);
     // The first measurement of a new row (e.g. a question card) replaces the
-    // DEFAULT_ROW_HEIGHT guess used by the scroll-to-bottom effects below with
-    // its real, often much larger, height. Those effects already scrolled
-    // using the wrong guess, so without this the view is left stuck wherever
-    // that guess put it — typically showing just the card's title with the
-    // rest of it below the fold. Re-scroll now that the true size is known.
-    if (isAtBottom.current && index === itemCountRef.current - 1) {
-      listRef.current?.scrollToItem(index, 'end');
+    // DEFAULT_ROW_HEIGHT guess used by the scroll-to-bottom effect below with
+    // its real, often much larger, height. That effect already scrolled using
+    // the wrong guess, so without this the view is left stuck wherever that
+    // guess put it — typically showing just the card's title with the rest of
+    // it below the fold. Re-scroll now that the true size is known.
+    //
+    // The target is the *last* item, not the measured one: a row growing
+    // above the bottom — an expanded tool card, a collapsed message — pushes
+    // the last messages below the fold, and the view has to follow them.
+    //
+    // The target itself is computed from the cached row heights, so it is
+    // exact only once the rows around it have been measured. Each measurement
+    // re-scrolls, and the position converges as they arrive.
+    if (isAtBottom.current && itemCountRef.current > 0) {
+      listRef.current?.scrollToItem(itemCountRef.current - 1, 'end');
     }
   }, []);
 
-  // Scroll to bottom when new items arrive (only when already pinned to bottom).
-  useEffect(() => {
-    if (isAtBottom.current && items.length > 0) {
-      listRef.current?.scrollToItem(items.length - 1, 'end');
-    }
-  }, [items.length]);
-
-  // Also scroll to bottom when the last item's content grows (streaming).
+  // A new transcript: the rows the heights were measured for are gone, and the
+  // reader starts at the bottom of the new one even if they had scrolled up
+  // in the old one.
   useLayoutEffect(() => {
-    if (isAtBottom.current && items.length > 0) {
-      listRef.current?.scrollToItem(items.length - 1, 'end');
+    rowHeights.current = {};
+    isAtBottom.current = true;
+    // Drop react-window's own size cache too: it is keyed by index as well.
+    listRef.current?.resetAfterIndex(0, true);
+    // Bring the last row into the window. Every height is an estimate at
+    // this point, so the landing is approximate; the measurements that follow
+    // correct it.
+    if (items.length > 0) listRef.current?.scrollToItem(items.length - 1, 'end');
+  }, [transcriptEpoch]);
+
+  // The row heights are cached by index, so they describe the rows that were
+  // there when they were measured. Appending keeps them valid; anything else —
+  // a row removed from the middle, a row replaced in place — shifts the rows
+  // after it, and their heights then belong to the wrong rows.
+  const previous = useRef({ length: items.length, lastKey: lastKeyOf(items) });
+  useLayoutEffect(() => {
+    const before = previous.current;
+    const grewByOne = items.length === before.length + 1;
+    // A pure append: the row that was last is now the second to last.
+    const appended =
+      grewByOne && items.length >= 2 && keyOf(items[items.length - 2]) === before.lastKey;
+    // The last row was updated in place — the same row, new content.
+    const updatedInPlace = !grewByOne && before.lastKey === lastKeyOf(items);
+    if (!appended && !updatedInPlace) {
+      rowHeights.current = {};
+      listRef.current?.resetAfterIndex(0, true);
     }
-  });
+    previous.current = { length: items.length, lastKey: lastKeyOf(items) };
+  }, [items]);
+
+  // Scroll to the bottom when the bottom of the list moves: a new item
+  // arrives, or the viewport changes (the composer grows). The dependencies
+  // are deliberate — a re-render that changes neither, the user typing into a
+  // question card's field being the case that motivated this, must leave the
+  // view where it is. Scrolling on every render re-applies a target computed
+  // from react-window's cached row sizes, which snaps the transcript to a
+  // stale position on every keystroke.
+  //
+  // The target is computed from the cached row heights, so it is exact only
+  // once the rows have been measured; each measurement scrolls again, and the
+  // position converges as they arrive.
+  //
+  // The first render is the exception: the reader has not scrolled anywhere
+  // yet, so the list opens at the bottom even when the estimates of the
+  // unmeasured rows make it look as though they had.
+  const firstRender = useRef(true);
+  useLayoutEffect(() => {
+    const initial = firstRender.current;
+    firstRender.current = false;
+    if (items.length === 0) return;
+    if (!initial && !isAtBottom.current) return;
+    listRef.current?.scrollToItem(items.length - 1, 'end');
+  }, [items.length, height]);
 
   const itemKey = useCallback(
     (index: number) => {
       const item = items[index];
       if (!item) return index;
-      if (item.itemKind === 'tool') return `tool-${item.toolCallId}`;
-      if (item.itemKind === 'question') return `question-${item.id}`;
-      if (item.itemKind === 'assistant' || item.itemKind === 'user') return item.id;
-      return item.id;
+      return keyOf(item);
     },
     [items],
   );
