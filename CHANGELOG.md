@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Messages no longer pile on top of each other after you send one.** 0.4.5
+  kept the chat's rows in place between updates instead of rebuilding them,
+  but the list still forgot their heights whenever its last row changed — for
+  example when your new message replaces the end-of-turn summary. A row that is
+  kept and has not changed size never reports its size again, so the rows on
+  screen were laid out at a guessed height and the ones below them were drawn
+  over the answer. They now measure themselves again whenever the list forgets.
+
 ## [0.4.5] - 2026-10-29
 
 ### Added

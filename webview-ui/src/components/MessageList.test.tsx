@@ -44,38 +44,64 @@ const HEIGHTS: Array<[string, number]> = [
 /** Overrides the height of the rows whose text contains the marker. */
 const heightOverrides = new Map<string, number>();
 
-/** Callbacks of every live ResizeObserver, so a test can fire them. */
-const resizeCallbacks: ResizeObserverCallback[] = [];
+/** Live observers, so a test can deliver a layout change to them. */
+const observers: FakeResizeObserver[] = [];
 
 /** The global the stub replaces, restored after each test. */
 const realResizeObserver = (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver;
 
+/**
+ * Delivers a callback only for an element whose height changed since the last
+ * delivery — what a browser does. An observer that fired for every element on
+ * every "resize" would re-measure rows whose size never changed and hide a list
+ * that forgets their heights.
+ */
 class FakeResizeObserver implements ResizeObserver {
+  private readonly heights = new Map<Element, number>();
   constructor(private readonly callback: ResizeObserverCallback) {
-    resizeCallbacks.push(callback);
+    observers.push(this);
   }
-  observe(): void {}
-  unobserve(): void {}
+  observe(target: Element): void {
+    // A browser reports once on observe; the row measures itself on mount, so
+    // this only records the size it starts from.
+    this.heights.set(target, target.getBoundingClientRect().height);
+  }
+  unobserve(target: Element): void {
+    this.heights.delete(target);
+  }
   disconnect(): void {
     // A row that unmounts must not keep firing: a later fireResize() would
     // otherwise call a callback for an element that is no longer on screen.
-    const at = resizeCallbacks.indexOf(this.callback);
-    if (at >= 0) resizeCallbacks.splice(at, 1);
+    this.heights.clear();
+    const at = observers.indexOf(this);
+    if (at >= 0) observers.splice(at, 1);
+  }
+  /** Report the elements whose height changed. */
+  deliver(): void {
+    const changed: Element[] = [];
+    for (const [target, last] of this.heights) {
+      const now = target.getBoundingClientRect().height;
+      if (now !== last) {
+        this.heights.set(target, now);
+        changed.push(target);
+      }
+    }
+    if (changed.length > 0) {
+      this.callback(changed.map((target) => ({ target }) as ResizeObserverEntry), this);
+    }
   }
 }
 
-/** Fire every observer callback, as the browser would after a layout change. */
+/** Deliver a layout change to every observer, as the browser would after reflow. */
 function fireResize(): void {
   act(() => {
-    for (const callback of [...resizeCallbacks]) {
-      callback([], {} as ResizeObserver);
-    }
+    for (const observer of [...observers]) observer.deliver();
   });
 }
 
 beforeEach(() => {
   heightOverrides.clear();
-  resizeCallbacks.length = 0;
+  observers.length = 0;
   swallowScrollEvents = true;
   document.addEventListener('scroll', swallowScrollEvent, true);
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
@@ -110,6 +136,15 @@ function assistantItem(text = 'ASSISTANT'): ChatItem {
   return {
     itemKind: 'assistant', id: `a-${text}`, blocks: [{ kind: 'text', text }],
     isComplete: true, timestamp: 2,
+  } as unknown as ChatItem;
+}
+
+/** The end-of-turn footer; its id is fixed, so it is replaced rather than added. */
+function summaryItem(): ChatItem {
+  return {
+    itemKind: 'summary', id: 'summary-final',
+    stats: { tokens: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } },
+    timestamp: 4,
   } as unknown as ChatItem;
 }
 
@@ -381,6 +416,31 @@ describe('MessageList — auto-scroll', () => {
 });
 
 describe('MessageList — row identity across re-renders', () => {
+  it('keeps rows from overlapping when the summary gives way to a new message', () => {
+    // Sending a message after a finished turn removes the summary footer and
+    // appends the user's message: same length, a different last row, so the
+    // list drops its height cache. The rows still on screen stay mounted and
+    // their size never changes, so a browser does not report them again — if
+    // the list waited for that, they would be laid out at the 80px estimate
+    // and the rows below would be drawn over them.
+    const { container, rerender } = render(
+      <MessageList items={[userItem(), assistantItem(), summaryItem()]} transcriptEpoch={0} height={VIEWPORT} width={300} />,
+    );
+
+    rerender(
+      <MessageList
+        items={[userItem(), assistantItem(), userItem('NEXTUSER')]}
+        transcriptEpoch={0}
+        height={VIEWPORT}
+        width={300}
+      />,
+    );
+    fireResize();
+
+    // USER 100 + ASSISTANT 400: the new message starts below the answer.
+    const rows = [...container.querySelectorAll('.message-row')].map((r) => r.parentElement as HTMLElement);
+    expect(rows.map((r) => r.style.top)).toEqual(['0px', '100px', '500px']);
+  });
   it('keeps the answer field, and its focus, while the user types', () => {
     const { rerender } = render(
       <MessageList items={[userItem(), questionItem()]} transcriptEpoch={0} height={VIEWPORT} width={300} />,

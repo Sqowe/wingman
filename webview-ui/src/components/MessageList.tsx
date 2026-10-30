@@ -60,6 +60,12 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
   const isAtBottom = useRef(true);
   const itemCountRef = useRef(items.length);
   itemCountRef.current = items.length;
+  // Bumped whenever the height cache is dropped. Rows stay mounted across
+  // re-renders (see `itemData`), and a ResizeObserver reports a size *change*,
+  // never a size the list merely forgot — so a row that is still on screen,
+  // unchanged, would never report again and be laid out at the estimate, with
+  // the rows below drawn over it. Rows re-measure when this changes.
+  const [measureEpoch, setMeasureEpoch] = useState(0);
 
   const getItemSize = useCallback((index: number) => {
     return rowHeights.current[index] ?? DEFAULT_ROW_HEIGHT;
@@ -107,6 +113,8 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
     isAtBottom.current = true;
     // Drop react-window's own size cache too: it is keyed by index as well.
     listRef.current?.resetAfterIndex(0, true);
+    // The rows on screen must report their sizes again — see `measureEpoch`.
+    setMeasureEpoch((n) => n + 1);
     // Bring the last row into the window. Every height is an estimate at
     // this point, so the landing is approximate; the measurements that follow
     // correct it.
@@ -129,6 +137,8 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
     if (!appended && !updatedInPlace) {
       rowHeights.current = {};
       listRef.current?.resetAfterIndex(0, true);
+      // The rows on screen must report their sizes again — see `measureEpoch`.
+      setMeasureEpoch((n) => n + 1);
     }
     previous.current = { length: items.length, lastKey: lastKeyOf(items) };
   }, [items]);
@@ -170,8 +180,12 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
   // `children` as a component type, so an inline `(props) => <Row …/>` would be
   // a new type on every render and remount every visible row. A remount throws
   // away a focused text field (the question card's typed answer) on each
-  // keystroke, along with any other row-local state.
-  const itemData = useMemo<RowData>(() => ({ items, setRowHeight }), [items, setRowHeight]);
+  // keystroke, along with any other row-local state. `measureEpoch` rides
+  // along so a dropped height cache reaches the rows that stayed mounted.
+  const itemData = useMemo<RowData>(
+    () => ({ items, setRowHeight, measureEpoch }),
+    [items, setRowHeight, measureEpoch],
+  );
 
   if (items.length === 0) {
     return (
@@ -216,6 +230,8 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
 interface RowData {
   items: ChatItem[];
   setRowHeight: (index: number, size: number) => void;
+  /** Changes when the list drops its height cache; rows then measure again. */
+  measureEpoch: number;
 }
 
 /**
@@ -224,7 +240,7 @@ interface RowData {
  * row mounted.
  */
 const Row = React.memo(function Row({ index, style, data }: ListChildComponentProps<RowData>) {
-  const { items, setRowHeight } = data;
+  const { items, setRowHeight, measureEpoch } = data;
   const rowRef = useRef<HTMLDivElement>(null);
   const item = items[index];
 
@@ -238,9 +254,12 @@ const Row = React.memo(function Row({ index, style, data }: ListChildComponentPr
 
     const ro = new ResizeObserver(update);
     ro.observe(el);
-    update(); // measure immediately
+    // Measure immediately — on mount, on a new index, and whenever the list
+    // has forgotten the heights (`measureEpoch`): the observer only reports
+    // changes, and this row's size did not change.
+    update();
     return () => ro.disconnect();
-  }, [index, setRowHeight]);
+  }, [index, setRowHeight, measureEpoch]);
 
   return (
     <div style={style}>
