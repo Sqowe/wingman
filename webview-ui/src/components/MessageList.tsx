@@ -22,6 +22,15 @@ import { CollapsibleText } from './CollapsibleText';
 const DEFAULT_ROW_HEIGHT = 80;
 
 /**
+ * How far from the bottom, in pixels, still counts as "at the bottom".
+ *
+ * Not tight: a browser snaps `scrollTop` to its pixel grid, so the list never
+ * lands on a fractional target exactly, and a reader who scrolls to the end of
+ * a long answer is rarely within a pixel of it.
+ */
+const AT_BOTTOM_SLACK_PX = 60;
+
+/**
  * A stable identity for one transcript row.
  *
  * react-window keys its rows by this, and the list uses the first row's key
@@ -56,16 +65,49 @@ interface Props {
 
 export function MessageList({ items, transcriptEpoch, height, width }: Props) {
   const listRef = useRef<VariableSizeList>(null);
+  /** The scrolling element itself, so the bottom can be read from the DOM. */
+  const outerRef = useRef<HTMLDivElement | null>(null);
   const rowHeights = useRef<Record<number, number>>({});
   const isAtBottom = useRef(true);
   const itemCountRef = useRef(items.length);
   itemCountRef.current = items.length;
+  const heightRef = useRef(height);
+  heightRef.current = height;
   // Bumped whenever the height cache is dropped. Rows stay mounted across
   // re-renders (see `itemData`), and a ResizeObserver reports a size *change*,
   // never a size the list merely forgot — so a row that is still on screen,
   // unchanged, would never report again and be laid out at the estimate, with
   // the rows below drawn over it. Rows re-measure when this changes.
   const [measureEpoch, setMeasureEpoch] = useState(0);
+
+  /**
+   * Bring the last row into view at the bottom.
+   *
+   * The scroll is written to the DOM straight away rather than left to
+   * react-window's next update. react-window applies a requested offset in its
+   * componentDidUpdate, and a scroll event already queued for the *previous*
+   * position — the echo of the last scroll, or the browser snapping a
+   * fractional offset to its pixel grid — is handled first and overrides the
+   * request: the view then stops short of the bottom by however much the rows
+   * grew in between, and that event also reads as the reader scrolling away.
+   * Writing `scrollTop` now makes the queued event report the new position.
+   *
+   * The offset is computed here, from the row heights this list measured,
+   * not read back from react-window: its `scrollToItem` only queues a state
+   * update, so inside a batch the resolved offset is still the old one. The
+   * `scrollToItem` call stays so react-window's own state agrees with the DOM
+   * once that update lands.
+   */
+  const scrollToBottom = useCallback(() => {
+    const count = itemCountRef.current;
+    if (count === 0) return;
+    listRef.current?.scrollToItem(count - 1, 'end');
+    const outer = outerRef.current;
+    if (!outer) return;
+    let content = 0;
+    for (let i = 0; i < count; i++) content += rowHeights.current[i] ?? DEFAULT_ROW_HEIGHT;
+    outer.scrollTop = Math.max(0, content - heightRef.current);
+  }, []);
 
   const getItemSize = useCallback((index: number) => {
     return rowHeights.current[index] ?? DEFAULT_ROW_HEIGHT;
@@ -101,9 +143,9 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
     // exact only once the rows around it have been measured. Each measurement
     // re-scrolls, and the position converges as they arrive.
     if (isAtBottom.current && itemCountRef.current > 0) {
-      listRef.current?.scrollToItem(itemCountRef.current - 1, 'end');
+      scrollToBottom();
     }
-  }, []);
+  }, [scrollToBottom]);
 
   // A new transcript: the rows the heights were measured for are gone, and the
   // reader starts at the bottom of the new one even if they had scrolled up
@@ -118,7 +160,7 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
     // Bring the last row into the window. Every height is an estimate at
     // this point, so the landing is approximate; the measurements that follow
     // correct it.
-    if (items.length > 0) listRef.current?.scrollToItem(items.length - 1, 'end');
+    if (items.length > 0) scrollToBottom();
   }, [transcriptEpoch]);
 
   // The row heights are cached by index, so they describe the rows that were
@@ -164,7 +206,7 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
     firstRender.current = false;
     if (items.length === 0) return;
     if (!initial && !isAtBottom.current) return;
-    listRef.current?.scrollToItem(items.length - 1, 'end');
+    scrollToBottom();
   }, [items.length, height]);
 
   const itemKey = useCallback(
@@ -200,6 +242,7 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
   return (
     <VariableSizeList
       ref={listRef}
+      outerRef={outerRef}
       className="message-list"
       aria-label="Chat messages"
       height={height}
@@ -211,12 +254,15 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
       overscanCount={4}
       onScroll={({ scrollOffset, scrollUpdateWasRequested }) => {
         if (scrollUpdateWasRequested) return;
-        // Estimate total content height to detect "near bottom".
-        const totalHeight = items.reduce(
-          (sum, _, i) => sum + (rowHeights.current[i] ?? DEFAULT_ROW_HEIGHT),
-          0,
-        );
-        isAtBottom.current = totalHeight - scrollOffset - height < 60;
+        // Where the bottom is, by the content's actual size. The cached row
+        // heights are estimates for every row that was never on screen, so a
+        // sum of them can put the bottom anywhere — and a wrong "not at the
+        // bottom" stops the list from following new messages.
+        const outer = outerRef.current;
+        const contentHeight = outer && outer.scrollHeight > 0
+          ? outer.scrollHeight
+          : items.reduce((sum, _, i) => sum + (rowHeights.current[i] ?? DEFAULT_ROW_HEIGHT), 0);
+        isAtBottom.current = contentHeight - scrollOffset - height < AT_BOTTOM_SLACK_PX;
       }}
     >
       {Row}

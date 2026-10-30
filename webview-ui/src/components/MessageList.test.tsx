@@ -114,6 +114,18 @@ beforeEach(() => {
     } as DOMRect;
   });
   (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = FakeResizeObserver;
+  // jsdom has no layout, so the scroll container's geometry is derived from
+  // what react-window rendered: the viewport is the outer element's height,
+  // the content is the inner element's height.
+  vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function (this: Element) {
+    if (!this.classList.contains('message-list')) return 0;
+    return parseFloat((this as HTMLElement).style.height) || 0;
+  });
+  vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function (this: Element) {
+    if (!this.classList.contains('message-list')) return 0;
+    const inner = this.firstElementChild as HTMLElement | null;
+    return Math.max(parseFloat(inner?.style.height ?? '') || 0, parseFloat((this as HTMLElement).style.height) || 0);
+  });
 });
 
 afterEach(() => {
@@ -415,6 +427,97 @@ describe('MessageList — auto-scroll', () => {
   });
 });
 
+/** The scroll position the bottom of the content sits at. */
+function bottomOf(container: HTMLElement): number {
+  const list = container.querySelector('.message-list') as HTMLElement;
+  return list.scrollHeight - list.clientHeight;
+}
+
+describe('MessageList — landing on the bottom (from a live trace)', () => {
+  it('is not pulled back by the echo of its own previous scroll', () => {
+    // Recorded live: a new card arrived at the 80px estimate, and the list
+    // scrolled to the bottom for it. In the same moment the card measured
+    // 273px and the list asked react-window for the new bottom — but the
+    // browser's scroll event for the *previous* position was handled after
+    // that request and overrode it. The view stayed 273 - 80 = 193px above
+    // the bottom, and the event made the list believe the reader had scrolled
+    // away, so it stopped following for every later message.
+    heightOverrides.set('TALLASSISTANT', 80);
+    const { container, rerender } = render(
+      <MessageList items={[userItem(), assistantItem(), questionItem()]} transcriptEpoch={0} height={VIEWPORT} width={300} />,
+    );
+    rerender(
+      <MessageList
+        items={[userItem(), assistantItem(), questionItem(), assistantItem('TALLASSISTANT')]}
+        transcriptEpoch={0}
+        height={VIEWPORT}
+        width={300}
+      />,
+    );
+    // 100 + 400 + 300 + 80 rows in a 300px viewport.
+    expect(offsetOf(container)).toBe(580);
+
+    // The card lays out at its real height, and the browser reports the
+    // position the list scrolled to a moment ago — both in one frame.
+    heightOverrides.set('TALLASSISTANT', 900);
+    const list = container.querySelector('.message-list') as HTMLElement;
+    act(() => {
+      for (const observer of [...observers]) observer.deliver();
+      swallowScrollEvents = false;
+      list.dispatchEvent(new Event('scroll'));
+      swallowScrollEvents = true;
+    });
+
+    // 100 + 400 + 300 + 900.
+    expect(offsetOf(container)).toBe(1400);
+
+    // And it still follows the bottom.
+    rerender(
+      <MessageList
+        items={[userItem(), assistantItem(), questionItem(), assistantItem('TALLASSISTANT'), userItem('USER2')]}
+        transcriptEpoch={0}
+        height={VIEWPORT}
+        width={300}
+      />,
+    );
+    fireResize();
+    expect(offsetOf(container)).toBe(1500);
+  });
+
+  it('judges "at the bottom" by the content, not by height estimates', () => {
+    // The list keeps its own sum of row heights, with an 80px estimate for
+    // every row it has not measured. When that sum disagrees with the content
+    // the browser laid out, a reader at the true end must still be taken as
+    // "at the bottom" — otherwise the next message is not followed. Here a
+    // row reports a height the list then ignores (zero, as while the panel is
+    // hidden), so its cached size stays above what is on screen.
+    const { container, rerender } = render(
+      <MessageList items={[userItem(), assistantItem(), questionItem()]} transcriptEpoch={0} height={VIEWPORT} width={300} />,
+    );
+    // The list's cache still says 400 for the answer; the content is 200 shorter.
+    heightOverrides.set('ASSISTANT', 200);
+    const list = container.querySelector('.message-list') as HTMLElement;
+    const inner = list.firstElementChild as HTMLElement;
+    inner.style.height = `${parseFloat(inner.style.height) - 200}px`;
+
+    // The reader scrolls to the real end of the content.
+    userScrollsTo(container, bottomOf(container));
+
+    rerender(
+      <MessageList
+        items={[userItem(), assistantItem(), questionItem(), userItem('USER2')]}
+        transcriptEpoch={0}
+        height={VIEWPORT}
+        width={300}
+      />,
+    );
+    fireResize();
+
+    // 100 + 200 + 300 + 100 rows in a 300px viewport.
+    expect(offsetOf(container)).toBe(400);
+  });
+});
+
 describe('MessageList — row identity across re-renders', () => {
   it('keeps rows from overlapping when the summary gives way to a new message', () => {
     // Sending a message after a finished turn removes the summary footer and
@@ -475,3 +578,13 @@ describe('MessageList — row identity across re-renders', () => {
     expect(screen.getByLabelText('Your message')).toBe(bubble);
   });
 });
+
+
+
+
+
+
+
+
+
+

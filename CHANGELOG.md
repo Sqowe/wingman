@@ -17,6 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   screen were laid out at a guessed height and the ones below them were drawn
   over the answer. They now measure themselves again whenever the list forgets.
 
+- **The chat stays at the bottom when a question card opens.** When a new row
+  arrived while the one above it was still changing size — the next question
+  card appearing as the previous one collapsed is the usual case — the chat
+  stopped short of the bottom by the difference between the card's guessed and
+  real height, hiding its options. The browser's report of the chat's previous
+  position arrived after the correction and undid it. The same report, and the
+  browser rounding the scroll position to a whole pixel, also made the chat
+  think you had scrolled away, so it stopped following new messages until you
+  scrolled down yourself. It now scrolls straight to the bottom it computes,
+  and judges whether you are there by the content's real size.
+
 ## [0.4.5] - 2026-10-29
 
 ### Added
