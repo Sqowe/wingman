@@ -11,7 +11,7 @@ it **reuses pi's own configuration** — the same `~/.pi/agent/` global config a
 `.pi/` resources the pi CLI uses. Wingman is a different front-end over the same brain, not a
 separate tool with its own settings.
 
-> **Status — `0.4.5` preview.** Phases 0–8 are complete: native chat, tool cards, native diff,
+> **Status — `0.4.6` preview.** Phases 0–8 are complete: native chat, tool cards, native diff,
 > commands, the extension-UI protocol bridge, sessions, and config/trust are all built and
 > tested. Phase 9 (packaging / Marketplace) is in progress, so for now you install from source
 > (see below). See [CHANGELOG.md](CHANGELOG.md) for what's new in each release, and the
@@ -240,8 +240,8 @@ instead, point the trailing arg in `.vscode/launch.json` at `${workspaceFolder}`
 ### Option B — Package a VSIX and install it into your daily VS Code
 
 ```sh
-npm run vsce:package                       # produces sqowe-wingman-0.4.5.vsix
-code --install-extension sqowe-wingman-0.4.5.vsix
+npm run vsce:package                       # produces sqowe-wingman-0.4.6.vsix
+code --install-extension sqowe-wingman-0.4.6.vsix
 ```
 
 Or in VS Code: **Extensions** view ▸ **⋯** menu ▸ *Install from VSIX…* ▸ pick the file, then
