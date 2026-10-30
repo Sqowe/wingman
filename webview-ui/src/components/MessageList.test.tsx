@@ -519,6 +519,101 @@ describe('MessageList — landing on the bottom (from a live trace)', () => {
 });
 
 describe('MessageList — row identity across re-renders', () => {
+  it('does not jump up when the summary gives way to a new message', () => {
+    // Recorded live: sending a message after a finished turn replaced the
+    // summary footer, and the list dropped the heights of *every* row. The
+    // re-scroll that followed was computed from 80px estimates — hundreds of
+    // pixels above the bottom — and the browser's scroll event for that
+    // position arrived before the rows had measured again, so the list took
+    // it for the reader scrolling away and stopped following.
+    const { container, rerender } = render(
+      <MessageList
+        items={[userItem(), assistantItem('TALLASSISTANT'), questionItem(), summaryItem()]}
+        transcriptEpoch={0}
+        height={VIEWPORT}
+        width={300}
+      />,
+    );
+    // 100 + 900 + 300 + 100 rows in a 300px viewport.
+    expect(offsetOf(container)).toBe(1100);
+
+    const list = container.querySelector('.message-list') as HTMLElement;
+    const writes: number[] = [];
+    const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')!;
+    vi.spyOn(list, 'scrollTop', 'set').mockImplementation(function (this: Element, v: number) {
+      writes.push(v);
+      desc.set!.call(this, v);
+    });
+    vi.spyOn(list, 'scrollTop', 'get').mockImplementation(function (this: Element) {
+      return desc.get!.call(this) as number;
+    });
+
+    const sent = [userItem(), assistantItem('TALLASSISTANT'), questionItem(), userItem('NEXTUSER')];
+    rerender(<MessageList items={sent} transcriptEpoch={0} height={VIEWPORT} width={300} />);
+    // The browser reports the position the list just scrolled to, before
+    // anything has measured again.
+    act(() => {
+      swallowScrollEvents = false;
+      list.dispatchEvent(new Event('scroll'));
+      swallowScrollEvents = true;
+    });
+    fireResize();
+
+    // The bottom never moved: 100 + 900 + 300 + 100.
+    expect(Math.min(...writes)).toBeGreaterThanOrEqual(1100);
+    expect(offsetOf(container)).toBe(1100);
+
+    // And it still follows the bottom.
+    rerender(
+      <MessageList items={[...sent, assistantItem('ASSISTANT2')]} transcriptEpoch={0} height={VIEWPORT} width={300} />,
+    );
+    fireResize();
+    expect(offsetOf(container)).toBe(1500);
+  });
+
+  it('ignores a scroll event while rows re-measure after the cache was dropped', () => {
+    // Removing a row from the middle still drops the heights below it. Until
+    // those rows report again, the layout is built from estimates, and a
+    // scroll event in that window — here one that reads as far from the bottom
+    // — describes the estimate, not the reader.
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 0);
+    const { container, rerender } = render(
+      <MessageList
+        items={[userItem(), assistantItem(), questionItem(), userItem('USER2')]}
+        transcriptEpoch={0}
+        height={VIEWPORT}
+        width={300}
+      />,
+    );
+    const list = container.querySelector('.message-list') as HTMLElement;
+
+    // The question card is withdrawn from the middle of the transcript.
+    rerender(
+      <MessageList items={[userItem(), assistantItem(), userItem('USER2')]} transcriptEpoch={0} height={VIEWPORT} width={300} />,
+    );
+    act(() => {
+      swallowScrollEvents = false;
+      list.scrollTop = 0;
+      list.dispatchEvent(new Event('scroll'));
+      swallowScrollEvents = true;
+    });
+    fireResize();
+    raf.mockRestore();
+
+    // Still following: a new message lands at the bottom.
+    rerender(
+      <MessageList
+        items={[userItem(), assistantItem(), userItem('USER2'), assistantItem('ASSISTANT2')]}
+        transcriptEpoch={0}
+        height={VIEWPORT}
+        width={300}
+      />,
+    );
+    fireResize();
+    // 100 + 400 + 100 + 400 rows in a 300px viewport.
+    expect(offsetOf(container)).toBe(700);
+  });
+
   it('keeps rows from overlapping when the summary gives way to a new message', () => {
     // Sending a message after a finished turn removes the summary footer and
     // appends the user's message: same length, a different last row, so the
@@ -578,6 +673,11 @@ describe('MessageList — row identity across re-renders', () => {
     expect(screen.getByLabelText('Your message')).toBe(bubble);
   });
 });
+
+
+
+
+
 
 
 

@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scrolled down yourself. It now scrolls straight to the bottom it computes,
   and judges whether you are there by the content's real size.
 
+- **Sending a message after a finished turn no longer throws the chat up.**
+  Your message replaces the end-of-turn summary, and the chat took that as a
+  reason to forget the size of every message in the conversation, not just
+  the last one. It then scrolled by guessed sizes — hundreds of pixels above
+  the bottom — and sometimes stayed there, no longer following new messages.
+  Now it forgets only the rows that actually changed, and while rows are
+  re-measuring it no longer reads a scroll as you moving away from the bottom.
+
 ## [0.4.5] - 2026-10-29
 
 ### Added

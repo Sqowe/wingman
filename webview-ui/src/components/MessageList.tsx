@@ -33,15 +33,10 @@ const AT_BOTTOM_SLACK_PX = 60;
 /**
  * A stable identity for one transcript row.
  *
- * react-window keys its rows by this, and the list uses the first row's key
- * to tell one transcript from another (see the row-height cache in
+ * react-window keys its rows by this, and the list compares the keys of two
+ * renders to find the first row that changed (see the row-height cache in
  * `MessageList`).
  */
-/** The key of the last row, or an empty string for an empty transcript. */
-function lastKeyOf(items: ChatItem[]): string {
-  return items.length > 0 ? keyOf(items[items.length - 1]) : '';
-}
-
 function keyOf(item: ChatItem): string {
   if (item.itemKind === 'tool') return `tool-${item.toolCallId}`;
   if (item.itemKind === 'question') return `question-${item.id}`;
@@ -79,6 +74,33 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
   // unchanged, would never report again and be laid out at the estimate, with
   // the rows below drawn over it. Rows re-measure when this changes.
   const [measureEpoch, setMeasureEpoch] = useState(0);
+  /**
+   * True from the moment the height cache is dropped until the rows have
+   * reported again. Scroll events in that window describe a layout built from
+   * estimates — the scroll position the list itself moved to while it did not
+   * know the sizes — so they say nothing about where the reader is, and must
+   * not be taken for the reader scrolling away. Cleared one frame after the
+   * commit in which the rows re-measured. A reader who really scrolls in that
+   * frame is followed to the bottom once more, which is the lesser fault.
+   */
+  const remeasuring = useRef(false);
+  const forgetHeightsFrom = useCallback((index: number) => {
+    for (const key of Object.keys(rowHeights.current)) {
+      if (Number(key) >= index) delete rowHeights.current[Number(key)];
+    }
+    listRef.current?.resetAfterIndex(index, true);
+    remeasuring.current = true;
+    // The rows on screen must report their sizes again — see `measureEpoch`.
+    setMeasureEpoch((n) => n + 1);
+  }, []);
+  useEffect(() => {
+    if (!remeasuring.current) return;
+    // The rows' measuring effects ran in this commit, before this one.
+    const frame = requestAnimationFrame(() => {
+      remeasuring.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [measureEpoch]);
 
   /**
    * Bring the last row into view at the bottom.
@@ -149,14 +171,17 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
 
   // A new transcript: the rows the heights were measured for are gone, and the
   // reader starts at the bottom of the new one even if they had scrolled up
-  // in the old one.
+  // in the old one. Not on mount: nothing has been measured yet, and the mount
+  // itself is handled by the first-render scroll below.
+  const mounted = useRef(false);
   useLayoutEffect(() => {
-    rowHeights.current = {};
+    if (!mounted.current) {
+      mounted.current = true;
+      return;
+    }
     isAtBottom.current = true;
     // Drop react-window's own size cache too: it is keyed by index as well.
-    listRef.current?.resetAfterIndex(0, true);
-    // The rows on screen must report their sizes again — see `measureEpoch`.
-    setMeasureEpoch((n) => n + 1);
+    forgetHeightsFrom(0);
     // Bring the last row into the window. Every height is an estimate at
     // this point, so the landing is approximate; the measurements that follow
     // correct it.
@@ -166,23 +191,31 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
   // The row heights are cached by index, so they describe the rows that were
   // there when they were measured. Appending keeps them valid; anything else —
   // a row removed from the middle, a row replaced in place — shifts the rows
-  // after it, and their heights then belong to the wrong rows.
-  const previous = useRef({ length: items.length, lastKey: lastKeyOf(items) });
+  // after it, and their heights then belong to the wrong rows. Only those are
+  // dropped: the rows above the first change are the same rows, and forgetting
+  // them would lay the whole transcript out at the 80px estimate — the
+  // re-scroll then lands hundreds of pixels above the bottom. That is what
+  // sending a message after a finished turn did: it replaces the summary
+  // footer, the last row, and every height above it went with it.
+  const previous = useRef({ keys: items.map(keyOf) });
   useLayoutEffect(() => {
-    const before = previous.current;
-    const grewByOne = items.length === before.length + 1;
-    // A pure append: the row that was last is now the second to last.
-    const appended =
-      grewByOne && items.length >= 2 && keyOf(items[items.length - 2]) === before.lastKey;
+    const before = previous.current.keys;
+    const keys = items.map(keyOf);
+    previous.current = { keys };
+
+    // The first index whose row is not the row that was measured there.
+    let firstChanged = 0;
+    const shared = Math.min(before.length, keys.length);
+    while (firstChanged < shared && before[firstChanged] === keys[firstChanged]) firstChanged++;
+
+    const grewByOne = keys.length === before.length + 1;
+    // A pure append: every row that was there is still at its index.
+    const appended = grewByOne && firstChanged === before.length;
     // The last row was updated in place — the same row, new content.
-    const updatedInPlace = !grewByOne && before.lastKey === lastKeyOf(items);
-    if (!appended && !updatedInPlace) {
-      rowHeights.current = {};
-      listRef.current?.resetAfterIndex(0, true);
-      // The rows on screen must report their sizes again — see `measureEpoch`.
-      setMeasureEpoch((n) => n + 1);
-    }
-    previous.current = { length: items.length, lastKey: lastKeyOf(items) };
+    const updatedInPlace = keys.length === before.length && firstChanged === keys.length;
+    if (appended || updatedInPlace) return;
+
+    forgetHeightsFrom(firstChanged);
   }, [items]);
 
   // Scroll to the bottom when the bottom of the list moves: a new item
@@ -254,6 +287,8 @@ export function MessageList({ items, transcriptEpoch, height, width }: Props) {
       overscanCount={4}
       onScroll={({ scrollOffset, scrollUpdateWasRequested }) => {
         if (scrollUpdateWasRequested) return;
+        // A layout built from estimates says nothing about the reader.
+        if (remeasuring.current) return;
         // Where the bottom is, by the content's actual size. The cached row
         // heights are estimates for every row that was never on screen, so a
         // sum of them can put the bottom anywhere — and a wrong "not at the
